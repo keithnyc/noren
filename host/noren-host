@@ -32,6 +32,9 @@ _pending = {}
 _pending_lock = threading.Lock()
 
 _last_state = {}
+# Mirrors the extension's stored auto-peel flag, so `noren status` can report it
+# without a round trip. Refreshed on every state push.
+_auto_peel = False
 _socket_inode = None
 
 
@@ -383,7 +386,12 @@ def handle_client(conn):
                 req["matchTitle"] = hint
 
         if cmd == "status":
-            reply = {"ok": True, "state": _last_state, "browser": owning_browser()}
+            reply = {
+                "ok": True,
+                "state": _last_state,
+                "autoPeel": _auto_peel,
+                "browser": owning_browser(),
+            }
         elif cmd == "open":
             spawn_window(req.get("url"))
             reply = {"ok": True}
@@ -461,7 +469,7 @@ def cleanup():
 
 
 def main():
-    global _last_state
+    global _last_state, _auto_peel
 
     atexit.register(cleanup)
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -484,6 +492,7 @@ def main():
 
         elif kind == "state":
             _last_state = msg.get("state") or {}
+            _auto_peel = bool(msg.get("autoPeel"))
             notify_shell(_last_state)
 
         elif kind == "spawn":

@@ -52,7 +52,7 @@ widget   ─ BarWidget.qml   title, load state          ┘
                     │        stdin/stdout  ↔ native messaging (4-byte LE + JSON)
                     │        unix socket   ↔ bin/noren and the shell
                     ▲
-       extension/background-4.js    chrome.tabs.*, onCreated, onUpdated
+       extension/background-N.js    chrome.tabs.*, onCreated, onUpdated
                     ▲
                     ▼
               browser --app windows
@@ -82,6 +82,17 @@ launcher you cannot trust.
 Ctrl+Enter still has to be *reachable*, not buried, because a chrome-less window
 has no address bar — this overlay is the only way to point one somewhere else.
 The footer names the window it would replace, and greys out when there is none.
+
+**`peel on` persists in `chrome.storage.local`.** The flag started as a plain
+service-worker variable, which reverts to off whenever Chromium tears the worker
+down — always when the last window closes, and whenever it decides the worker is
+idle. A setting that silently resets is indistinguishable from a broken feature,
+and it made the week-long tabs-as-windows trial unmeasurable. Every read awaits
+the stored value first (`autoPeelReady`), because the worker starts handling
+`onCreated` before storage resolves and a tab created in that window would
+otherwise be judged against the default. The extension carries the flag on its
+state pushes so `noren status` and `noren peel status` can report it without a
+round trip. This is what the `storage` permission is for.
 
 **One browser at a time.** The host owns a single socket, so two instrumented
 browsers would fight over it. `install.sh` clears Noren out of every other
@@ -221,8 +232,6 @@ invoking shell and kill it. Hit twice in one session. Use explicit PIDs or
   swallow the project.
 - **Gather** — the return path for peel. Pull a project's detached windows back
   into one group.
-- **`peel on` is not sticky.** It lives in the service worker, so it resets when
-  the last browser window closes. Worth persisting before a week-long test.
 - **Per-site rules file** — the app_id format above makes declarative
   `windowrule` generation straightforward.
 

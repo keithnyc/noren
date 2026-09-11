@@ -5,9 +5,10 @@
   "description": "Bridges Chromium to the Omarchy shell. Installed by Noren.",
   "permissions": [
     "tabs",
-    "nativeMessaging"
+    "nativeMessaging",
+    "storage"
   ],
   "background": {
-    "service_worker": "background-4.js"
+    "service_worker": "background-5.js"
   }
 }

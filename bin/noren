@@ -22,7 +22,8 @@ usage: noren <command> [args]
   forward           history forward
   reload            reload the focused window
   peel              move the focused tab into its own window
-  peel on|off       auto-peel every new tab into its own window
+  peel on|off       auto-peel every new tab into its own window (persists)
+  peel status       report whether auto-peel is on
   tabs              list open tabs as json
   focus <tab-id>    focus a tab by id
   target            which browser window is on this workspace
@@ -329,6 +330,9 @@ def main(argv):
     elif cmd == "peel":
         if rest and rest[0] in ("on", "off"):
             res = call({"cmd": "setAutoPeel", "value": rest[0] == "on"})
+        elif rest and rest[0] == "status":
+            res = call({"cmd": "status"})
+            res = {"ok": res.get("ok", True), "autoPeel": res.get("autoPeel", False)}
         else:
             res = call({"cmd": "peel"})
     else:

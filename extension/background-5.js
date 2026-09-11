@@ -2,7 +2,7 @@
 //
 // Keep this filename versioned. Chromium caches service workers for extensions
 // loaded via --load-extension, so a new URL forces registration of new code.
-// Bump to background-2.js when you change this file, and update manifest.json.
+// Bump the number when you change this file, and update manifest.json.
 
 const HOST = 'com.noren.bridge';
 
@@ -153,7 +153,10 @@ async function handleCommand(msg) {
       return reply({ ok: true, state: describe(await focusedTab()) });
 
     case 'setAutoPeel':
+      await autoPeelReady;
       autoPeel = Boolean(msg.value);
+      await chrome.storage.local.set({ autoPeel });
+      pushState();
       return reply({ ok: true, autoPeel });
 
     default:
@@ -183,10 +186,29 @@ function normalize(url) {
 //
 // The tabs-as-windows experiment. Off by default: turn it on with
 // `noren peel on` once you want every new tab to become its own window.
+//
+// The setting lives in chrome.storage.local, not just this variable. A service
+// worker is torn down whenever the browser decides it is idle and always when
+// the last window closes, so an in-memory flag silently reverts to off -- which
+// is indistinguishable from the feature not working, and fatal to a week-long
+// trial of tabs-as-windows.
 
 let autoPeel = false;
 
+// Every read of autoPeel must await this first. The worker starts answering
+// events immediately, and a tab created in that window would otherwise be
+// judged against the default rather than the stored value.
+const autoPeelReady = chrome.storage.local
+  .get({ autoPeel: false })
+  .then((got) => {
+    autoPeel = Boolean(got.autoPeel);
+  })
+  .catch((err) => {
+    console.warn('noren: could not read stored auto-peel —', err);
+  });
+
 chrome.tabs.onCreated.addListener(async (tab) => {
+  await autoPeelReady;
   if (!autoPeel) return;
   // A tab with no URL yet is mid-navigation; wait for onUpdated to carry one.
   const url = tab.pendingUrl || tab.url;
@@ -211,7 +233,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 // ------------------------------------------------------------- state updates
 
 function pushState() {
-  focusedTab().then((tab) => send({ type: 'state', state: describe(tab) }));
+  focusedTab().then((tab) => send({ type: 'state', state: describe(tab), autoPeel }));
 }
 
 chrome.tabs.onUpdated.addListener((_id, info) => {
@@ -221,6 +243,7 @@ chrome.tabs.onActivated.addListener(pushState);
 chrome.tabs.onRemoved.addListener(pushState);
 chrome.windows.onFocusChanged.addListener(pushState);
 
-// Establish the port as soon as the worker spins up.
+// Establish the port as soon as the worker spins up. The first state push waits
+// for the stored auto-peel value so `noren status` never reports a stale off.
 connect();
-pushState();
+autoPeelReady.then(pushState);
