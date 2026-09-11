@@ -142,11 +142,15 @@ hierarchy survive. Three rules earn their place:
 - **Text on a colour we kept is also kept.** White label text on a red badge was
   being remapped toward the theme foreground while the red stayed. The flag
   inherits, because the text is usually on a child of the coloured element.
-- **A `background-image` is a surface we do not own.** Only `background-color`
-  is remappable, so an element painted by a gradient keeps its colour — and must
-  keep its text colour too. A webmail site proved it: light-blue gradient cards on a
-  dark page, whose dark body text was being flipped to the theme foreground and
-  vanishing.
+- **A gradient of neutral stops is ours; anything else painted by
+  `background-image` is not.** Gradients are rewritten stop by stop, keeping the
+  shape of the fade; a `url()` is real artwork and a coloured stop carries
+  meaning, so both are left alone along with their text. Skipping *every*
+  background-image (the first fix) was too blunt — a video site's masthead is a
+  gradient at scroll-top and a flat colour once scrolled, so the header stayed
+  black at the top of the page and themed everywhere else. A webmail site is the other
+  half of the same rule: its light-blue gradient cards were losing their dark
+  body text to the theme foreground.
 - **Links are coloured by the pass, not by the stylesheet.** A blanket
   `a:link { ... !important }` at USER origin overrides the pass's own refusal to
   touch text on a surface it does not own — on a webmail site it painted the theme link
@@ -312,6 +316,11 @@ invoking shell and kill it. Hit twice in one session. Use explicit PIDs or
   attribute instead of writing inline styles.
 - **Shadow DOM and cross-origin iframes are not reached.** `querySelectorAll`
   does not cross shadow roots, and the pass runs in the main frame only.
+- **A large document still themes progressively, not instantly.** The walk is
+  budgeted at 8ms per tick so it cannot jank the page. `requestIdleCallback` was
+  worse than it looks: a loading page never goes idle, so the callbacks only
+  fired at their 500ms timeout and a video site stayed visibly unthemed for seconds.
+  A budgeted loop on a 0ms timer makes progress whether the page is busy or not.
 
 - **Workspace sessions** — each Hyprland workspace owning a named, restorable
   set of pages. Scope v1 to URL set + window order + profile. Restoring scroll

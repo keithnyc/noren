@@ -424,6 +424,10 @@ function norenSurfacePass(palette) {
   }
 
   const PROPS = ['background-color', 'color', 'border-color'];
+  // Everything we may write, for revert. `background-image` is handled
+  // separately: gradients are rewritten stop by stop, not remapped as a colour.
+  const OWNED = PROPS.concat(['background-image']);
+  const COLOUR_RE = /rgba?\([^)]*\)/g;
   // Below this, a colour is a neutral the theme may own. Above it, it carries
   // meaning the palette knows nothing about -- a brand, a badge, a diff -- and
   // must be left exactly as it is.
@@ -438,7 +442,16 @@ function norenSurfacePass(palette) {
     'EMBED', 'OBJECT', 'SOURCE', 'TRACK', 'MAP', 'AREA',
     'SCRIPT', 'STYLE', 'LINK', 'META', 'HEAD', 'TITLE', 'NOSCRIPT',
   ]);
-  const CHUNK = 250;
+  // Time budget per tick rather than a fixed element count. The previous
+  // version drained 250 elements per requestIdleCallback, which is fine on an
+  // idle page and useless on a loading one: while a video site is booting, the main
+  // thread never goes idle, so the callbacks only fired at their 500ms timeout
+  // and a large document stayed visibly unthemed for seconds. A budgeted loop on
+  // a 0ms timer makes steady progress whether or not the page is busy, and still
+  // yields often enough to keep rendering smooth.
+  const BUDGET_MS = 8;
+  const now = () =>
+    typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
 
   let theme = null;
   let baseL = 1;
@@ -554,6 +567,25 @@ function norenSurfacePass(palette) {
 
   // ------------------------------------------------------------------- apply
 
+  // A gradient of neutral stops is still a surface we can own -- recolour each
+  // stop and keep the shape of the fade. A video site's masthead is the case: it is a
+  // gradient at the top of the page and a flat colour once scrolled, so skipping
+  // every background-image left the header black at scroll-top and themed
+  // everywhere else. Returns null when the gradient is not ours to touch: a
+  // url() is real artwork, and a coloured stop is carrying meaning.
+  function remapGradient(img) {
+    if (!img || img === 'none') return null;
+    if (img.indexOf('url(') !== -1) return null;
+    const stops = img.match(COLOUR_RE);
+    if (!stops || !stops.length) return null;
+    for (const stop of stops) {
+      const c = parse(stop);
+      if (!c) return null;
+      if (c.a > 0.05 && chroma(c) > CHROMA_LIMIT) return null;
+    }
+    return img.replace(COLOUR_RE, (m) => remap(m, 'background-color') || m);
+  }
+
   function paint(el) {
     if (seen.has(el)) return;
     seen.add(el);
@@ -586,14 +618,22 @@ function norenSurfacePass(palette) {
     // disappearing.
     const bgImage = style.getPropertyValue('background-image');
     const hasImage = Boolean(bgImage) && bgImage !== 'none';
+    const gradient = hasImage ? remapGradient(bgImage) : null;
     const ownBg = parse(style.getPropertyValue('background-color'));
     const opaqueBg = ownBg && ownBg.a > 0.05;
-    const onColour = hasImage
+    const onColour = hasImage && !gradient
       ? true
       : opaqueBg
         ? chroma(ownBg) > CHROMA_LIMIT
         : Boolean(parent && coloredBg.has(parent));
     if (onColour) coloredBg.add(el);
+
+    if (gradient) {
+      const inlineImg = el.style.getPropertyValue('background-image');
+      if (inlineImg) saved['background-image'] = inlineImg;
+      el.style.setProperty('background-image', gradient, 'important');
+      touched = true;
+    }
 
     // Links get the theme's link colour, but only where we own the surface
     // under them. On a gradient card we kept, the site's own link colour is the
@@ -643,15 +683,14 @@ function norenSurfacePass(palette) {
     }
   }
 
-  function drain(deadline) {
+  function drain() {
     scheduled = false;
     if (!ready) return;
-    let n = 0;
-    while (queue.length && n < CHUNK) {
+    const started = now();
+    while (queue.length) {
       const el = queue.pop();
       if (el && el.isConnected) paint(el);
-      n++;
-      if (deadline && deadline.timeRemaining && deadline.timeRemaining() <= 1) break;
+      if (now() - started > BUDGET_MS) break;
     }
     if (queue.length) schedule();
   }
@@ -659,11 +698,7 @@ function norenSurfacePass(palette) {
   function schedule() {
     if (scheduled) return;
     scheduled = true;
-    if (typeof requestIdleCallback === 'function') {
-      requestIdleCallback(drain, { timeout: 500 });
-    } else {
-      setTimeout(drain, 16);
-    }
+    setTimeout(drain, 0);
   }
 
   function enqueue(root) {
@@ -673,9 +708,11 @@ function norenSurfacePass(palette) {
       // parent's colour lands in the first frame instead of the page
       // repainting leaf-up and visibly crawling.
       const all = root.querySelectorAll('*');
-      for (let i = all.length - 1; i >= 0; i--) queue.push(all[i]);
+      for (let i = all.length - 1; i >= 0; i--) {
+        if (!seen.has(all[i])) queue.push(all[i]);
+      }
     }
-    if (root.nodeType === 1) queue.push(root);
+    if (root.nodeType === 1 && !seen.has(root)) queue.push(root);
     schedule();
   }
 
@@ -688,7 +725,7 @@ function norenSurfacePass(palette) {
       } catch (e) {
         saved = {};
       }
-      for (const prop of PROPS) {
+      for (const prop of OWNED) {
         el.style.removeProperty(prop);
         if (saved[prop]) el.style.setProperty(prop, saved[prop]);
       }
