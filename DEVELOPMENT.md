@@ -91,8 +91,14 @@ browser when it installs.
 `host/noren-extension.pem` if absent, derives the extension id from it, and
 injects the public key into `extension/manifest.json` (also untracked — seeded
 from `manifest.json.template`). The id must match `allowed_origins` in the native
-host manifest or `connectNative` is rejected. Losing the `.pem` changes the id
-and breaks pairing; it is a private key and must never be committed.
+host manifest or `connectNative` is rejected.
+
+The key is mirrored to `~/.local/share/noren/noren-extension.pem` (0600, in a
+0700 directory). `install.sh` restores from there when the repo copy is missing,
+so a fresh clone keeps the same extension id and the host pairing survives —
+drill-tested by deleting the key and reinstalling. Only if *both* copies are
+gone is a new key generated, which is recoverable but costs a browser restart.
+It is a private key and must never be committed.
 
 ## Environment facts that cost real time
 

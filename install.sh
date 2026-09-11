@@ -127,10 +127,24 @@ say "  host dir:     $NMH_DIR"
 # The key pins the extension id, which the native host manifest's
 # allowed_origins must match. Generate it once, per machine — it is a private
 # key and never belongs in the repository.
+KEY_BACKUP="${XDG_DATA_HOME:-$HOME/.local/share}/noren/noren-extension.pem"
 if [[ ! -f $NOREN_DIR/host/noren-extension.pem ]]; then
-  openssl genrsa -out "$NOREN_DIR/host/noren-extension.pem" 2048 2>/dev/null
-  chmod 600 "$NOREN_DIR/host/noren-extension.pem"
-  say "generated a new extension key"
+  if [[ -f $KEY_BACKUP ]]; then
+    # A fresh clone must keep the same extension id, or the host manifest's
+    # allowed_origins stops matching and connectNative is silently rejected.
+    install -m 600 "$KEY_BACKUP" "$NOREN_DIR/host/noren-extension.pem"
+    say "restored extension key from $KEY_BACKUP"
+  else
+    openssl genrsa -out "$NOREN_DIR/host/noren-extension.pem" 2048 2>/dev/null
+    chmod 600 "$NOREN_DIR/host/noren-extension.pem"
+    say "generated a new extension key"
+  fi
+fi
+# Keep the off-repo copy current, so the id survives deleting the checkout.
+if [[ ! -f $KEY_BACKUP ]]; then
+  mkdir -p "$(dirname "$KEY_BACKUP")" && chmod 700 "$(dirname "$KEY_BACKUP")"
+  install -m 600 "$NOREN_DIR/host/noren-extension.pem" "$KEY_BACKUP"
+  say "backed up extension key to $KEY_BACKUP"
 fi
 if [[ ! -f $NOREN_DIR/host/.extid || ! -f $NOREN_DIR/host/.pubkey ]]; then
   PUB=$(openssl rsa -in "$NOREN_DIR/host/noren-extension.pem" -pubout -outform DER 2>/dev/null | base64 -w0)
