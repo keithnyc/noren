@@ -1,0 +1,504 @@
+#!/usr/bin/env python3
+"""Noren — native messaging host.
+
+Chromium starts this process and owns its lifetime. It speaks two protocols:
+
+  stdin/stdout   Chromium native messaging (4-byte little-endian length + JSON)
+  unix socket    line-delimited JSON, for the `noren` CLI and the Omarchy shell
+
+Anything written to stdout that is not a framed native message corrupts the
+channel, so every diagnostic goes to stderr.
+"""
+
+import atexit
+import json
+import os
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import threading
+import itertools
+
+SOCKET_PATH = os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "noren.sock"
+)
+PLUGIN_ID = "io.github.keithnyc.noren"
+
+_write_lock = threading.Lock()
+_ids = itertools.count(1)
+_pending = {}
+_pending_lock = threading.Lock()
+
+_last_state = {}
+_socket_inode = None
+
+
+def log(*args):
+    print("noren-host:", *args, file=sys.stderr, flush=True)
+
+
+# --------------------------------------------------------------- native messaging
+
+
+def read_native():
+    """Block for one message from Chromium. Returns None at EOF."""
+    header = sys.stdin.buffer.read(4)
+    if len(header) < 4:
+        return None
+    (length,) = struct.unpack("<I", header)
+    body = sys.stdin.buffer.read(length)
+    if len(body) < length:
+        return None
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as exc:
+        log("bad json from extension:", exc)
+        return {}
+
+
+def write_native(payload):
+    data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    with _write_lock:
+        sys.stdout.buffer.write(struct.pack("<I", len(data)))
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+
+
+def ask_extension(cmd, timeout=5.0, **kwargs):
+    """Send a command and wait for the matching reply."""
+    msg_id = next(_ids)
+    event = threading.Event()
+    with _pending_lock:
+        _pending[msg_id] = [event, None]
+
+    write_native({"id": msg_id, "cmd": cmd, **kwargs})
+
+    if not event.wait(timeout):
+        with _pending_lock:
+            _pending.pop(msg_id, None)
+        return {"ok": False, "error": "timed out waiting for the browser"}
+
+    with _pending_lock:
+        return _pending.pop(msg_id)[1] or {"ok": False, "error": "empty reply"}
+
+
+# ------------------------------------------------------------------ shell bridge
+
+
+def notify_shell(state):
+    """Push browser state into the Omarchy shell plugin, best effort."""
+    try:
+        subprocess.run(
+            [
+                "omarchy-shell",
+                "-q",
+                PLUGIN_ID,
+                "setState",
+                json.dumps(state or {}, separators=(",", ":")),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+    except Exception:
+        pass
+
+
+# ------------------------------------------------------------ browser resolution
+#
+# We cannot go through omarchy-launch-webapp. It runs the distro launcher
+# script, and the Brave wrapper ends with
+#
+#     exec ".../brave-origin" "$USER_FLAGS" "$BRAVE_FLAGS" "$FLAG" "$@"
+#
+# with $BRAVE_FLAGS and $FLAG unset — so two empty-string arguments land in
+# argv ahead of ours and --app= is swallowed. You get an ordinary browser
+# window instead of a chrome-less one. Resolve the real binary and call it
+# with clean arguments instead.
+
+_browser = None
+
+
+def resolve_browser():
+    """(binary, user_data_dir) for the default browser, resolved once."""
+    global _browser
+    if _browser is not None:
+        return _browser
+
+    binary, data_dir = None, None
+    try:
+        desktop = subprocess.run(
+            # Omarchy exports BROWSER=omarchy-launch-browser, which makes
+            # xdg-settings refuse to answer. Its own scripts unset it first.
+            ["env", "-u", "BROWSER", "xdg-settings", "get", "default-web-browser"],
+            capture_output=True, text=True, timeout=4,
+        ).stdout.strip()
+
+        path = None
+        for base in (
+            os.path.expanduser("~/.local/share/applications"),
+            "/usr/share/applications",
+        ):
+            candidate = os.path.join(base, desktop)
+            if os.path.isfile(candidate):
+                path = candidate
+                break
+
+        if path:
+            with open(path) as fh:
+                for line in fh:
+                    if line.startswith("Exec="):
+                        binary = line[5:].split()[0]
+                        break
+
+        # The launcher is usually a shell wrapper. Follow it to the real ELF,
+        # picking up the profile directory it would have exported.
+        seen = set()
+        while binary and binary not in seen and os.path.isfile(binary):
+            seen.add(binary)
+            with open(binary, "rb") as fh:
+                head = fh.read(2)
+            if head != b"#!":
+                break
+            with open(binary, errors="replace") as fh:
+                text = fh.read()
+            for line in text.splitlines():
+                line = line.strip()
+                if "CHROME_USER_DATA_DIR=" in line and not data_dir:
+                    data_dir = os.path.expanduser(
+                        line.split("CHROME_USER_DATA_DIR=", 1)[1].strip().strip('"')
+                    )
+                if line.startswith("exec ") and '"' in line:
+                    nxt = line.split('"')[1]
+                    if os.path.isfile(nxt):
+                        binary = nxt
+                        break
+            else:
+                break
+
+        # If we are still on a shell wrapper, the real ELF sits beside it in
+        # the vendor tree. Only look when we have not already got a binary --
+        # /usr/bin holds every browser on the system, so searching there would
+        # happily hand back a different browser than the one we were asked for.
+        if binary and os.path.isfile(binary):
+            with open(binary, "rb") as fh:
+                is_elf = fh.read(4) == b"\x7fELF"
+            if not is_elf:
+                for sibling in ("brave", "chrome", "chromium"):
+                    candidate = os.path.join(os.path.dirname(binary), sibling)
+                    if os.path.isfile(candidate):
+                        with open(candidate, "rb") as fh:
+                            if fh.read(4) == b"\x7fELF":
+                                binary = candidate
+                                break
+    except Exception as exc:
+        log("browser resolution failed:", exc)
+
+    _browser = (binary, data_dir)
+    log("browser:", binary, "profile:", data_dir)
+    return _browser
+
+
+def owning_browser():
+    """Which browser actually started this host. Ground truth, not config."""
+    try:
+        ppid = os.getppid()
+        exe = os.readlink("/proc/%d/exe" % ppid)
+        return {"pid": ppid, "name": os.path.basename(exe), "exe": exe}
+    except Exception:
+        return None
+
+
+def normalize_url(url):
+    """Chromium's --app= needs an absolute URL.
+
+    Given a bare host like "search.example" it does not error — it ignores the switch
+    and opens an ordinary browser window, which looks exactly like the feature
+    silently not working. omarchy-webapp-install normalises for the same reason.
+    """
+    import re
+
+    raw = str(url or "").strip()
+    if not raw:
+        return None
+    if re.match(r"^https?://", raw, re.I):
+        return raw
+    # Refuse the schemes --app= would execute as a document rather than load.
+    if re.match(r"^[a-z][a-z0-9+.-]*:", raw, re.I):
+        return None
+    return "https://" + raw
+
+
+def spawn_window(url):
+    """Open a URL as its own chrome-less Hyprland window."""
+    url = normalize_url(url)
+    if not url:
+        log("refusing to open:", url)
+        return
+
+    binary, data_dir = resolve_browser()
+    if not binary:
+        # Better a normal window than none at all.
+        try:
+            subprocess.Popen(
+                ["omarchy-launch-webapp", url],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            log("no browser binary and no omarchy-launch-webapp")
+        return
+
+    argv = [binary]
+    if data_dir:
+        argv.append("--user-data-dir=" + data_dir)
+    argv.append("--app=" + url)
+
+    # No --class here: Chromium ignores it for app windows on Wayland. It
+    # derives the app_id from the URL and profile instead, as
+    #
+    #     chrome-<host><path, / replaced by _>-<profile>
+    #     e.g. chrome-news.example.com__-Default
+    #
+    # which is what Hyprland windowrules must match on. Per-site identity comes
+    # free; we just do not get to choose the name.
+
+    try:
+        subprocess.Popen(
+            argv,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        log("spawn failed:", exc)
+
+
+# ------------------------------------------------------------- window targeting
+#
+# Chromium's "last focused window" drifts from what you are actually looking
+# at: run a command from a terminal and Chromium is not focused at all, so it
+# answers with whatever browser window it saw last — often on another
+# workspace. Ask Hyprland instead, and let the extension match on title.
+
+
+def hypr_browser_window():
+    """The browser window on the active workspace: {title, app_id, chromeless}.
+
+    Chromium names --app windows `chrome-<host>_<path>-<profile>`, and ordinary
+    tabbed windows just `chromium` / `brave-...`. That distinction is what tells
+    us whether the thing in front of you is a page or merely the tabbed window
+    the extension happens to live in.
+    """
+    try:
+        active = json.loads(
+            subprocess.run(
+                ["hyprctl", "-j", "activeworkspace"],
+                capture_output=True, text=True, timeout=3,
+            ).stdout
+        )
+        clients = json.loads(
+            subprocess.run(
+                ["hyprctl", "-j", "clients"],
+                capture_output=True, text=True, timeout=3,
+            ).stdout
+        )
+    except Exception:
+        return None
+
+    ws_id = active.get("id")
+    for c in clients:
+        cls = (c.get("class") or "")
+        low = cls.lower()
+        if not any(b in low for b in ("brave", "chromium", "chrome", "noren")):
+            continue
+        if c.get("workspace", {}).get("id") != ws_id:
+            continue
+        title = c.get("title") or ""
+        return {
+            "title": title.rsplit(" - ", 1)[0] if " - " in title else title,
+            "app_id": cls,
+            "chromeless": low.startswith("chrome-"),
+        }
+    return None
+
+
+def hypr_target_title():
+    """Title of the browser window on the active workspace, or None."""
+    try:
+        active = json.loads(
+            subprocess.run(
+                ["hyprctl", "-j", "activeworkspace"],
+                capture_output=True, text=True, timeout=3,
+            ).stdout
+        )
+        clients = json.loads(
+            subprocess.run(
+                ["hyprctl", "-j", "clients"],
+                capture_output=True, text=True, timeout=3,
+            ).stdout
+        )
+    except Exception:
+        return None
+
+    ws_id = active.get("id")
+    for c in clients:
+        cls = (c.get("class") or "").lower()
+        if not any(b in cls for b in ("brave", "chromium", "chrome", "noren")):
+            continue
+        if c.get("workspace", {}).get("id") != ws_id:
+            continue
+        title = c.get("title") or ""
+        # Hyprland shows "<page title> - <Browser Name>"; tabs carry just the page.
+        return title.rsplit(" - ", 1)[0] if " - " in title else title
+    return None
+
+
+# ---------------------------------------------------------------- socket server
+
+
+def handle_client(conn):
+    global _last_state
+    with conn:
+        buf = b""
+        while b"\n" not in buf:
+            chunk = conn.recv(4096)
+            if not chunk:
+                return
+            buf += chunk
+        try:
+            req = json.loads(buf.split(b"\n", 1)[0])
+        except json.JSONDecodeError:
+            conn.sendall(b'{"ok":false,"error":"bad json"}\n')
+            return
+
+        cmd = req.pop("cmd", "")
+        # Commands that act on "the window you're looking at" get a title hint
+        # from Hyprland, since Chromium's own idea of focus is unreliable when
+        # the call comes from a terminal or a keybind.
+        if cmd in ("navigate", "back", "forward", "reload", "peel"):
+            hint = hypr_target_title()
+            if hint:
+                req["matchTitle"] = hint
+
+        if cmd == "status":
+            reply = {"ok": True, "state": _last_state, "browser": owning_browser()}
+        elif cmd == "open":
+            spawn_window(req.get("url"))
+            reply = {"ok": True}
+        elif cmd == "goto":
+            # What the url bar does on Enter. Navigate only when the thing in
+            # front of you is actually a page; otherwise open a new chrome-less
+            # window. Without this, typing a url while looking at a terminal
+            # silently retargets whatever tabbed window is hosting the
+            # extension — which is a host, not a browsing surface.
+            win = hypr_browser_window()
+            if win and win.get("chromeless"):
+                reply = ask_extension(
+                    "navigate", url=req.get("url"), matchTitle=win["title"]
+                )
+            else:
+                spawn_window(req.get("url"))
+                reply = {"ok": True, "spawned": True}
+        else:
+            reply = ask_extension(cmd, **req)
+            # Say which browser is actually on the other end. A host outlives
+            # nothing but its own browser, so when several are installed this
+            # is the difference between "the bridge is up" and "the bridge is
+            # up, attached to the browser you stopped using an hour ago".
+            if cmd == "ping" and isinstance(reply, dict):
+                reply["browser"] = owning_browser()
+
+        try:
+            conn.sendall(json.dumps(reply).encode() + b"\n")
+        except BrokenPipeError:
+            pass
+
+
+def serve():
+    global _socket_inode
+    if os.path.exists(SOCKET_PATH):
+        os.unlink(SOCKET_PATH)
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(SOCKET_PATH)
+    os.chmod(SOCKET_PATH, 0o600)
+    # Remember which file is ours, so cleanup cannot delete a successor's.
+    _socket_inode = os.stat(SOCKET_PATH).st_ino
+    srv.listen(8)
+    log("listening on", SOCKET_PATH)
+    while True:
+        try:
+            conn, _ = srv.accept()
+        except OSError:
+            return
+        threading.Thread(target=handle_client, args=(conn,), daemon=True).start()
+
+
+# ------------------------------------------------------------------------ main
+
+
+def cleanup():
+    """Remove the socket however we exit — but only if it is still ours.
+
+    A stale socket file is worse than none: connecting to it fails with
+    ECONNREFUSED rather than ENOENT, so callers cannot tell 'browser closed'
+    from 'something is broken'.
+
+    The inode check matters when a host is cycled. The replacement binds a new
+    socket at the same path while the outgoing one is still shutting down; an
+    unconditional unlink here deletes the *new* host's socket, leaving it
+    listening on a path nothing can reach. Compare inodes and only remove the
+    file we actually created.
+    """
+    if _socket_inode is None:
+        return
+    try:
+        if os.stat(SOCKET_PATH).st_ino == _socket_inode:
+            os.unlink(SOCKET_PATH)
+    except OSError:
+        pass
+
+
+def main():
+    global _last_state
+
+    atexit.register(cleanup)
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, lambda *_: sys.exit(0))
+
+    threading.Thread(target=serve, daemon=True).start()
+
+    while True:
+        msg = read_native()
+        if msg is None:
+            break
+        kind = msg.get("type")
+
+        if kind == "reply":
+            with _pending_lock:
+                slot = _pending.get(msg.get("id"))
+                if slot:
+                    slot[1] = msg.get("data")
+                    slot[0].set()
+
+        elif kind == "state":
+            _last_state = msg.get("state") or {}
+            notify_shell(_last_state)
+
+        elif kind == "spawn":
+            spawn_window(msg.get("url"))
+
+        elif kind == "error":
+            log("extension error:", msg.get("message"))
+
+    log("chromium closed the channel, exiting")
+    if os.path.exists(SOCKET_PATH):
+        os.unlink(SOCKET_PATH)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass

@@ -1,0 +1,356 @@
+#!/usr/bin/env python3
+"""noren — drive the browser from the terminal, Hyprland binds, or the shell."""
+
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+
+SOCKET_PATH = os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "noren.sock"
+)
+
+USAGE = """\
+usage: noren <command> [args]
+
+  goto <url>        navigate if you're looking at a page, else open a window
+  open <url>        open a url as its own chrome-less window
+  go <url>          navigate the focused window (force)
+  back              history back
+  forward           history forward
+  reload            reload the focused window
+  peel              move the focused tab into its own window
+  peel on|off       auto-peel every new tab into its own window
+  tabs              list open tabs as json
+  focus <tab-id>    focus a tab by id
+  target            which browser window is on this workspace
+  status            what the focused window is showing
+  ping              check the bridge is up
+  doctor            diagnose the whole chain end to end
+
+The bridge runs only while your default browser is running with the Noren
+extension loaded. It starts and stops with that browser.
+"""
+
+
+def default_browser():
+    """Short name of the default browser. Omarchy exports BROWSER, which makes
+    xdg-settings refuse to answer, so unset it the way omarchy's own scripts do."""
+    try:
+        out = subprocess.run(
+            ["env", "-u", "BROWSER", "xdg-settings", "get", "default-web-browser"],
+            capture_output=True, text=True, timeout=4,
+        ).stdout.strip()
+        return out.removesuffix(".desktop") or "your browser"
+    except Exception:
+        return "your browser"
+
+
+def browser_running(name):
+    try:
+        subprocess.run(
+            ["pgrep", "-x", name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def no_bridge():
+    """The host is started by the browser, so say which half is missing."""
+    name = default_browser()
+    if not browser_running(name):
+        sys.exit(
+            f"noren: {name} isn't running.\n"
+            f"       The bridge starts with the browser — open {name} first."
+        )
+    sys.exit(
+        f"noren: {name} is running but the extension hasn't connected.\n"
+        f"       Restart it fully (pkill -x {name}) if you installed Noren\n"
+        f"       while it was open, then check chrome://extensions."
+    )
+
+
+
+# Chromium's extensions::disable_reason bitmask. The one that matters here is
+# the last: since M137 an unpacked extension is disabled unless Developer Mode
+# is on, and nothing in the UI or on stderr says so.
+DISABLE_REASONS = {
+    1 << 0: "disabled by user",
+    1 << 1: "permissions increase",
+    1 << 2: "reload",
+    1 << 3: "unsupported requirement",
+    1 << 4: "sideload wipeout",
+    1 << 7: "not verified",
+    1 << 8: "greylisted",
+    1 << 9: "corrupted",
+    1 << 10: "remote install",
+    1 << 11: "external extension",
+    1 << 12: "update required by policy",
+    1 << 14: "blocked by policy",
+    1 << 16: "not allowlisted",
+    1 << 17: "unsupported manifest version",
+    1 << 24: "DEVELOPER MODE IS OFF (chrome://extensions -> Developer mode)",
+}
+
+OK, BAD, MEH = "  ok  ", " FAIL ", " warn "
+
+
+def _row(status, label, detail=""):
+    print(f"[{status}] {label}" + (f"  {detail}" if detail else ""))
+
+
+def doctor():
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ext_dir = os.path.join(here, "extension")
+    cfg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    problems = 0
+
+    name = default_browser()
+    _row(OK, "default browser", name)
+
+    running = browser_running(name)
+    _row(OK if running else MEH, "browser running", "yes" if running else "no - start it")
+
+    # Expected extension id, derived from the pinned key.
+    try:
+        want_id = open(os.path.join(here, "host", ".extid")).read().strip()
+        _row(OK, "extension id", want_id)
+    except OSError:
+        want_id = None
+        problems += 1
+        _row(BAD, "extension id", "host/.extid missing - reinstall")
+
+    # Service worker file actually referenced by the manifest.
+    try:
+        man = json.load(open(os.path.join(ext_dir, "manifest.json")))
+        sw = man.get("background", {}).get("service_worker", "")
+        exists = os.path.isfile(os.path.join(ext_dir, sw))
+        if not exists:
+            problems += 1
+        _row(OK if exists else BAD, "service worker", sw + ("" if exists else " - FILE MISSING"))
+    except Exception as exc:
+        problems += 1
+        _row(BAD, "extension manifest", str(exc))
+
+    # Is the flag actually on the browser's command line?
+    flags = os.path.join(cfg, f"{name}-flags.conf")
+    in_flags = os.path.isfile(flags) and ext_dir in open(flags).read()
+    if not in_flags:
+        problems += 1
+    _row(OK if in_flags else BAD, "--load-extension", os.path.basename(flags))
+
+    # Native host manifest, and whether it is paired to the right id.
+    nmh = os.path.join(cfg, name, "NativeMessagingHosts", "com.noren.bridge.json")
+    if not os.path.isfile(nmh):
+        nmh = os.path.join(cfg, "chromium", "NativeMessagingHosts", "com.noren.bridge.json")
+    if os.path.isfile(nmh):
+        origins = json.load(open(nmh)).get("allowed_origins", [])
+        paired = any(want_id and want_id in o for o in origins)
+        if not paired:
+            problems += 1
+        _row(OK if paired else BAD, "native host manifest",
+             "paired" if paired else "id mismatch - reinstall")
+    else:
+        problems += 1
+        _row(BAD, "native host manifest", "not found - run ./install.sh")
+
+    # What the browser itself decided about the extension.
+    prefs = os.path.join(cfg, name, "Default", "Preferences")
+    if os.path.isfile(prefs):
+        try:
+            settings = json.load(open(prefs)).get("extensions", {}).get("settings", {})
+            entry = settings.get(want_id)
+            if entry is None:
+                _row(MEH, "browser sees extension", "not yet - restart the browser")
+            else:
+                reasons = entry.get("disable_reasons") or []
+                total = sum(reasons)
+                if total:
+                    problems += 1
+                    named = [v for k, v in DISABLE_REASONS.items() if total & k] or [str(total)]
+                    _row(BAD, "extension enabled", "NO - " + "; ".join(named))
+                else:
+                    _row(OK, "extension enabled", "yes")
+        except Exception as exc:
+            _row(MEH, "browser preferences", str(exc))
+    else:
+        _row(MEH, "browser preferences", "not found at " + prefs)
+
+    # And finally the live bridge.
+    if os.path.exists(SOCKET_PATH):
+        try:
+            res = call({"cmd": "ping"})
+            b = (res.get("browser") or {}).get("name", "?")
+            _row(OK, "bridge", f"up - {b}")
+        except SystemExit:
+            problems += 1
+            _row(BAD, "bridge", "socket present but not answering")
+    else:
+        problems += 1
+        _row(BAD, "bridge", "no socket - extension has not connected")
+
+    print()
+    print("All good." if not problems else f"{problems} problem(s) above.")
+    return 1 if problems else 0
+
+
+def hypr_target():
+    """The browser window on the active workspace, straight from Hyprland.
+
+    Deliberately not routed through the host: the url bar needs this to render
+    its hints, and it must work with the browser closed.
+    """
+    try:
+        ws = json.loads(subprocess.run(
+            ["hyprctl", "-j", "activeworkspace"],
+            capture_output=True, text=True, timeout=3).stdout)
+        clients = json.loads(subprocess.run(
+            ["hyprctl", "-j", "clients"],
+            capture_output=True, text=True, timeout=3).stdout)
+    except Exception:
+        return None
+    for c in clients:
+        cls = c.get("class") or ""
+        low = cls.lower()
+        if not any(b in low for b in ("brave", "chromium", "chrome")):
+            continue
+        if c.get("workspace", {}).get("id") != ws.get("id"):
+            continue
+        title = c.get("title") or ""
+        return {
+            "title": title.rsplit(" - ", 1)[0] if " - " in title else title,
+            "app_id": cls,
+            "chromeless": low.startswith("chrome-"),
+        }
+    return None
+
+
+def normalize(url):
+    """Match the host's rule: --app= needs an absolute URL or it is ignored."""
+    raw = str(url or "").strip()
+    if not raw:
+        return None
+    if re.match(r"^https?://", raw, re.I):
+        return raw
+    if re.match(r"^[a-z][a-z0-9+.-]*:", raw, re.I):
+        return None
+    return "https://" + raw
+
+
+def spawn_direct(url):
+    """Open a chrome-less window without the bridge.
+
+    The host spawns windows, but the host only exists while the browser does --
+    so with the browser closed the url bar could otherwise do nothing at all.
+    Fall back to Omarchy's own launcher, which starts the browser if needed;
+    the extension then comes up and the bridge with it.
+    """
+    target = normalize(url)
+    if not target:
+        sys.exit(f"noren: refusing to open {url!r}")
+    try:
+        subprocess.Popen(
+            ["omarchy-launch-webapp", target],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        sys.exit("noren: omarchy-launch-webapp not found")
+    return {"ok": True, "spawned": True, "coldStart": True}
+
+
+def call(payload, fallback=None):
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(8)
+            s.connect(SOCKET_PATH)
+            s.sendall(json.dumps(payload).encode() + b"\n")
+            buf = b""
+            while b"\n" not in buf:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+    except (ConnectionRefusedError, FileNotFoundError):
+        # Either no socket at all, or a stale one left by a host that died
+        # without cleaning up. Both mean the same thing to the user.
+        if fallback is not None:
+            return fallback()
+        no_bridge()
+    except socket.timeout:
+        sys.exit("noren: timed out waiting for the browser")
+
+    if not buf.strip():
+        sys.exit("noren: no reply")
+    return json.loads(buf.split(b"\n", 1)[0])
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(USAGE, end="")
+        return 0
+
+    cmd, rest = argv[0], argv[1:]
+
+    if cmd == "doctor":
+        return doctor()
+
+    if cmd == "open":
+        if not rest:
+            sys.exit("noren open: needs a url")
+        res = call({"cmd": "open", "url": rest[0]},
+                   fallback=lambda: spawn_direct(rest[0]))
+    elif cmd == "go":
+        if not rest:
+            sys.exit("noren go: needs a url")
+        res = call({"cmd": "navigate", "url": " ".join(rest)})
+    elif cmd == "goto":
+        if not rest:
+            sys.exit("noren goto: needs a url")
+        url = " ".join(rest)
+        res = call({"cmd": "goto", "url": url},
+                   fallback=lambda: spawn_direct(url))
+    elif cmd == "target":
+        print(json.dumps(hypr_target() or {}, indent=2))
+        return 0
+    elif cmd in ("back", "forward", "reload", "tabs", "ping", "status"):
+        res = call({"cmd": cmd})
+    elif cmd == "focus":
+        if not rest:
+            sys.exit("noren focus: needs a tab id")
+        res = call({"cmd": "focus", "tabId": rest[0]})
+    elif cmd == "peel":
+        if rest and rest[0] in ("on", "off"):
+            res = call({"cmd": "setAutoPeel", "value": rest[0] == "on"})
+        else:
+            res = call({"cmd": "peel"})
+    else:
+        sys.exit(f"noren: unknown command '{cmd}'. Try 'noren help'.")
+
+    if res.get("ok") is False:
+        sys.exit(f"noren: {res.get('error', 'failed')}")
+
+    # Navigation commands stay silent so Hyprland binds don't spam. Anything
+    # whose purpose is to report, reports.
+    if cmd in ("tabs", "status"):
+        print(json.dumps(res, indent=2))
+    elif cmd == "peel" and "autoPeel" in res:
+        print("auto-peel", "on" if res["autoPeel"] else "off")
+    elif cmd == "ping":
+        b = res.get("browser") or {}
+        if b.get("name"):
+            print(f"noren: bridge up — {b['name']} (pid {b['pid']})")
+        else:
+            print("noren: bridge up")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,10 @@
+# Private key pinning the extension id. Per-machine; install.sh generates it.
+host/noren-extension.pem
+host/.pubkey
+host/.extid
+
+# The key is injected into the manifest at install time.
+extension/manifest.json
+
+*.noren-backup
+__pycache__/

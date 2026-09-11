@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.keithnyc.noren",
+  "name": "Noren",
+  "version": "0.1.0",
+  "author": "Keith",
+  "license": "MIT",
+  "description": "Drive Chromium from the Omarchy shell: url bar, tab search, and chrome-less windows",
+  "kinds": [
+    "service",
+    "bar-widget",
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml",
+    "overlay": "UrlBar.qml"
+  },
+  "barWidget": {
+    "displayName": "Noren",
+    "description": "Current page and browser state",
+    "category": "Utilities",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

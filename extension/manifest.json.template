@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Noren",
+  "version": "0.1.0",
+  "description": "Bridges Chromium to the Omarchy shell. Installed by Noren.",
+  "permissions": [
+    "tabs",
+    "nativeMessaging"
+  ],
+  "background": {
+    "service_worker": "background-4.js"
+  }
+}
