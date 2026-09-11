@@ -20,6 +20,10 @@ import subprocess
 import sys
 import threading
 import itertools
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import noren_theme
 
 SOCKET_PATH = os.path.join(
     os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "noren.sock"
@@ -36,6 +40,12 @@ _last_state = {}
 # without a round trip. Refreshed on every state push.
 _auto_peel = False
 _socket_inode = None
+
+# The generated page stylesheets for the active Omarchy theme, and the mtime of
+# the colors.toml they came from. The extension cannot read the filesystem, so
+# the host is the only thing that can hand it a theme at all.
+_theme = None
+_theme_stamp = None
 
 
 def log(*args):
@@ -358,6 +368,66 @@ def hypr_target_title():
     return None
 
 
+# ------------------------------------------------------------------ page theme
+
+
+def _theme_stamp_now():
+    """Identity of the published theme — mtime of colors.toml and any override.
+
+    Omarchy rewrites the whole current-theme directory on a switch, so mtime is
+    enough; there is no in-place editing to miss.
+    """
+    stamp = []
+    for path in (noren_theme.COLORS_FILE, noren_theme.THEME_OVERRIDE):
+        try:
+            stamp.append(os.stat(path).st_mtime_ns)
+        except OSError:
+            stamp.append(None)
+    return tuple(stamp)
+
+
+def load_theme(force=False):
+    """Rebuild the stylesheets if the theme changed. Returns them, or None."""
+    global _theme, _theme_stamp
+
+    stamp = _theme_stamp_now()
+    if not force and stamp == _theme_stamp and _theme is not None:
+        return _theme
+
+    try:
+        built = noren_theme.build_css()
+    except Exception as err:  # a broken palette must not take the bridge down
+        log("theme build failed:", err)
+        return _theme
+
+    _theme_stamp = stamp
+    if built:
+        _theme = built
+        log("theme loaded:", built["mode"], "themed" if built["themed"] else "generated")
+    return _theme
+
+
+def push_theme():
+    theme = load_theme()
+    if theme:
+        write_native({"type": "theme", "theme": theme})
+
+
+def watch_theme():
+    """Re-push the stylesheets when the Omarchy theme changes.
+
+    Polled rather than inotify: a theme switch is a human action a couple of
+    times a day, the stat is two syscalls, and this avoids a dependency for
+    something that would otherwise need one.
+    """
+    while True:
+        time.sleep(2)
+        if _theme_stamp_now() != _theme_stamp:
+            log("omarchy theme changed")
+            load_theme(force=True)
+            push_theme()
+
+
 # ---------------------------------------------------------------- socket server
 
 
@@ -385,7 +455,18 @@ def handle_client(conn):
             if hint:
                 req["matchTitle"] = hint
 
-        if cmd == "status":
+        if cmd == "theme":
+            # Mode changes belong to the extension (it owns the injection and
+            # the persisted setting); a bare `noren theme` reports.
+            if req.get("mode"):
+                reply = ask_extension("setThemeMode", mode=req["mode"])
+            else:
+                reply = ask_extension("themeStatus")
+            theme = load_theme()
+            if isinstance(reply, dict) and theme:
+                reply["palette"] = theme["mode"]
+                reply["themed"] = theme["themed"]
+        elif cmd == "status":
             reply = {
                 "ok": True,
                 "state": _last_state,
@@ -477,6 +558,11 @@ def main():
 
     threading.Thread(target=serve, daemon=True).start()
 
+    # Build before the extension asks, so the first page load is already themed.
+    load_theme(force=True)
+    threading.Thread(target=watch_theme, daemon=True).start()
+    push_theme()
+
     while True:
         msg = read_native()
         if msg is None:
@@ -497,6 +583,10 @@ def main():
 
         elif kind == "spawn":
             spawn_window(msg.get("url"))
+
+        elif kind == "wantTheme":
+            # The service worker restarts far more often than the host does.
+            push_theme()
 
         elif kind == "error":
             log("extension error:", msg.get("message"))

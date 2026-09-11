@@ -1,0 +1,793 @@
+// Noren — Chromium side of the bridge.
+//
+// Keep this filename versioned. Chromium caches service workers for extensions
+// loaded via --load-extension, so a new URL forces registration of new code.
+// Bump the number when you change this file, and update manifest.json.
+
+const HOST = 'com.noren.bridge';
+
+let port = null;
+
+// ---------------------------------------------------------------- connection
+
+function connect() {
+  if (port) return port;
+
+  port = chrome.runtime.connectNative(HOST);
+
+  port.onMessage.addListener((msg) => {
+    if (msg && msg.type === 'theme') {
+      applyTheme(msg.theme);
+      return;
+    }
+    handleCommand(msg).catch((err) => {
+      send({ type: 'error', id: msg && msg.id, message: String(err) });
+    });
+  });
+
+  // The host exits when Chromium does, and vice versa. If it dies first --
+  // crashed, or cycled during development -- reconnect on a backoff instead of
+  // waiting for whatever browser event happens to come next, which may be
+  // minutes away or never.
+  port.onDisconnect.addListener(() => {
+    // Surface the reason. A rejected connectNative (wrong extension id in the
+    // host manifest, missing manifest, host not executable) looks exactly like
+    // a clean shutdown unless this is read.
+    const err = chrome.runtime.lastError;
+    if (err && err.message) console.warn('noren: native port closed —', err.message);
+    port = null;
+    scheduleReconnect();
+  });
+
+  retryDelay = 1000;
+  return port;
+}
+
+let retryDelay = 1000;
+let retryTimer = null;
+
+function scheduleReconnect() {
+  if (retryTimer) return;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    try {
+      connect();
+      pushState();
+    } catch (e) {
+      // connect() already cleared the port; back off and try again.
+    }
+    retryDelay = Math.min(retryDelay * 2, 30000);
+  }, retryDelay);
+}
+
+function send(payload) {
+  try {
+    connect().postMessage(payload);
+  } catch (err) {
+    port = null;
+  }
+}
+
+// ------------------------------------------------------------------ commands
+
+// Chromium's "last focused window" is not what the user is looking at: a
+// command issued from a terminal or a Hyprland bind arrives while the browser
+// isn't focused at all, so Chromium answers with whatever window it saw last —
+// frequently on another workspace. The host passes the title of the browser
+// window on the *active* workspace; prefer that, and fall back only if the
+// hint is missing or matches nothing.
+async function focusedTab(matchTitle) {
+  if (matchTitle) {
+    const wins = await chrome.windows.getAll({ populate: true });
+    const wanted = String(matchTitle).trim();
+    for (const win of wins) {
+      const active = (win.tabs || []).find((t) => t.active);
+      if (!active) continue;
+      const title = (active.title || '').trim();
+      // Hyprland truncates nothing, but the browser suffix is already stripped
+      // host-side; allow either direction of prefix match for safety.
+      if (title === wanted || title.startsWith(wanted) || wanted.startsWith(title)) {
+        return active;
+      }
+    }
+  }
+
+  const win = await chrome.windows.getLastFocused({ populate: true });
+  if (!win || !win.tabs) return null;
+  return win.tabs.find((t) => t.active) || win.tabs[0] || null;
+}
+
+function describe(tab) {
+  if (!tab) return null;
+  return {
+    id: tab.id,
+    windowId: tab.windowId,
+    url: tab.url || '',
+    title: tab.title || '',
+    loading: tab.status === 'loading',
+  };
+}
+
+async function handleCommand(msg) {
+  if (!msg || !msg.cmd) return;
+  const reply = (data) => send({ type: 'reply', id: msg.id, data });
+
+  switch (msg.cmd) {
+    case 'ping':
+      return reply({ ok: true });
+
+    case 'navigate': {
+      const tab = await focusedTab(msg.matchTitle);
+      if (!tab) return reply({ ok: false, error: 'no focused window' });
+      await chrome.tabs.update(tab.id, { url: normalize(msg.url) });
+      return reply({ ok: true, id: tab.id });
+    }
+
+    case 'back':
+      return withTab(reply, msg, (id) => chrome.tabs.goBack(id));
+
+    case 'forward':
+      return withTab(reply, msg, (id) => chrome.tabs.goForward(id));
+
+    case 'reload':
+      return withTab(reply, msg, (id) => chrome.tabs.reload(id));
+
+    case 'tabs': {
+      const tabs = await chrome.tabs.query({});
+      return reply({ ok: true, tabs: tabs.map(describe) });
+    }
+
+    case 'focus': {
+      const tab = await chrome.tabs.get(Number(msg.tabId));
+      await chrome.windows.update(tab.windowId, { focused: true });
+      await chrome.tabs.update(tab.id, { active: true });
+      return reply({ ok: true });
+    }
+
+    case 'peel': {
+      // Move the focused tab into its own chrome-less window.
+      const tab = await focusedTab(msg.matchTitle);
+      if (!tab) return reply({ ok: false, error: 'no focused window' });
+      send({ type: 'spawn', url: tab.url });
+      await chrome.tabs.remove(tab.id);
+      return reply({ ok: true });
+    }
+
+    case 'state':
+      return reply({ ok: true, state: describe(await focusedTab()) });
+
+    case 'setThemeMode': {
+      const mode = String(msg.mode || '');
+      if (!MODES.includes(mode)) {
+        return reply({ ok: false, error: `unknown mode: ${mode}` });
+      }
+      await themeReady;
+      themeMode = mode;
+      await chrome.storage.local.set({ themeMode });
+      await restyleAllTabs();
+      return reply({ ok: true, mode: themeMode });
+    }
+
+    case 'themeStatus':
+      await themeReady;
+      return reply({ ok: true, mode: themeMode, loaded: Boolean(themeCss) });
+
+    case 'setAutoPeel':
+      await autoPeelReady;
+      autoPeel = Boolean(msg.value);
+      await chrome.storage.local.set({ autoPeel });
+      pushState();
+      return reply({ ok: true, autoPeel });
+
+    default:
+      return reply({ ok: false, error: `unknown command: ${msg.cmd}` });
+  }
+}
+
+async function withTab(reply, msg, fn) {
+  const tab = await focusedTab(msg && msg.matchTitle);
+  if (!tab) return reply({ ok: false, error: 'no focused window' });
+  await fn(tab.id);
+  return reply({ ok: true });
+}
+
+function normalize(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return 'about:blank';
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return raw;
+  // A bare token with no dot is a search, not a hostname.
+  if (!raw.includes('.') || raw.includes(' ')) {
+    return 'https://duckduckgo.com/?q=' + encodeURIComponent(raw);
+  }
+  return 'https://' + raw;
+}
+
+// ----------------------------------------------------------------- auto-peel
+//
+// The tabs-as-windows experiment. Off by default: turn it on with
+// `noren peel on` once you want every new tab to become its own window.
+//
+// The setting lives in chrome.storage.local, not just this variable. A service
+// worker is torn down whenever the browser decides it is idle and always when
+// the last window closes, so an in-memory flag silently reverts to off -- which
+// is indistinguishable from the feature not working, and fatal to a week-long
+// trial of tabs-as-windows.
+
+let autoPeel = false;
+
+// Every read of autoPeel must await this first. The worker starts answering
+// events immediately, and a tab created in that window would otherwise be
+// judged against the default rather than the stored value.
+const autoPeelReady = chrome.storage.local
+  .get({ autoPeel: false })
+  .then((got) => {
+    autoPeel = Boolean(got.autoPeel);
+  })
+  .catch((err) => {
+    console.warn('noren: could not read stored auto-peel —', err);
+  });
+
+chrome.tabs.onCreated.addListener(async (tab) => {
+  await autoPeelReady;
+  if (!autoPeel) return;
+  // A tab with no URL yet is mid-navigation; wait for onUpdated to carry one.
+  const url = tab.pendingUrl || tab.url;
+  if (!url || url === 'about:blank' || url === 'chrome://newtab/') return;
+
+  // Only peel tabs born in an ordinary tabbed window. A chrome-less --app
+  // window contains exactly one tab, and that tab IS the result of peeling:
+  // peel it again and we spawn a replacement, close this one, and the
+  // replacement's tab fires onCreated in turn. `noren open` then appears to do
+  // nothing at all, because every window it makes is destroyed on arrival.
+  try {
+    const win = await chrome.windows.get(tab.windowId);
+    if (!win || win.type !== 'normal') return;
+  } catch (e) {
+    return;
+  }
+
+  send({ type: 'spawn', url });
+  chrome.tabs.remove(tab.id, () => void chrome.runtime.lastError);
+});
+
+// -------------------------------------------------------------- page theming
+//
+// Omarchy's palette, rendered into CSS by the host and injected here. The
+// extension cannot read the filesystem, so the host is the only thing that can
+// see a theme at all; it pushes on connect and again whenever the theme changes.
+//
+//   respect   leave pages exactly as their authors built them
+//   tint      paint the canvas, selection, scrollbars and form accents
+//   immerse   repaint page surfaces too (experimental -- see DEVELOPMENT.md)
+
+const MODES = ['respect', 'tint', 'immerse'];
+
+let themeMode = 'tint';
+let themeCss = null;
+
+// Same gate as auto-peel: the worker answers navigation events before storage
+// resolves, and a page loaded in that window would be judged against the
+// default rather than the stored mode.
+const themeReady = chrome.storage.local
+  .get({ themeMode: 'tint' })
+  .then((got) => {
+    if (MODES.includes(got.themeMode)) themeMode = got.themeMode;
+  })
+  .catch((err) => {
+    console.warn('noren: could not read stored theme mode —', err);
+  });
+
+// What we last injected per tab, so a mode or theme change can pull the old
+// stylesheet before adding the new one. Navigation drops it for us; this covers
+// everything else.
+const injected = new Map();
+
+function styleFor() {
+  if (themeMode === 'respect' || !themeCss) return null;
+  return themeCss[themeMode] || null;
+}
+
+// chrome:// pages, the web store, PDFs and other extensions reject injection,
+// and the resulting rejections are noise rather than news.
+function injectable(url) {
+  return /^https?:|^file:/.test(url || '');
+}
+
+async function styleTab(tabId, url) {
+  const previous = injected.get(tabId);
+  if (previous) {
+    injected.delete(tabId);
+    try {
+      await chrome.scripting.removeCSS({ target: { tabId }, css: previous, origin: 'USER' });
+    } catch (e) {
+      // The document already went away, or never had it. Either is fine.
+    }
+  }
+
+  const css = styleFor();
+  if (!css || !injectable(url)) {
+    // Leaving immerse has to unwind the inline styles the pass wrote, which
+    // only the page itself can do.
+    if (surfaced.has(tabId)) await runSurfacePass(tabId, null);
+    return;
+  }
+
+  try {
+    // USER origin loses to a site's own !important rules, which is the point:
+    // tint should lose an argument with a page that genuinely cares.
+    await chrome.scripting.insertCSS({ target: { tabId }, css, origin: 'USER' });
+    injected.set(tabId, css);
+  } catch (e) {
+    // Injection is refused on privileged pages; nothing to do about it.
+  }
+
+  const roles = themeCss && themeCss.roles;
+  if (themeMode === 'immerse' && roles) {
+    await runSurfacePass(tabId, { bg: roles.bg, fg: roles.fg, link: roles.link });
+  } else if (surfaced.has(tabId)) {
+    await runSurfacePass(tabId, null);
+  }
+}
+
+// Tabs the surface pass is live in, so leaving immerse can unwind it rather
+// than waiting for a navigation to drop it.
+const surfaced = new Set();
+
+async function runSurfacePass(tabId, palette) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: norenSurfacePass,
+      args: [palette],
+    });
+    if (palette) surfaced.add(tabId);
+    else surfaced.delete(tabId);
+  } catch (e) {
+    surfaced.delete(tabId);
+  }
+}
+
+async function restyleAllTabs() {
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(tabs.map((t) => styleTab(t.id, t.url)));
+}
+
+function applyTheme(theme) {
+  if (!theme) return;
+  themeCss = theme;
+  themeReady.then(restyleAllTabs);
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  injected.delete(tabId);
+  surfaced.delete(tabId);
+});
+
+// ------------------------------------------------------------- state updates
+
+function pushState() {
+  focusedTab().then((tab) => send({ type: 'state', state: describe(tab), autoPeel }));
+}
+
+chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
+  if (info.status || info.title || info.url) pushState();
+  // 'loading' is the earliest this API will tell us about a new document.
+  // A navigation drops the previous stylesheet with the old document, so the
+  // bookkeeping has to be cleared even when we do not re-inject.
+  if (info.status === 'loading') {
+    injected.delete(tabId);
+    surfaced.delete(tabId);
+    await themeReady;
+    styleTab(tabId, (tab && tab.url) || info.url);
+  } else if (info.status === 'complete' && themeMode === 'immerse') {
+    // The first pass may have landed in a document that had nothing in it yet.
+    // Re-entry with an unchanged palette is a cheap sweep, not a repaint.
+    const roles = themeCss && themeCss.roles;
+    if (roles && injectable((tab && tab.url) || '')) {
+      await runSurfacePass(tabId, { bg: roles.bg, fg: roles.fg, link: roles.link });
+    }
+  }
+});
+chrome.tabs.onActivated.addListener(pushState);
+chrome.tabs.onRemoved.addListener(pushState);
+chrome.windows.onFocusChanged.addListener(pushState);
+
+// Establish the port as soon as the worker spins up. The first state push waits
+// for the stored auto-peel value so `noren status` never reports a stale off.
+connect();
+autoPeelReady.then(pushState);
+// The worker restarts far more often than the host does, so ask rather than
+// waiting for the next theme change to bring one.
+themeReady.then(() => send({ type: 'wantTheme' }));
+
+// ------------------------------------------------------------ surface remap
+//
+// A stylesheet cannot reach a site's own surfaces: `background-color` does not
+// inherit, so there is no cascade path from `body` down to a card that paints
+// itself white. Immerse-by-stylesheet therefore themes the page around the
+// content and leaves the content white, which looks like damage rather than a
+// theme (a social feed site is the worst case -- almost every surface is explicit).
+//
+// This walks the document, reads each element's *computed* colours, and remaps
+// the site's neutrals onto the theme's ramp. Anything with real chroma is left
+// alone, so brand colours, avatars, badges, charts and syntax highlighting
+// survive: a themed GitHub has to keep its diff colours meaning what they mean.
+//
+// Injected with the palette as an argument rather than read from storage, so
+// there is no round trip between the walk starting and the colours arriving.
+
+function norenSurfacePass(palette) {
+  const TAG = '__norenSurfaces';
+  if (window[TAG]) {
+    window[TAG].update(palette);
+    return;
+  }
+
+  const PROPS = ['background-color', 'color', 'border-color'];
+  // Below this, a colour is a neutral the theme may own. Above it, it carries
+  // meaning the palette knows nothing about -- a brand, a badge, a diff -- and
+  // must be left exactly as it is.
+  //
+  // 0.06 sits in an empty gap. Measured against the feed site's own palette: its neutrals
+  // run 0.000-0.029 (white 0.000, card 0.002, border 0.004, body text 0.013,
+  // secondary text 0.029) and nothing it means runs below 0.156 (brand blue
+  // 0.161, like red 0.250, retweet green 0.156, amber 0.181).
+  const CHROMA_LIMIT = 0.06;
+  const SKIP = new Set([
+    'IMG', 'VIDEO', 'CANVAS', 'SVG', 'PICTURE', 'IFRAME',
+    'EMBED', 'OBJECT', 'SOURCE', 'TRACK', 'MAP', 'AREA',
+    'SCRIPT', 'STYLE', 'LINK', 'META', 'HEAD', 'TITLE', 'NOSCRIPT',
+  ]);
+  const CHUNK = 250;
+
+  let theme = null;
+  let baseL = 1;
+  let seen = new WeakSet();
+  // Elements sitting on a background we deliberately left alone. Their text was
+  // chosen to be legible against *that* colour, so it has to be left alone too:
+  // remapping white label text on a red badge toward the theme foreground makes
+  // it unreadable, and the badge is exactly the kind of thing we promised not to
+  // touch. The flag inherits, because the text is usually on a child of the
+  // element carrying the colour.
+  let coloredBg = new WeakSet();
+  // Each element's colour as the site computed it, recorded on the way past so a
+  // child can tell whether it actually departs from its parent.
+  let origColor = new WeakMap();
+  const cache = new Map();
+  let queue = [];
+  let scheduled = false;
+  let observer = null;
+  let lastKey = null;
+  // Nothing may be painted before the site's own ground has been measured.
+  let ready = false;
+
+  // ------------------------------------------------------------------ colour
+
+  function parse(str) {
+    const m = /^rgba?\(([^)]+)\)/.exec(str || '');
+    if (!m) return null;
+    const p = m[1].split(/[\s,\/]+/).filter(Boolean).map(Number);
+    if (p.length < 3 || p.some(Number.isNaN)) return null;
+    return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+  }
+
+  function hexToRgb(hex) {
+    const h = String(hex).replace('#', '');
+    return {
+      r: parseInt(h.slice(0, 2), 16),
+      g: parseInt(h.slice(2, 4), 16),
+      b: parseInt(h.slice(4, 6), 16),
+      a: 1,
+    };
+  }
+
+  function channel(c) {
+    c /= 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  }
+
+  function lum(c) {
+    return 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b);
+  }
+
+  // OKLab chroma. The obvious cheap stand-in, (max-min)/255, is a trap: it
+  // scores the feed site's secondary text at 0.118 and its brand blue at 0.827, so
+  // any threshold that spares the blue also spares half the greys on the page.
+  // In OKLab those are 0.029 and 0.161 -- a real gap. Every result is cached by
+  // colour string, so the cube roots are paid once per distinct colour, not
+  // once per element.
+  function chroma(c) {
+    const r = channel(c.r);
+    const g = channel(c.g);
+    const b = channel(c.b);
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    const A = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+    const B = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+    return Math.hypot(A, B);
+  }
+
+  function mix(a, b, t) {
+    const k = Math.max(0, Math.min(1, t));
+    return `rgb(${Math.round(a.r + (b.r - a.r) * k)}, ${Math.round(
+      a.g + (b.g - a.g) * k
+    )}, ${Math.round(a.b + (b.b - a.b) * k)})`;
+  }
+
+  // How far this colour sits from the page's own ground, re-expressed as a
+  // distance from the theme's ground. Keeps the site's sense of elevation --
+  // a card still reads as raised, a border still reads as a border -- without
+  // keeping any of its actual colours.
+  function remap(str, kind) {
+    const key = kind + '|' + str;
+    if (cache.has(key)) return cache.get(key);
+
+    let out = null;
+    const c = parse(str);
+    if (c && c.a > 0.05 && chroma(c) <= CHROMA_LIMIT) {
+      const d = Math.abs(lum(c) - baseL);
+      if (kind === 'color') {
+        // Text: reproduce how far it stood from its own background, so a page's
+        // secondary text stays secondary instead of collapsing onto the primary
+        // colour. Scaling this (an earlier attempt divided by 0.85) saturates
+        // the top of the range and makes exactly that collapse happen -- on a social feed site,
+        // body text at d=0.99 and secondary text at d=0.86 both pinned to 1.
+        // The floor keeps a low-contrast site from arriving washed out.
+        out = mix(theme.bg, theme.fg, Math.max(0.4, Math.min(1, d)));
+      } else if (kind === 'border-color') {
+        out = mix(theme.bg, theme.fg, Math.min(0.45, 0.12 + d * 1.5));
+      } else {
+        // Gain 4.0, not 2.4. On a white site every surface sits close to white,
+        // so the distances are small and the lower gain compressed cards,
+        // panels and the page itself into a band a tenth of the way from the
+        // background -- correct, but it reads as flat. The 0.3 ceiling is what
+        // stops this going muddy; the gain is what makes surfaces separate.
+        out = mix(theme.bg, theme.fg, Math.min(0.3, d * 4.0));
+      }
+      if (c.a < 1) out = out.replace('rgb(', 'rgba(').replace(')', `, ${c.a})`);
+    }
+
+    cache.set(key, out);
+    return out;
+  }
+
+  // ------------------------------------------------------------------- apply
+
+  function paint(el) {
+    if (seen.has(el)) return;
+    seen.add(el);
+    if (SKIP.has(el.tagName) || el.namespaceURI === 'http://www.w3.org/2000/svg') return;
+
+    let style;
+    try {
+      style = getComputedStyle(el);
+    } catch (e) {
+      return;
+    }
+    if (!style) return;
+
+    const saved = {};
+    let touched = false;
+
+    const ownColor = style.getPropertyValue('color');
+    origColor.set(el, ownColor);
+    const parent = el.parentElement;
+
+    // Decide the background first: whether we own this element's surface is
+    // what decides whether we may touch its text.
+    //
+    // A gradient or image counts as a surface we do not own. Only
+    // `background-color` is remappable, so an element painted by
+    // `background-image` keeps whatever colour it had -- and its text has to
+    // keep the colour that was chosen to be legible against it. A webmail site is the
+    // case that proved it: light-blue gradient cards on a dark page, whose dark
+    // body text was being flipped to the theme's cream foreground and
+    // disappearing.
+    const bgImage = style.getPropertyValue('background-image');
+    const hasImage = Boolean(bgImage) && bgImage !== 'none';
+    const ownBg = parse(style.getPropertyValue('background-color'));
+    const opaqueBg = ownBg && ownBg.a > 0.05;
+    const onColour = hasImage
+      ? true
+      : opaqueBg
+        ? chroma(ownBg) > CHROMA_LIMIT
+        : Boolean(parent && coloredBg.has(parent));
+    if (onColour) coloredBg.add(el);
+
+    // Links get the theme's link colour, but only where we own the surface
+    // under them. On a gradient card we kept, the site's own link colour is the
+    // one that was chosen to be legible there.
+    if (el.tagName === 'A' && !onColour && theme.link) {
+      const inline = el.style.getPropertyValue('color');
+      if (inline) saved['color'] = inline;
+      el.style.setProperty('color', theme.link, 'important');
+      touched = true;
+    }
+
+    for (const prop of PROPS) {
+      if (onColour && prop !== 'background-color') continue;
+      if (prop === 'color' && el.tagName === 'A' && theme.link) continue;
+      const value = style.getPropertyValue(prop);
+      // `color` inherits. Writing it on every element would put an inline style
+      // on essentially the whole document to no visual effect, so only write
+      // where this element actually departs from its parent. The parent's
+      // pre-paint value was recorded on the way past; the fallback is for
+      // subtrees that arrive by mutation without their parent being re-walked.
+      if (prop === 'color' && parent) {
+        let inherited = origColor.get(parent);
+        if (inherited === undefined) {
+          try {
+            inherited = getComputedStyle(parent).getPropertyValue('color');
+          } catch (e) {
+            inherited = undefined;
+          }
+        }
+        if (inherited !== undefined && inherited === value) continue;
+      }
+      const next = remap(value, prop);
+      if (!next) continue;
+      // Only record an original that was actually inline; anything else comes
+      // back on its own when the property is cleared.
+      const inline = el.style.getPropertyValue(prop);
+      if (inline) saved[prop] = inline;
+      el.style.setProperty(prop, next, 'important');
+      touched = true;
+    }
+
+    if (touched) {
+      el.setAttribute('data-noren-surface', '');
+      if (Object.keys(saved).length) {
+        el.setAttribute('data-noren-prev', JSON.stringify(saved));
+      }
+    }
+  }
+
+  function drain(deadline) {
+    scheduled = false;
+    if (!ready) return;
+    let n = 0;
+    while (queue.length && n < CHUNK) {
+      const el = queue.pop();
+      if (el && el.isConnected) paint(el);
+      n++;
+      if (deadline && deadline.timeRemaining && deadline.timeRemaining() <= 1) break;
+    }
+    if (queue.length) schedule();
+  }
+
+  function schedule() {
+    if (scheduled) return;
+    scheduled = true;
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(drain, { timeout: 500 });
+    } else {
+      setTimeout(drain, 16);
+    }
+  }
+
+  function enqueue(root) {
+    if (!root) return;
+    if (root.querySelectorAll) {
+      // Reverse, because `drain` pops from the end: this walks top-down, so a
+      // parent's colour lands in the first frame instead of the page
+      // repainting leaf-up and visibly crawling.
+      const all = root.querySelectorAll('*');
+      for (let i = all.length - 1; i >= 0; i--) queue.push(all[i]);
+    }
+    if (root.nodeType === 1) queue.push(root);
+    schedule();
+  }
+
+  function revert() {
+    const touched = document.querySelectorAll('[data-noren-surface]');
+    for (const el of touched) {
+      let saved = {};
+      try {
+        saved = JSON.parse(el.getAttribute('data-noren-prev') || '{}');
+      } catch (e) {
+        saved = {};
+      }
+      for (const prop of PROPS) {
+        el.style.removeProperty(prop);
+        if (saved[prop]) el.style.setProperty(prop, saved[prop]);
+      }
+      el.removeAttribute('data-noren-surface');
+      el.removeAttribute('data-noren-prev');
+    }
+  }
+
+  // --------------------------------------------------------------- lifecycle
+
+  function readBase() {
+    // The site's own ground, read before anything is repainted. A page that
+    // sets no background is already on the theme's canvas via `color-scheme`,
+    // so the theme's background is the honest answer for it.
+    for (const el of [document.documentElement, document.body]) {
+      if (!el) continue;
+      const c = parse(getComputedStyle(el).getPropertyValue('background-color'));
+      if (c && c.a > 0.05) return lum(c);
+    }
+    return lum(theme.bg);
+  }
+
+  // Measuring the ground before the document has a body is not a small error --
+  // it is the difference between a themed page and a washed-out one. The pass
+  // is injected as soon as a navigation is visible, which on a slow load is
+  // before <body> exists; readBase then falls back to the theme's own
+  // background, every colour is measured against the wrong ground, and the
+  // whole bg-to-fg range compresses. On a white site under a light theme that
+  // turns 12:1 body text into 4:1. So: install the observer immediately, queue
+  // whatever appears, and paint nothing until there is a real ground to read.
+  function measureThenPaint() {
+    baseL = readBase();
+    ready = true;
+    schedule();
+  }
+
+  function whenGrounded() {
+    if (document.body) {
+      measureThenPaint();
+    } else if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', measureThenPaint, { once: true });
+    } else {
+      measureThenPaint();
+    }
+  }
+
+  function start(next) {
+    lastKey = next.bg + '|' + next.fg + '|' + next.link;
+    theme = {
+      bg: hexToRgb(next.bg),
+      fg: hexToRgb(next.fg),
+      link: next.link || null,
+    };
+    ready = false;
+    cache.clear();
+    enqueue(document.documentElement);
+    whenGrounded();
+
+    if (!observer) {
+      // childList only. Watching attributes would see our own writes and loop.
+      observer = new MutationObserver((records) => {
+        for (const r of records) {
+          for (const node of r.addedNodes) {
+            if (node.nodeType === 1) enqueue(node);
+          }
+        }
+      });
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+    }
+  }
+
+  window[TAG] = {
+    update(next) {
+      if (!next) {
+        revert();
+        if (observer) observer.disconnect();
+        observer = null;
+        queue = [];
+        delete window[TAG];
+        return;
+      }
+      // Re-injected with the same palette -- which happens on every page load,
+      // because the pass is run again once the document is complete in case it
+      // was first injected into an empty one. Sweep for anything new instead of
+      // tearing the whole page down and repainting it.
+      const key = next.bg + '|' + next.fg + '|' + next.link;
+      if (key === lastKey) {
+        enqueue(document.documentElement);
+        return;
+      }
+      lastKey = key;
+      revert();
+      queue = [];
+      seen = new WeakSet();
+      origColor = new WeakMap();
+      coloredBg = new WeakSet();
+      start(next);
+    },
+  };
+
+  start(palette);
+}

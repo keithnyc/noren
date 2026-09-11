@@ -26,10 +26,12 @@ deliberately small.
 - **Bar widget** — shows the focused page's title, load state, and whether the
   browser is running at all. Left click opens the URL bar, right click reloads.
 - **CLI** — `noren goto`, `go`, `open`, `back`, `forward`, `reload`, `tabs`,
-  `focus`, `peel`, `status`, `doctor`. Bindable from Hyprland, scriptable from
-  anywhere.
+  `focus`, `peel`, `theme`, `status`, `doctor`. Bindable from Hyprland,
+  scriptable from anywhere.
 - **Auto-peel (off by default)** — `noren peel on` makes every new tab open as
   its own window instead. This is the experiment; see below.
+- **Page theming (tint by default)** — web pages follow the active Omarchy
+  theme, live. See below.
 
 Back, forward and reload already work in a chrome-less window via Chromium's own
 `Alt+←` / `Alt+→` / `Ctrl+R`. The CLI versions exist so you can bind them to
@@ -179,10 +181,51 @@ windowrule = size 1280 720, class:^chrome-meet\.google\.com.*$
 
 `hyprctl clients` shows the exact `app_id` for any open window.
 
+## Page theming
+
+Web pages follow the active Omarchy theme. Three modes, set with `noren theme`:
+
+| mode | what it does |
+|---|---|
+| `respect` | leave pages exactly as their authors built them |
+| `tint` | paint the canvas, selection, scrollbars and form accents (default) |
+| `immerse` | remap the site's own surfaces and text onto the theme |
+
+`tint` is the default because the canvas is the one surface no site owns: between
+pages the browser paints its own base colour, and on a dark desktop that white
+frame is the most jarring thing about browsing. Setting `color-scheme` from the
+palette also hands scrollbars and form controls to the theme for free.
+
+Colours are **contrast-corrected per theme**. Palette hues that read fine as
+terminal text often fail WCAG AA against the same theme's page background — 90 of
+434 role/background pairs across the 62 themes installed here, and 37 of 91 in
+light themes. Noren solves lightness against the actual background, holding hue
+and chroma, so `catppuccin-latte` green goes from 2.96:1 to 4.50:1 and is still
+green. 344 of 434 colours come through untouched.
+
+`immerse` is not a stylesheet — a stylesheet cannot reach a card that paints
+itself white, because `background-color` does not inherit. It walks the page,
+reads each element's computed colours, and remaps the site's *neutrals* onto the
+theme while leaving anything with real chroma alone, so brand colours, badges,
+avatars, charts and syntax highlighting keep meaning what they mean. Elevation
+and text hierarchy are preserved by keeping each colour's distance from the
+page's own background.
+
+It has limits worth knowing: inline styles are dropped by a framework re-render
+until that subtree changes again, hover backgrounds freeze on remapped elements,
+and shadow DOM and cross-origin iframes are not reached.
+
+The theme switches live: the host watches `colors.toml` and re-pushes on every
+`omarchy-theme-set`.
+
+A theme can override the result by shipping `noren.css` in its theme directory
+(or rendering one from a template in `~/.config/omarchy/themed/`). It replaces
+the generated rules and still gets the `--noren-*` variables.
+
 ## Not done yet
 
-Theming (`quantum.css.tpl` equivalent, contrast clamping), workspace sessions,
-per-site `--class=` rules, gather-windows-back, peel history preservation.
+Per-site theming modes, deeper immerse, workspace sessions, per-site `--class=`
+rules, gather-windows-back, peel history preservation.
 
 ## Development
 

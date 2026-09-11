@@ -51,6 +51,8 @@ widget   ─ BarWidget.qml   title, load state          ┘
          host/noren-host   python, two protocols:
                     │        stdin/stdout  ↔ native messaging (4-byte LE + JSON)
                     │        unix socket   ↔ bin/noren and the shell
+                    │
+         host/noren_theme.py   omarchy palette → page CSS, contrast-solved
                     ▲
        extension/background-N.js    chrome.tabs.*, onCreated, onUpdated
                     ▲
@@ -94,6 +96,79 @@ otherwise be judged against the default. The extension carries the flag on its
 state pushes so `noren status` and `noren peel status` can report it without a
 round trip. This is what the `storage` permission is for.
 
+**Page theming is generated in the host, not by a template.** Omarchy's
+template renderer (`omarchy-theme-set-templates`) is pure `sed`: it substitutes
+values and can `mix` two of them, but it cannot branch and cannot solve. Mapping
+palette hues onto semantic roles needs both, because a palette colour that reads
+fine as terminal text routinely fails WCAG AA against the same theme's page
+background. Measured across the 62 themes installed here, **90 of 434
+role/background pairs fail 4.5:1 untouched — 37 of 91 in light themes.**
+
+It cannot be a constant either. The required lightness depends on the theme's own
+background, so it has to be solved per theme: forcing one lightness on every
+theme needs L=0.20 in light mode to clear AA everywhere, which flattens every hue
+to near-black. `noren_theme.solve_contrast` instead moves lightness the minimum
+distance that clears the target, holding hue and chroma. Across those same 62
+themes that leaves **0 failures with 344 of 434 colours untouched** and a mean
+lightness shift of 0.055 — `catppuccin-latte` green goes 2.96:1 → 4.50:1 and is
+still green.
+
+Surfaces mix *toward the foreground*, never "lighter", for the
+`lighter_background` reason under environment facts.
+
+The `.tpl` hook survives as an override: if the active theme directory contains
+`noren.css` — shipped by the theme, or rendered from a user template in
+`~/.config/omarchy/themed/` — it replaces the generated rules and still gets the
+`--noren-*` variables, so an override can be a few lines rather than a
+stylesheet. The host watches `colors.toml` and re-pushes on every theme switch.
+
+**Immerse remaps computed colours at runtime; it is not a stylesheet.** A
+stylesheet cannot reach a site's own surfaces — `background-color` does not
+inherit, so there is no cascade path from `body` down to a card that paints
+itself white. An earlier immerse tried anyway and themed the page *around* the
+content: on a social feed site the feed column and every sidebar card stayed white inside a
+lavender frame, which reads as damage rather than a theme.
+
+`norenSurfacePass` instead walks the document, reads each element's *computed*
+colours, and remaps the site's neutrals onto the theme's ramp, keeping the
+distance each colour stood from the page's own ground so elevation and text
+hierarchy survive. Three rules earn their place:
+
+- **Chroma decides what is untouchable.** Below 0.06 OKLab chroma a colour is a
+  neutral the theme may own; above it, the colour is the content. Measured on
+  A social feed site: its neutrals run 0.000–0.029 and nothing it *means* runs below 0.156. The
+  obvious cheap stand-in, `(max-min)/255`, is a trap — it scores the feed site's secondary
+  text at 0.118 and its brand blue at 0.827, so no threshold separates them.
+- **Text on a colour we kept is also kept.** White label text on a red badge was
+  being remapped toward the theme foreground while the red stayed. The flag
+  inherits, because the text is usually on a child of the coloured element.
+- **A `background-image` is a surface we do not own.** Only `background-color`
+  is remappable, so an element painted by a gradient keeps its colour — and must
+  keep its text colour too. A webmail site proved it: light-blue gradient cards on a
+  dark page, whose dark body text was being flipped to the theme foreground and
+  vanishing.
+- **Links are coloured by the pass, not by the stylesheet.** A blanket
+  `a:link { ... !important }` at USER origin overrides the pass's own refusal to
+  touch text on a surface it does not own — on a webmail site it painted the theme link
+  colour into those same gradient cards. The pass knows what each link sits on;
+  a stylesheet cannot.
+- **Do not rescale text distance.** Dividing by 0.85 saturated the top of the
+  range and collapsed the feed site's secondary text onto its primary text — both pinned at
+  1.0. Reproducing the distance directly keeps three legible tiers.
+
+Nothing in the immerse stylesheet may paint `html` or `body`: the CSS lands
+before the pass runs, and the pass measures everything against the site's real
+ground. That is why `CANVAS` is split out of `TINT`.
+
+**Measuring that ground too early is the failure mode to watch.** The pass is
+injected as soon as a navigation is visible, which on a slow load is before
+`<body>` exists. `readBase` then falls back to the theme's own background,
+everything is measured against the wrong ground, and the whole bg-to-fg range
+compresses — on a white site under a light theme, 12:1 body text becomes 4:1 and
+the page arrives washed out. It looks like a palette problem and is not one. The
+observer is installed immediately and nodes are queued, but nothing is painted
+until there is a real ground to read.
+
 **One browser at a time.** The host owns a single socket, so two instrumented
 browsers would fight over it. `install.sh` clears Noren out of every other
 browser when it installs.
@@ -120,6 +195,23 @@ trace is `disable_reasons: [16777216]` in the profile's `Preferences`
 (`1 << 24`, `DISABLE_UNSUPPORTED_DEVELOPER_EXTENSION`). Omarchy's own bundled
 extensions predate the rule and were grandfathered, which is why they run
 without it.
+
+**In light themes `lighter_background` is *darker* than `background`** — and
+darker than `dark_background`. Measured:
+
+```
+                    background  dark_bg   darker_bg  lighter_bg
+catppuccin-latte    #eff1f5     #e3e4e8   #d7d8dc    #dce0e8
+white               #ffffff     #f5f5f5   #e8e8e8    #c0c0c0
+```
+
+The names encode distance from the ground, not direction. Read `mode` first, or
+better, do what `noren_theme.derive` does and mix toward the *foreground* — the
+only rule that means the same thing in both modes.
+
+**Omarchy's own `obsidian.css.tpl:42` maps ANSI hues straight onto semantic
+roles**, which is the bug the contrast solver exists to avoid. It is worth an
+upstream issue independent of Noren.
 
 **`--class` is ignored** for `--app` windows on Wayland. Chromium assigns the
 app_id itself:
@@ -208,23 +300,18 @@ invoking shell and kill it. Hit twice in one session. Use explicit PIDs or
 
 ## Not done
 
-- **Theming.** The highest-certainty value and fully independent of everything
-  above. Omarchy renders `/usr/share/omarchy/default/themed/*.tpl` into
-  `~/.local/state/omarchy/current/theme/` on every theme switch, and
-  `obsidian.css.tpl` / `vscode-theme.json.tpl` prove it already generates full
-  structured theme files for third-party apps. Ship a `noren.css.tpl`.
+- **Per-site theming modes.** `noren theme` is global. The concept docs want it
+  per site, which the `chrome-<host>__-<profile>` app_id makes easy to key on.
 
-  The template language has `{{ mix a b 20% }}` but **no contrast function**, so
-  the clamp has to happen in the host. Do not map ANSI hues to semantic roles
-  directly: measured on this machine, `success ← green` is 2.96:1 on
-  catppuccin-latte and 4.39:1 on flexoki-light — both fail WCAG AA. Take hue and
-  chroma from the palette, then solve lightness against the surface until it
-  clears 4.5:1. Omarchy's shipped `obsidian.css.tpl:42` has exactly this bug and
-  it is worth an upstream issue independent of Noren.
-
-  Also: in light themes `lighter_background` is *darker* than `background` (and
-  darker than `dark_background`). Read `mode` first; the names encode distance
-  from the ground, not direction.
+- **The surface pass does not survive a framework re-render.** Inline styles
+  are dropped when React replaces a node, and it is only repainted when the
+  observer next sees that subtree added. Watching attributes instead would see
+  our own writes and loop.
+- **Hover backgrounds freeze on remapped elements.** Inline `!important` beats
+  the site's `:hover` rule. Fixing it means emitting rules keyed to a generated
+  attribute instead of writing inline styles.
+- **Shadow DOM and cross-origin iframes are not reached.** `querySelectorAll`
+  does not cross shadow roots, and the pass runs in the main frame only.
 
 - **Workspace sessions** — each Hyprland workspace owning a named, restorable
   set of pages. Scope v1 to URL set + window order + profile. Restoring scroll

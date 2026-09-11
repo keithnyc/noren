@@ -24,6 +24,8 @@ usage: noren <command> [args]
   peel              move the focused tab into its own window
   peel on|off       auto-peel every new tab into its own window (persists)
   peel status       report whether auto-peel is on
+  theme             report the page-theming mode
+  theme <mode>      respect | tint | immerse — theme pages from Omarchy
   tabs              list open tabs as json
   focus <tab-id>    focus a tab by id
   target            which browser window is on this workspace
@@ -183,6 +185,26 @@ def doctor():
     else:
         _row(MEH, "browser preferences", "not found at " + prefs)
 
+    # Page theming is independent of the bridge: it only needs Omarchy to have
+    # published a palette, and the host to be able to turn it into CSS.
+    try:
+        sys.path.insert(0, os.path.join(here, "host"))
+        import noren_theme
+
+        if not os.path.exists(noren_theme.COLORS_FILE):
+            _row(MEH, "omarchy palette", "no colors.toml - theming unavailable")
+        else:
+            built = noren_theme.build_css()
+            if not built:
+                problems += 1
+                _row(BAD, "omarchy palette", "could not build a stylesheet")
+            else:
+                source = "theme-supplied" if built["themed"] else "generated"
+                _row(OK, "page theme", f"{built['mode']} palette, {source}")
+    except Exception as exc:
+        problems += 1
+        _row(BAD, "page theme", str(exc))
+
     # And finally the live bridge.
     if os.path.exists(SOCKET_PATH):
         try:
@@ -327,6 +349,14 @@ def main(argv):
         if not rest:
             sys.exit("noren focus: needs a tab id")
         res = call({"cmd": "focus", "tabId": rest[0]})
+    elif cmd == "theme":
+        if rest:
+            if rest[0] not in ("respect", "tint", "immerse"):
+                sys.exit(f"noren theme: unknown mode '{rest[0]}' "
+                         "(respect | tint | immerse)")
+            res = call({"cmd": "theme", "mode": rest[0]})
+        else:
+            res = call({"cmd": "theme"})
     elif cmd == "peel":
         if rest and rest[0] in ("on", "off"):
             res = call({"cmd": "setAutoPeel", "value": rest[0] == "on"})
@@ -347,6 +377,14 @@ def main(argv):
         print(json.dumps(res, indent=2))
     elif cmd == "peel" and "autoPeel" in res:
         print("auto-peel", "on" if res["autoPeel"] else "off")
+    elif cmd == "theme":
+        line = f"page theming {res.get('mode', '?')}"
+        if res.get("palette"):
+            source = "theme-supplied" if res.get("themed") else "generated"
+            line += f" — {res['palette']} palette, {source}"
+        if res.get("loaded") is False:
+            line += " (no stylesheet yet)"
+        print(line)
     elif cmd == "ping":
         b = res.get("browser") or {}
         if b.get("name"):

@@ -6,9 +6,15 @@
   "permissions": [
     "tabs",
     "nativeMessaging",
-    "storage"
+    "storage",
+    "scripting"
   ],
   "background": {
-    "service_worker": "background-5.js"
-  }
+    "service_worker": "background-10.js"
+  },
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*",
+    "file:///*"
+  ]
 }
