@@ -470,7 +470,15 @@ function norenSurfacePass(palette) {
   let queue = [];
   let scheduled = false;
   let observer = null;
+  let rootObserver = null;
   let lastKey = null;
+  // What we wrote on <html> and <body>, normalised as the browser stores it.
+  // Those two are the only elements worth defending: a framework that rewrites
+  // a card's style attribute costs one card, but one that rewrites body's costs
+  // the whole page ground. A social feed site does exactly that -- its body carries an inline
+  // black, and React puts it back after we remap it.
+  let rootStyles = new Map();
+  let reapplying = false;
   // Nothing may be painted before the site's own ground has been measured.
   let ready = false;
 
@@ -690,6 +698,7 @@ function norenSurfacePass(palette) {
     }
 
     if (touched) {
+      if (isRoot(el)) rememberRoot(el);
       el.setAttribute('data-noren-surface', '');
       if (Object.keys(saved).length) {
         el.setAttribute('data-noren-prev', JSON.stringify(saved));
@@ -731,6 +740,7 @@ function norenSurfacePass(palette) {
   }
 
   function revert() {
+    rootStyles = new Map();
     const touched = document.querySelectorAll('[data-noren-surface]');
     for (const el of touched) {
       let saved = {};
@@ -757,9 +767,9 @@ function norenSurfacePass(palette) {
     for (const el of [document.documentElement, document.body]) {
       if (!el) continue;
       const c = parse(getComputedStyle(el).getPropertyValue('background-color'));
-      if (c && c.a > 0.05) return lum(c);
+      if (c && c.a > 0.05) return { L: lum(c), resolved: true };
     }
-    return lum(theme.bg);
+    return { L: lum(theme.bg), resolved: false };
   }
 
   // Measuring the ground before the document has a body is not a small error --
@@ -770,19 +780,94 @@ function norenSurfacePass(palette) {
   // whole bg-to-fg range compresses. On a white site under a light theme that
   // turns 12:1 body text into 4:1. So: install the observer immediately, queue
   // whatever appears, and paint nothing until there is a real ground to read.
-  function measureThenPaint() {
-    baseL = readBase();
-    ready = true;
+  function isRoot(el) {
+    return el === document.documentElement || el === document.body;
+  }
+
+  function rememberRoot(el) {
+    const props = {};
+    for (const prop of OWNED) {
+      const v = el.style.getPropertyValue(prop);
+      if (v) props[prop] = v;
+    }
+    rootStyles.set(el, props);
+  }
+
+  function watchRoots() {
+    if (!rootObserver) {
+      rootObserver = new MutationObserver(() => {
+        if (reapplying) return;
+        reapplying = true;
+        for (const [el, props] of rootStyles) {
+          for (const prop in props) {
+            if (el.style.getPropertyValue(prop) !== props[prop]) {
+              el.style.setProperty(prop, props[prop], 'important');
+            }
+          }
+        }
+        reapplying = false;
+      });
+    }
+    for (const el of [document.documentElement, document.body]) {
+      if (el) rootObserver.observe(el, { attributes: true, attributeFilter: ['style'] });
+    }
+  }
+
+  function restartPaint() {
+    revert();
+    queue = [];
+    seen = new WeakSet();
+    origColor = new WeakMap();
+    coloredBg = new WeakSet();
+    cache.clear();
+    enqueue(document.documentElement);
     schedule();
   }
 
+  // Waiting for <body> to exist is not the same as waiting for a ground. On a social feed site,
+  // body is there almost immediately but has no background until the app boots,
+  // so readBase fell back to the theme's own background and every colour was
+  // measured against the wrong ground -- which is how <html> ended up at
+  // rgb(34,48,58) instead of the theme background exactly. Keep looking for a
+  // real ground for a short while, and repaint if one turns up after we started.
+  let groundTries = 0;
+  const GROUND_TRIES_MAX = 20; // ~2s at 100ms
+
+  function tryGround() {
+    const base = readBase();
+    const settled = base.resolved || groundTries >= GROUND_TRIES_MAX;
+
+    if (settled) {
+      const moved = ready && Math.abs(base.L - baseL) > 0.004;
+      baseL = base.L;
+      if (!ready) {
+        ready = true;
+        watchRoots();
+        schedule();
+      } else if (moved) {
+        restartPaint();
+      }
+      return;
+    }
+
+    groundTries++;
+    // Paint on the fallback rather than leave the page bare, but keep looking:
+    // if a real ground appears the page is repainted against it.
+    if (!ready && groundTries > 3) {
+      baseL = base.L;
+      ready = true;
+      watchRoots();
+      schedule();
+    }
+    setTimeout(tryGround, 100);
+  }
+
   function whenGrounded() {
-    if (document.body) {
-      measureThenPaint();
-    } else if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', measureThenPaint, { once: true });
+    groundTries = 0;
+    if (document.body || document.readyState !== 'loading') {
+      tryGround();
     } else {
-      measureThenPaint();
+      document.addEventListener('DOMContentLoaded', tryGround, { once: true });
     }
   }
 
@@ -817,7 +902,9 @@ function norenSurfacePass(palette) {
       if (!next) {
         revert();
         if (observer) observer.disconnect();
+        if (rootObserver) rootObserver.disconnect();
         observer = null;
+        rootObserver = null;
         queue = [];
         delete window[TAG];
         return;

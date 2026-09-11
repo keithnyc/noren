@@ -173,13 +173,19 @@ whole left nav and right sidebar. So the pass sets the canvas itself, once the
 ground has been read, and only when the site paints no background of its own.
 
 **Measuring that ground too early is the failure mode to watch.** The pass is
-injected as soon as a navigation is visible, which on a slow load is before
-`<body>` exists. `readBase` then falls back to the theme's own background,
-everything is measured against the wrong ground, and the whole bg-to-fg range
-compresses — on a white site under a light theme, 12:1 body text becomes 4:1 and
-the page arrives washed out. It looks like a palette problem and is not one. The
-observer is installed immediately and nodes are queued, but nothing is painted
-until there is a real ground to read.
+injected as soon as a navigation is visible. `readBase` then falls back to the
+theme's own background, everything is measured against the wrong ground, and the
+whole bg-to-fg range compresses — on a white site under a light theme, 12:1 body
+text becomes 4:1 and the page arrives washed out. It looks like a palette problem
+and is not one.
+
+**Waiting for `<body>` to exist is not the same as waiting for a ground.** That
+was the first attempt and it is not enough: on a social feed site, body is present almost
+immediately but carries no background until the app boots, so the fallback still
+won and `<html>` settled at `rgb(34,48,58)` instead of the theme background
+exactly. `tryGround` keeps looking for ~2s, paints on the fallback after a few
+tries rather than leaving the page bare, and repaints from scratch if a real
+ground turns up afterwards.
 
 **One browser at a time.** The host owns a single socket, so two instrumented
 browsers would fight over it. `install.sh` clears Noren out of every other
@@ -315,10 +321,14 @@ invoking shell and kill it. Hit twice in one session. Use explicit PIDs or
 - **Per-site theming modes.** `noren theme` is global. The concept docs want it
   per site, which the `chrome-<host>__-<profile>` app_id makes easy to key on.
 
-- **The surface pass does not survive a framework re-render.** Inline styles
-  are dropped when React replaces a node, and it is only repainted when the
-  observer next sees that subtree added. Watching attributes instead would see
-  our own writes and loop.
+- **The surface pass does not survive a framework re-render**, except on `html`
+  and `body`. Inline styles are dropped when React replaces a node, and the node
+  is only repainted when the observer next sees that subtree added — the global
+  observer watches `childList` only, because watching attributes would see its
+  own writes and loop. `html` and `body` are defended by a separate observer
+  with an `attributeFilter` of `style` and a re-entrancy guard: losing a card
+  costs a card, losing body costs the whole page ground, and the feed site rewrites body's
+  style attribute back to black after every remap.
 - **Hover backgrounds freeze on remapped elements.** Inline `!important` beats
   the site's `:hover` rule. Fixing it means emitting rules keyed to a generated
   attribute instead of writing inline styles.
