@@ -222,10 +222,26 @@ A theme can override the result by shipping `noren.css` in its theme directory
 (or rendering one from a template in `~/.config/omarchy/themed/`). It replaces
 the generated rules and still gets the `--noren-*` variables.
 
+## Gather
+
+`peel` scatters; `noren gather` brings them back. It pulls every chrome-less
+window into one Hyprland group on the current workspace, so the compositor's
+group bar becomes the tab strip and `hl.dsp.group.active` switches tabs.
+
+```bash
+noren gather              # every chrome-less window
+noren gather github       # only those matching a host or title
+noren scatter             # break the focused group apart again
+```
+
+It only touches `chrome-<host>-<profile>` windows, never an ordinary tabbed
+window, and it confirms each move against Hyprland rather than assuming —
+`into_group` takes a direction, not a target, so it tries each and checks.
+
 ## Not done yet
 
-Per-site theming modes, deeper immerse, workspace sessions, per-site `--class=`
-rules, gather-windows-back, peel history preservation.
+Per-site theming modes, deeper immerse, workspace sessions, per-site window
+rules, peel history preservation.
 
 ## Development
 

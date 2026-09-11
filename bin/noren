@@ -24,6 +24,8 @@ usage: noren <command> [args]
   peel              move the focused tab into its own window
   peel on|off       auto-peel every new tab into its own window (persists)
   peel status       report whether auto-peel is on
+  gather [match]    pull peeled windows into one Hyprland group
+  scatter           break the focused group back into windows
   theme             report the page-theming mode
   theme <mode>      respect | tint | immerse — theme pages from Omarchy
   tabs              list open tabs as json
@@ -254,6 +256,136 @@ def hypr_target():
     return None
 
 
+# ------------------------------------------------------------------ hyprland
+#
+# Every dispatcher goes through the Lua API. The legacy string form is gone on
+# this Hyprland (0.56.2): `hyprctl dispatch submap reset` is a syntax error,
+# only `hl.dsp.submap("reset")` works -- which also makes the legacy fallback in
+# `omarchy-launch-or-focus` dead code here. Signatures below are taken from
+# Omarchy's own bindings.lua rather than guessed: moving a window into a group
+# is `window.move({into_group=...})`, not anything under `group`.
+
+
+def hypr_json(what):
+    try:
+        return json.loads(subprocess.run(
+            ["hyprctl", "-j", what],
+            capture_output=True, text=True, timeout=3).stdout)
+    except Exception:
+        return None
+
+
+def hypr_do(expr):
+    try:
+        out = subprocess.run(["hyprctl", "dispatch", expr],
+                             capture_output=True, text=True, timeout=3)
+        return out.stdout.strip()
+    except Exception:
+        return ""
+
+
+def hypr_focus(address):
+    hypr_do(f'hl.dsp.focus({{ window = "address:{address}" }})')
+
+
+def noren_windows(pattern=None):
+    """Chrome-less windows Noren made, newest last.
+
+    Only `chrome-<host>-<profile>` app_ids: an ordinary tabbed window has class
+    `chromium`, and gathering that would drag the extension's host window into a
+    group with the pages. Nothing outside this prefix is ever touched.
+    """
+    clients = hypr_json("clients") or []
+    wins = [c for c in clients
+            if (c.get("class") or "").lower().startswith("chrome-")]
+    if pattern:
+        want = pattern.lower()
+        wins = [c for c in wins
+                if want in (c.get("class") or "").lower()
+                or want in (c.get("title") or "").lower()]
+    return wins
+
+
+def gather(pattern=None):
+    """Pull peeled windows back into one Hyprland group -- the return path.
+
+    `peel` scatters and nothing brought them back, which makes a week of
+    tabs-as-windows a one-way trip. The group bar then acts as the tab strip
+    (SUPER+Tab is `group.active`), which is the whole premise.
+    """
+    wins = noren_windows(pattern)
+    if not wins:
+        print("noren: no chrome-less windows to gather"
+              + (f" matching '{pattern}'" if pattern else ""))
+        return 1
+    if len(wins) == 1:
+        print("noren: only one window; nothing to gather")
+        return 0
+
+    ws = hypr_json("activeworkspace") or {}
+    active_ws = ws.get("id")
+    started_on = (hypr_json("activewindow") or {}).get("address")
+
+    # Anchor on this workspace if there is one, so gather pulls pages *to* you.
+    anchor = next((c for c in wins if c.get("workspace", {}).get("id") == active_ws),
+                  wins[0])
+    target_ws = anchor.get("workspace", {}).get("id")
+    others = [c for c in wins if c["address"] != anchor["address"]]
+
+    # The anchor has to be a group before anything can join it.
+    hypr_focus(anchor["address"])
+    if not anchor.get("grouped"):
+        hypr_do("hl.dsp.group.toggle()")
+
+    moved, stuck = 0, []
+    for win in others:
+        addr = win["address"]
+        hypr_focus(addr)
+        if win.get("workspace", {}).get("id") != target_ws:
+            # follow=false keeps the focus from being dragged across workspaces
+            # on every iteration.
+            hypr_do(f'hl.dsp.window.move({{ workspace = "{target_ws}", follow = false }})')
+            hypr_focus(addr)
+
+        # into_group takes a direction, not a target, so which way the group
+        # lies depends on how the layout tiled these windows. Try each and
+        # check: `grouped` in `hyprctl clients` is the only honest confirmation.
+        for direction in ("l", "r", "u", "d"):
+            hypr_do(f'hl.dsp.window.move({{ into_group = "{direction}" }})')
+            if _is_grouped(addr):
+                moved += 1
+                break
+        else:
+            stuck.append(win)
+
+    if started_on:
+        hypr_focus(started_on)
+
+    print(f"noren: gathered {moved} of {len(others)} window(s) into a group")
+    for win in stuck:
+        print(f"       left out: {(win.get('title') or win.get('class'))[:60]}")
+    return 0
+
+
+def _is_grouped(address):
+    for c in hypr_json("clients") or []:
+        if c.get("address") == address:
+            return bool(c.get("grouped"))
+    return False
+
+
+def scatter():
+    """Break the group under the cursor back into ordinary windows."""
+    win = hypr_json("activewindow") or {}
+    if not win.get("grouped"):
+        print("noren: focused window is not in a group")
+        return 1
+    count = len(win.get("grouped") or [])
+    hypr_do("hl.dsp.group.toggle()")
+    print(f"noren: scattered {count} window(s)")
+    return 0
+
+
 def normalize(url):
     """Match the host's rule: --app= needs an absolute URL or it is ignored."""
     raw = str(url or "").strip()
@@ -349,6 +481,10 @@ def main(argv):
         if not rest:
             sys.exit("noren focus: needs a tab id")
         res = call({"cmd": "focus", "tabId": rest[0]})
+    elif cmd == "gather":
+        return gather(" ".join(rest) if rest else None)
+    elif cmd == "scatter":
+        return scatter()
     elif cmd == "theme":
         if rest:
             if rest[0] not in ("respect", "tint", "immerse"):

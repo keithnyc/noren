@@ -196,6 +196,14 @@ exactly. `tryGround` keeps looking for ~2s, paints on the fallback after a few
 tries rather than leaving the page bare, and repaints from scratch if a real
 ground turns up afterwards.
 
+**`gather` verifies rather than assumes.** `into_group` takes a *direction*, not
+a target, so which way the group lies depends on how the layout happened to tile
+the windows. `gather` tries each direction and confirms against `grouped` in
+`hyprctl clients` — the only honest signal — and reports anything it could not
+fold in rather than claiming success. It only ever touches `chrome-<host>-<profile>`
+windows: an ordinary tabbed window has class `chromium`, and grouping that would
+drag the extension's host window in with the pages.
+
 **One browser at a time.** The host owns a single socket, so two instrumented
 browsers would fight over it. `install.sh` clears Noren out of every other
 browser when it installs.
@@ -262,6 +270,34 @@ do the installer and the host.
 
 **Hyprland is configured in Lua here**, not `.conf` — `~/.config/hypr/bindings.lua`
 using `o.bind("SUPER + B", "desc", [[command]])`.
+
+**Legacy string dispatchers are gone.** On Hyprland 0.56.2 `hyprctl dispatch
+submap reset` is a *syntax error*; only `hl.dsp.submap("reset")` works. Every
+dispatcher goes through the Lua API, which also makes the legacy fallback in
+`omarchy-launch-or-focus` dead code on this machine. Take signatures from
+Omarchy's own `bindings.lua` rather than from the Hyprland wiki's dispatcher
+names — the mapping is not mechanical:
+
+```lua
+hl.dsp.focus({ window = "address:0x…" })          -- focuswindow
+hl.dsp.group.toggle()                             -- togglegroup
+hl.dsp.group.active({ index = n })                -- changegroupactive
+hl.dsp.window.move({ into_group = "l" })          -- moveintogroup   (not group.*)
+hl.dsp.window.move({ out_of_group = true })       -- moveoutofgroup
+hl.dsp.window.move({ workspace = "3", follow = false })  -- movetoworkspacesilent
+```
+
+**Probing dispatchers live is not safe.** `hl.dsp.group.toggle(12345)` answers
+`ok` and groups the focused window rather than rejecting the argument — several
+of these ignore bad arguments instead of validating them. Read the config, do
+not experiment on a running session.
+
+**Relevant group settings**, all at their defaults: `groupbar:enabled` is on and
+Omarchy styles it (height 22, monospace 12, themed gradients), `auto_group` is
+on — so a window spawned while a group is focused *joins* it, which is what makes
+`peel` land in the right place — and `group_on_movetoworkspace` is **off**, so
+moving a window to a workspace does not add it to a group there. That last one is
+why `gather` has to fold windows in explicitly.
 
 **Brave is not supported.** Its launcher ends with
 
@@ -353,8 +389,6 @@ invoking shell and kill it. Hit twice in one session. Use explicit PIDs or
   set of pages. Scope v1 to URL set + window order + profile. Restoring scroll
   position and page state is among the hardest problems in browsers and will
   swallow the project.
-- **Gather** — the return path for peel. Pull a project's detached windows back
-  into one group.
 - **Per-site rules file** — the app_id format above makes declarative
   `windowrule` generation straightforward.
 
