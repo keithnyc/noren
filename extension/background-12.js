@@ -628,6 +628,20 @@ function norenSurfacePass(palette) {
         : Boolean(parent && coloredBg.has(parent));
     if (onColour) coloredBg.add(el);
 
+    // The canvas. Immerse must not paint <html> from the stylesheet -- that
+    // would destroy the ground reading the whole pass depends on -- but
+    // something has to paint it once the ground has been read. With
+    // `color-scheme` set from the palette and no explicit background on <html>,
+    // Chromium paints its own canvas: black in a dark scheme. Every region a
+    // site leaves transparent then shows through as black, which on a social feed site is the
+    // entire left nav and the right sidebar.
+    if (el === document.documentElement && !opaqueBg && !gradient && theme.bgCss) {
+      const inlineBg = el.style.getPropertyValue('background-color');
+      if (inlineBg) saved['background-color'] = inlineBg;
+      el.style.setProperty('background-color', theme.bgCss, 'important');
+      touched = true;
+    }
+
     if (gradient) {
       const inlineImg = el.style.getPropertyValue('background-image');
       if (inlineImg) saved['background-image'] = inlineImg;
@@ -777,6 +791,7 @@ function norenSurfacePass(palette) {
     theme = {
       bg: hexToRgb(next.bg),
       fg: hexToRgb(next.fg),
+      bgCss: next.bg,
       link: next.link || null,
     };
     ready = false;

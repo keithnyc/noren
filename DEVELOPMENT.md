@@ -164,6 +164,14 @@ Nothing in the immerse stylesheet may paint `html` or `body`: the CSS lands
 before the pass runs, and the pass measures everything against the site's real
 ground. That is why `CANVAS` is split out of `TINT`.
 
+**The pass paints the canvas; the stylesheet must not.** These are two halves of
+one rule and both are needed. Immerse's CSS cannot touch `html`, or it destroys
+the ground reading — but with `color-scheme` set from the palette and nothing
+painting `<html>`, Chromium paints its own canvas, black in a dark scheme, and
+every region a site leaves transparent shows through as black. On a social feed site that is the
+whole left nav and right sidebar. So the pass sets the canvas itself, once the
+ground has been read, and only when the site paints no background of its own.
+
 **Measuring that ground too early is the failure mode to watch.** The pass is
 injected as soon as a navigation is visible, which on a slow load is before
 `<body>` exists. `readBase` then falls back to the theme's own background,
