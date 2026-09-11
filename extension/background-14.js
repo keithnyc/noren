@@ -636,14 +636,23 @@ function norenSurfacePass(palette) {
         : Boolean(parent && coloredBg.has(parent));
     if (onColour) coloredBg.add(el);
 
-    // The canvas. Immerse must not paint <html> from the stylesheet -- that
-    // would destroy the ground reading the whole pass depends on -- but
-    // something has to paint it once the ground has been read. With
-    // `color-scheme` set from the palette and no explicit background on <html>,
-    // Chromium paints its own canvas: black in a dark scheme. Every region a
-    // site leaves transparent then shows through as black, which on a social feed site is the
-    // entire left nav and the right sidebar.
-    if (el === document.documentElement && !opaqueBg && !gradient && theme.bgCss) {
+    // The canvas gets the theme's ground exactly, never a remap.
+    //
+    // <html> *is* the page ground, so by construction it maps to the theme
+    // background -- d is zero. Putting it through the generic remap makes it
+    // depend on whether `baseL` happened to be read from html, from body, or
+    // from the fallback, and on a social feed site that landed it one elevation step off
+    // (rgb(34,48,58) against body's rgb(22,36,45)). The visible result is a
+    // horizontal seam wherever body's box ends, which on a social feed site is one viewport down.
+    // Assigning the ground directly is both simpler and immune to the ground
+    // being misread.
+    //
+    // It also has to happen at all: immerse's stylesheet cannot paint <html>
+    // without destroying the ground reading, and with `color-scheme` from the
+    // palette and nothing painting it, Chromium fills its own canvas -- black in
+    // a dark scheme -- so every region the site leaves transparent shows black.
+    const isCanvas = el === document.documentElement && theme.bgCss;
+    if (isCanvas && !gradient) {
       const inlineBg = el.style.getPropertyValue('background-color');
       if (inlineBg) saved['background-color'] = inlineBg;
       el.style.setProperty('background-color', theme.bgCss, 'important');
@@ -669,6 +678,7 @@ function norenSurfacePass(palette) {
 
     for (const prop of PROPS) {
       if (onColour && prop !== 'background-color') continue;
+      if (isCanvas && prop === 'background-color') continue;
       if (prop === 'color' && el.tagName === 'A' && theme.link) continue;
       const value = style.getPropertyValue(prop);
       // `color` inherits. Writing it on every element would put an inline style

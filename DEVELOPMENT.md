@@ -164,6 +164,15 @@ Nothing in the immerse stylesheet may paint `html` or `body`: the CSS lands
 before the pass runs, and the pass measures everything against the site's real
 ground. That is why `CANVAS` is split out of `TINT`.
 
+**`<html>` is assigned the theme ground directly, never remapped.** It *is* the
+page ground, so by construction it maps to the theme background — running it
+through the generic remap only makes it depend on whether `baseL` happened to be
+read from html, from body, or from the fallback. On a social feed site that left it one elevation
+step off body (`rgb(34,48,58)` against `rgb(22,36,45)`), which shows as a
+horizontal seam wherever body's box ends — one viewport down, since the feed site's body is
+viewport-height and the real scroller is nested. Assigning the ground is simpler
+and immune to the ground being misread.
+
 **The pass paints the canvas; the stylesheet must not.** These are two halves of
 one rule and both are needed. Immerse's CSS cannot touch `html`, or it destroys
 the ground reading — but with `color-scheme` set from the palette and nothing
