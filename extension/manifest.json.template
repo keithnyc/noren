@@ -10,7 +10,7 @@
     "scripting"
   ],
   "background": {
-    "service_worker": "background-14.js"
+    "service_worker": "background-16.js"
   },
   "host_permissions": [
     "http://*/*",

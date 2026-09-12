@@ -132,6 +132,29 @@ async function handleCommand(msg) {
     case 'reload':
       return withTab(reply, msg, (id) => chrome.tabs.reload(id));
 
+    case 'windows': {
+      // What Chromium thinks each window *is*. Auto-peel keys off window type,
+      // and the types are not obvious: a chrome-less `--app` window does not
+      // necessarily report 'app'. Guessing here is what created the loop that
+      // destroyed every window Noren made, so this exists to be looked at.
+      const wins = await chrome.windows.getAll({ populate: true });
+      return reply({
+        ok: true,
+        windows: wins.map((w) => ({
+          id: w.id,
+          type: w.type,
+          focused: w.focused,
+          state: w.state,
+          tabs: (w.tabs || []).map((t) => ({
+            id: t.id,
+            active: t.active,
+            url: (t.url || t.pendingUrl || '').slice(0, 80),
+            title: (t.title || '').slice(0, 40),
+          })),
+        })),
+      });
+    }
+
     case 'tabs': {
       const tabs = await chrome.tabs.query({});
       return reply({ ok: true, tabs: tabs.map(describe) });
@@ -227,27 +250,58 @@ const autoPeelReady = chrome.storage.local
     console.warn('noren: could not read stored auto-peel —', err);
   });
 
+// Tabs that fired onCreated before they had a URL, waiting for onUpdated to
+// bring one. Chromium creates a middle-clicked tab first and navigates it a
+// moment later, so for those the URL is simply not there yet. onCreated always
+// said to wait for onUpdated and nothing ever did -- so those tabs were dropped
+// silently, and middle-click peeled only when the URL happened to arrive in
+// time. Verified against `noren windows`: a chrome-less window reports type
+// 'app', so 'normal' still excludes our own windows either way.
+const pendingPeel = new Set();
+
+function peelable(url) {
+  return Boolean(url) && url !== 'about:blank' && url !== 'chrome://newtab/';
+}
+
+// Only peel tabs born in an ordinary tabbed window. A chrome-less --app window
+// contains exactly one tab, and that tab IS the result of peeling: peel it again
+// and we spawn a replacement, close this one, and the replacement's tab fires
+// onCreated in turn. `noren open` then appears to do nothing at all, because
+// every window it makes is destroyed on arrival.
+//
+// Popups are left alone on purpose. They are distinguishable from our windows
+// (ours are 'app'), but a `window.open()` popup is usually an OAuth or payment
+// flow that depends on `window.opener` and on being closed by the page that
+// opened it. Peeling one into a chrome-less window breaks the login it belongs
+// to.
+async function inTabbedWindow(windowId) {
+  try {
+    const win = await chrome.windows.get(windowId);
+    return Boolean(win) && win.type === 'normal';
+  } catch (e) {
+    return false;
+  }
+}
+
+async function peelTab(tabId, windowId, url) {
+  if (!(await inTabbedWindow(windowId))) return false;
+  send({ type: 'spawn', url });
+  chrome.tabs.remove(tabId, () => void chrome.runtime.lastError);
+  return true;
+}
+
 chrome.tabs.onCreated.addListener(async (tab) => {
   await autoPeelReady;
   if (!autoPeel) return;
-  // A tab with no URL yet is mid-navigation; wait for onUpdated to carry one.
-  const url = tab.pendingUrl || tab.url;
-  if (!url || url === 'about:blank' || url === 'chrome://newtab/') return;
 
-  // Only peel tabs born in an ordinary tabbed window. A chrome-less --app
-  // window contains exactly one tab, and that tab IS the result of peeling:
-  // peel it again and we spawn a replacement, close this one, and the
-  // replacement's tab fires onCreated in turn. `noren open` then appears to do
-  // nothing at all, because every window it makes is destroyed on arrival.
-  try {
-    const win = await chrome.windows.get(tab.windowId);
-    if (!win || win.type !== 'normal') return;
-  } catch (e) {
+  const url = tab.pendingUrl || tab.url;
+  if (!peelable(url)) {
+    // Remember it; onUpdated finishes the job once the navigation commits.
+    if (await inTabbedWindow(tab.windowId)) pendingPeel.add(tab.id);
     return;
   }
 
-  send({ type: 'spawn', url });
-  chrome.tabs.remove(tab.id, () => void chrome.runtime.lastError);
+  await peelTab(tab.id, tab.windowId, url);
 });
 
 // -------------------------------------------------------------- page theming
@@ -371,6 +425,18 @@ function pushState() {
 
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (info.status || info.title || info.url) pushState();
+
+  // The other half of auto-peel: a tab that had no URL when it was created.
+  if (pendingPeel.has(tabId)) {
+    await autoPeelReady;
+    const url = (info && info.url) || (tab && (tab.url || tab.pendingUrl)) || '';
+    if (!autoPeel) {
+      pendingPeel.delete(tabId);
+    } else if (peelable(url)) {
+      pendingPeel.delete(tabId);
+      if (await peelTab(tabId, (tab && tab.windowId) || info.windowId, url)) return;
+    }
+  }
   // 'loading' is the earliest this API will tell us about a new document.
   // A navigation drops the previous stylesheet with the old document, so the
   // bookkeeping has to be cleared even when we do not re-inject.
@@ -389,7 +455,10 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   }
 });
 chrome.tabs.onActivated.addListener(pushState);
-chrome.tabs.onRemoved.addListener(pushState);
+chrome.tabs.onRemoved.addListener((tabId) => {
+  pendingPeel.delete(tabId);
+  pushState();
+});
 chrome.windows.onFocusChanged.addListener(pushState);
 
 // Establish the port as soon as the worker spins up. The first state push waits

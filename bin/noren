@@ -29,6 +29,7 @@ usage: noren <command> [args]
   theme             report the page-theming mode
   theme <mode>      respect | tint | immerse — theme pages from Omarchy
   tabs              list open tabs as json
+  windows           list browser windows and their types as json
   focus <tab-id>    focus a tab by id
   target            which browser window is on this workspace
   status            what the focused window is showing
@@ -475,7 +476,7 @@ def main(argv):
     elif cmd == "target":
         print(json.dumps(hypr_target() or {}, indent=2))
         return 0
-    elif cmd in ("back", "forward", "reload", "tabs", "ping", "status"):
+    elif cmd in ("back", "forward", "reload", "tabs", "windows", "ping", "status"):
         res = call({"cmd": cmd})
     elif cmd == "focus":
         if not rest:
@@ -509,7 +510,7 @@ def main(argv):
 
     # Navigation commands stay silent so Hyprland binds don't spam. Anything
     # whose purpose is to report, reports.
-    if cmd in ("tabs", "status"):
+    if cmd in ("tabs", "windows", "status"):
         print(json.dumps(res, indent=2))
     elif cmd == "peel" and "autoPeel" in res:
         print("auto-peel", "on" if res["autoPeel"] else "off")

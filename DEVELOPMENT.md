@@ -196,6 +196,13 @@ exactly. `tryGround` keeps looking for ~2s, paints on the fallback after a few
 tries rather than leaving the page bare, and repaints from scratch if a real
 ground turns up afterwards.
 
+**Window types, measured rather than assumed** (`noren windows`): a chrome-less
+`--app` window reports `type: "app"`, not `"popup"`. So popups *are*
+distinguishable from Noren's own windows — but auto-peel still leaves them alone
+deliberately, because a `window.open()` popup is usually an OAuth or payment flow
+that depends on `window.opener` and on being closed by the page that opened it.
+Peeling one into a chrome-less window breaks the login it belongs to.
+
 **`gather` verifies rather than assumes.** `into_group` takes a *direction*, not
 a target, so which way the group lies depends on how the layout happened to tile
 the windows. `gather` tries each direction and confirms against `grouped` in
@@ -343,6 +350,12 @@ stopped using an hour ago" are otherwise indistinguishable.
 
 ## Bugs fixed — do not reintroduce
 
+- **Middle-click did not peel, intermittently.** `onCreated` said "wait for
+  onUpdated to carry one" for a tab with no URL yet, and nothing in `onUpdated`
+  ever did — so those tabs were dropped silently. Chromium creates a
+  middle-clicked tab first and navigates it a moment later, so whether it peeled
+  came down to whether the URL happened to land before `onCreated` fired. A
+  comment describing a code path is not a code path.
 - **Auto-peel destroyed every window it created.** A spawned `--app` window's
   single tab fires `onCreated`, peel spawns a replacement and closes it, forever.
   Only peel tabs in `type === "normal"` windows.
