@@ -333,6 +333,28 @@ Item {
     root.selectionMoved = true
   }
 
+  // The highlighted row, or null. Several handlers need it.
+  function currentRow() {
+    var picks = root.matches
+    if (picks.length === 0 || root.selectedIndex >= picks.length) return null
+    return picks[root.selectedIndex]
+  }
+
+  // Shift+Delete on a set removes it -- the same gesture Chromium's omnibox uses
+  // to drop a suggestion, so it is already in the fingers. Deliberately two
+  // keys and deliberately not a confirmation dialog: a set costs seconds to
+  // rebuild (gather, `@name`, Enter) and a modal inside an overlay is worse than
+  // the mistake it prevents.
+  function deleteHighlightedSet() {
+    var row = root.currentRow()
+    if (!row || row.kind !== "set") return false
+    runNoren(["set", "rm", row.name])
+    // Stay open and reload, so the row visibly goes away.
+    root.selectedIndex = 0
+    setRefresh.restart()
+    return true
+  }
+
   // Debounced: a process per keystroke would spawn faster than it can answer.
   function requestSuggestions() {
     suggestDebounce.restart()
@@ -413,6 +435,17 @@ Item {
 
   function runNoren(args) {
     Quickshell.execDetached([root.binPath].concat(args))
+  }
+
+  Timer {
+    id: setRefresh
+    interval: 260
+    repeat: false
+    onTriggered: {
+      if (!root.opened) return
+      setLoader.running = false
+      setLoader.running = true
+    }
   }
 
   Process {
@@ -670,6 +703,11 @@ Item {
             } else if (event.key === Qt.Key_Up) {
               root.moveSelection(-1)
               event.accepted = true
+            } else if (event.key === Qt.Key_Delete
+                       && (event.modifiers & Qt.ShiftModifier)) {
+              // Only consumed when it actually removed something, so
+              // Shift+Delete still edits text everywhere else.
+              event.accepted = root.deleteHighlightedSet()
             } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
               if (event.modifiers & Qt.ControlModifier) root.replaceCurrent()
               else root.activate()
@@ -764,11 +802,14 @@ Item {
           spacing: Style.spacing.md
 
           Text {
-            text: root.multiUrl
-              ? "\u21B5 open " + root.destinations.length + " windows"
-              : (root.matches.length > 0 && !root.looksLikeUrl
-                 ? "\u21B5 go to tab"
-                 : "\u21B5 new window")
+            text: {
+              var row = root.currentRow()
+              if (row && row.kind === "set") return "\u21B5 open set  \u00B7  \u21E7\u2326 delete"
+              if (row && row.kind === "save") return "\u21B5 save set"
+              if (root.multiUrl) return "\u21B5 open " + root.destinations.length + " windows"
+              return (root.matches.length > 0 && !root.looksLikeUrl)
+                ? "\u21B5 go to tab" : "\u21B5 new window"
+            }
             color: root.foreground
             opacity: 0.75
             font.family: root.fontFamily

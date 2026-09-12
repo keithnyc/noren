@@ -254,7 +254,11 @@ From the overlay — `SUPER + B`, then `@`:
 | `@news` (exists) | the set first, and a **replace** row below it |
 
 A matching set stays first so Enter opens rather than overwrites; replacing is a
-deliberate arrow-down. The same from the CLI:
+deliberate arrow-down. **Shift+Delete** on a highlighted set removes it — the
+same gesture Chromium's omnibox uses to drop a suggestion. The footer says which
+keys apply to whatever row is highlighted.
+
+The same from the CLI:
 
 ```bash
 noren set save news        # names the chrome-less windows open right now

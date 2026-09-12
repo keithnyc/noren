@@ -292,6 +292,13 @@ prompt of its own, and the ring is already at eleven items. When the name *does*
 match, the existing set stays first so Enter opens rather than overwrites —
 replacing is a deliberate arrow-down.
 
+Deleting is Shift+Delete on the highlighted set, which is the gesture Chromium's
+omnibox uses to drop a suggestion, so it is already learned. No confirmation
+dialog: a set costs seconds to rebuild (gather, `@name`, Enter), and a modal
+inside an overlay is worse than the mistake it prevents. The key is only
+*consumed* when it actually removed something, so Shift+Delete still edits text
+everywhere else in the field.
+
 **A typed url stays literal until you arrow onto a suggestion.** Completion
 ranks bookmarks and history together with open tabs, so the top row is often not
 what was typed — and Enter acting on it would mean typing
