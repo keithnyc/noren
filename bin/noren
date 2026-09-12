@@ -28,6 +28,7 @@ usage: noren <command> [args]
   peel status       report whether auto-peel is on
   gather [match]    pull peeled windows into one Hyprland group
   pop               lift the window in front of you out of its group
+  raise <address>   focus a window by Hyprland address
   scatter           break the focused group back into windows
   theme             report the page-theming mode
   theme <mode>      respect | tint | immerse — theme pages from Omarchy
@@ -474,6 +475,31 @@ def pop():
     return 0
 
 
+def raise_window(address):
+    """Focus a window by Hyprland address, and say whether it took.
+
+    Exists because the overview needs it and `Hyprland.dispatch` from Quickshell
+    proved unreliable for this -- it worked once and silently did nothing twice.
+    Everything else the radial menu does already shells out through this CLI, so
+    this keeps one dispatch path rather than two, and this one is verified.
+    """
+    hex_part = re.sub(r"[^0-9a-fA-F]", "", str(address or "").replace("0x", "", 1))
+    if not hex_part:
+        sys.exit("noren raise: needs a window address")
+    addr = "0x" + hex_part
+
+    known = {c.get("address") for c in (hypr_json("clients") or [])}
+    if addr not in known:
+        sys.exit(f"noren raise: no window at {addr}")
+
+    hypr_focus(addr)
+    now = (hypr_json("activewindow") or {}).get("address")
+    if now != addr:
+        print(f"noren: focus did not take — still on {now}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def scatter():
     """Break the group in front of you back into ordinary tiled windows.
 
@@ -690,6 +716,8 @@ def main(argv):
         return gather(" ".join(rest) if rest else None)
     elif cmd == "pop":
         return pop()
+    elif cmd == "raise":
+        return raise_window(rest[0] if rest else None)
     elif cmd == "scatter":
         return scatter()
     elif cmd == "theme":

@@ -465,7 +465,10 @@ Item {
       fontFamily: root.fontFamily
 
       // Picking a page closes everything -- the point was to get to that page.
-      onChosen: root.close()
+      onChosen: function (address) {
+        if (address && address.length > 0) root.runNoren(["raise", address])
+        root.close()
+      }
 
       // Escape, by contrast, returns to the ring rather than closing outright,
       // so a wrong turn costs one key instead of a re-summon.
