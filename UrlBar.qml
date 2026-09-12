@@ -859,7 +859,7 @@ Item {
             text: {
               var row = root.currentRow()
               if (row && row.kind === "hint") return "type a name to save a set"
-              if (row && row.kind === "set") return "\u21B5 open set  \u00B7  \u21E7\u2326 delete"
+              if (row && row.kind === "set") return "\u21B5 open set  \u00B7  Shift+Del delete"
               if (row && row.kind === "save") return "\u21B5 save set"
               if (root.multiUrl) return "\u21B5 open " + root.destinations.length + " windows"
               return (root.matches.length > 0 && !root.looksLikeUrl)

@@ -477,7 +477,7 @@ Item {
     y: root.height / 2 + root.cardH / 2 + Style.space(56)
     visible: root.count > 0 && !root.launching
     opacity: root.spread * 0.55
-    text: "← →  choose  ·  1–9 jump  ·  Enter open  ·  ⇧⌦ close  ·  Esc back"
+    text: "← →  choose  ·  1–9 jump  ·  Enter open  ·  Shift+Del close  ·  Esc back"
     color: root.foreground
     font.family: root.fontFamily
     font.pixelSize: Style.font.caption

@@ -366,6 +366,13 @@ non-zero origins and different scales (DP-2 at -960, eDP-1 at -2560, scales 1.87
 and 1.6), so the monitor origin has to be subtracted. The overlay ignores
 exclusion zones, which is what makes its 0,0 the monitor's origin.
 
+**Key hints are spelled out, not drawn.** `⇧⌦` for Shift+Delete rendered as an
+illegible smudge at caption size in the menu font — found by cropping a
+screenshot, not by reading the code, since it looks perfectly reasonable in a
+source file. The same rule the radial menu already states applies to key hints
+too: an action you cannot name is an action you cannot use, and that goes double
+for the key that performs it. `←` `→` and `↵` do render legibly and stay.
+
 **Only static cards are layered.** The overview's depth of field comes from
 `layer.enabled` plus a `MultiEffect` blur on the *unselected* cards, which hold a
 still frame, so the effect is a one-off render. The selected card captures
