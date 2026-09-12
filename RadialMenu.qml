@@ -200,12 +200,24 @@ Item {
         Rectangle {
           anchors.fill: parent
           radius: width / 2
-          color: spoke.isHovered ? root.selectedBackground : root.background
+          // Always the opaque surface. `menu.selectedBackground` is the
+          // foreground at 8% alpha -- it is a *tint* meant to sit on top of a
+          // list row, so using it as the fill made the hovered item see-through
+          // against the scrim instead of highlighted.
+          color: root.background
           border.width: Math.max(1, Style.space(spoke.isHovered ? 2 : 1))
           border.color: spoke.isHovered ? root.accent : root.borderColor
 
-          Behavior on color { ColorAnimation { duration: 120 } }
           Behavior on border.color { ColorAnimation { duration: 120 } }
+
+          // The tint, composited over the opaque fill the way it was meant to be.
+          Rectangle {
+            anchors.fill: parent
+            radius: width / 2
+            color: root.selectedBackground
+            opacity: spoke.isHovered ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: 120 } }
+          }
 
           Column {
             anchors.centerIn: parent
