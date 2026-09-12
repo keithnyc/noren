@@ -299,76 +299,91 @@ def spawn_window(url):
 # workspace. Ask Hyprland instead, and let the extension match on title.
 
 
+def _hypr_json(what):
+    try:
+        return json.loads(
+            subprocess.run(
+                ["hyprctl", "-j", what],
+                capture_output=True, text=True, timeout=3,
+            ).stdout
+        )
+    except Exception:
+        return None
+
+
+def _is_browser(client):
+    """A window belonging to the browser that owns this bridge.
+
+    Not "any browser". Only one browser can hold the socket, so a window from a
+    different one is a window we cannot drive -- sending it a matchTitle just
+    makes the extension fall back to its own idea of focus, silently acting
+    somewhere else. Chrome-less windows count whatever their name, since those
+    are the ones Noren itself spawned.
+    """
+    cls = (client.get("class") or "").lower() if client else ""
+    if not cls:
+        return False
+    if cls.startswith("chrome-"):
+        return True
+    owner = owning_browser() or {}
+    name = (owner.get("name") or "").lower()
+    return bool(name) and name in cls
+
+
+def browser_client():
+    """The browser window a command should act on.
+
+    Prefer whatever Hyprland says is focused. "First browser window on the
+    active workspace" was right only while there was at most one: `gather` puts
+    several on the same workspace, and list order then picks an arbitrary member
+    -- usually the oldest. That is how `back` ended up acting on the window a
+    link was opened *from* rather than the one in front of you.
+
+    The workspace scan stays as the fallback, because a command issued from a
+    terminal or a keybind arrives with the browser not focused at all. There it
+    skips hidden windows: the inactive members of a group are stacked behind the
+    active one, and none of them is what you are looking at.
+    """
+    active = _hypr_json("activewindow") or {}
+    if _is_browser(active) and active.get("class"):
+        return active
+
+    ws_id = (_hypr_json("activeworkspace") or {}).get("id")
+    here = [
+        c for c in (_hypr_json("clients") or [])
+        if _is_browser(c) and c.get("workspace", {}).get("id") == ws_id
+    ]
+    for c in here:
+        if not c.get("hidden"):
+            return c
+    return here[0] if here else None
+
+
 def hypr_browser_window():
-    """The browser window on the active workspace: {title, app_id, chromeless}.
+    """{title, app_id, chromeless} for the browser window in front of you.
 
     Chromium names --app windows `chrome-<host>_<path>-<profile>`, and ordinary
     tabbed windows just `chromium` / `brave-...`. That distinction is what tells
     us whether the thing in front of you is a page or merely the tabbed window
     the extension happens to live in.
     """
-    try:
-        active = json.loads(
-            subprocess.run(
-                ["hyprctl", "-j", "activeworkspace"],
-                capture_output=True, text=True, timeout=3,
-            ).stdout
-        )
-        clients = json.loads(
-            subprocess.run(
-                ["hyprctl", "-j", "clients"],
-                capture_output=True, text=True, timeout=3,
-            ).stdout
-        )
-    except Exception:
+    client = browser_client()
+    if not client:
         return None
-
-    ws_id = active.get("id")
-    for c in clients:
-        cls = (c.get("class") or "")
-        low = cls.lower()
-        if not any(b in low for b in ("brave", "chromium", "chrome", "noren")):
-            continue
-        if c.get("workspace", {}).get("id") != ws_id:
-            continue
-        title = c.get("title") or ""
-        return {
-            "title": title.rsplit(" - ", 1)[0] if " - " in title else title,
-            "app_id": cls,
-            "chromeless": low.startswith("chrome-"),
-        }
-    return None
+    cls = client.get("class") or ""
+    title = client.get("title") or ""
+    return {
+        "title": title.rsplit(" - ", 1)[0] if " - " in title else title,
+        "app_id": cls,
+        "chromeless": cls.lower().startswith("chrome-"),
+    }
 
 
 def hypr_target_title():
-    """Title of the browser window on the active workspace, or None."""
-    try:
-        active = json.loads(
-            subprocess.run(
-                ["hyprctl", "-j", "activeworkspace"],
-                capture_output=True, text=True, timeout=3,
-            ).stdout
-        )
-        clients = json.loads(
-            subprocess.run(
-                ["hyprctl", "-j", "clients"],
-                capture_output=True, text=True, timeout=3,
-            ).stdout
-        )
-    except Exception:
-        return None
-
-    ws_id = active.get("id")
-    for c in clients:
-        cls = (c.get("class") or "").lower()
-        if not any(b in cls for b in ("brave", "chromium", "chrome", "noren")):
-            continue
-        if c.get("workspace", {}).get("id") != ws_id:
-            continue
-        title = c.get("title") or ""
-        # Hyprland shows "<page title> - <Browser Name>"; tabs carry just the page.
-        return title.rsplit(" - ", 1)[0] if " - " in title else title
-    return None
+    """Title of the browser window in front of you, or None."""
+    win = hypr_browser_window()
+    # Hyprland shows "<page title> - <Browser Name>"; tabs carry just the page.
+    return win["title"] if win else None
 
 
 # ------------------------------------------------------------------ page theme

@@ -203,6 +203,24 @@ deliberately, because a `window.open()` popup is usually an OAuth or payment flo
 that depends on `window.opener` and on being closed by the page that opened it.
 Peeling one into a chrome-less window breaks the login it belongs to.
 
+**Commands act on the *focused* browser window, not the first one on the
+workspace.** `hypr_browser_window` used to take the first match in `hyprctl
+clients` order, which was right only while a workspace held at most one browser
+window. `gather` breaks that assumption by design: several windows share a
+workspace and list order then picks an arbitrary member, usually the oldest. The
+symptom is precise — open a link into a new window, hit Back, and the window you
+came *from* goes back instead. The scan survives as the fallback for commands
+issued while the browser is not focused at all (a terminal, a keybind), and it
+now skips `hidden` windows, since the inactive members of a group sit behind the
+active one.
+
+**Only the bridge's own browser counts as a browser.** The match used to be any
+of brave/chromium/chrome. Only one browser can hold the socket, so a window
+belonging to a different one is a window the bridge cannot drive — passing its
+title as `matchTitle` just makes the extension fall back to its own idea of
+focus and act somewhere else entirely. Windows whose class starts with `chrome-`
+always count, since those are the chrome-less ones Noren spawned.
+
 **`gather` verifies rather than assumes.** `into_group` takes a *direction*, not
 a target, so which way the group lies depends on how the layout happened to tile
 the windows. `gather` tries each direction and confirms against `grouped` in

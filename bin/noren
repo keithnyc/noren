@@ -228,34 +228,55 @@ def doctor():
 
 
 def hypr_target():
-    """The browser window on the active workspace, straight from Hyprland.
+    """The browser window in front of you, straight from Hyprland.
 
     Deliberately not routed through the host: the url bar needs this to render
     its hints, and it must work with the browser closed.
+
+    Prefers the focused window. "First browser window on this workspace" held
+    only while there was at most one -- `gather` puts several on a workspace and
+    list order then picks an arbitrary member. The scan is the fallback for when
+    the browser is not focused at all, and it skips hidden windows because the
+    inactive members of a group sit behind the active one.
     """
-    try:
-        ws = json.loads(subprocess.run(
-            ["hyprctl", "-j", "activeworkspace"],
-            capture_output=True, text=True, timeout=3).stdout)
-        clients = json.loads(subprocess.run(
-            ["hyprctl", "-j", "clients"],
-            capture_output=True, text=True, timeout=3).stdout)
-    except Exception:
-        return None
-    for c in clients:
+    # Only the default browser's windows, plus any chrome-less window (those are
+    # Noren's own). Another browser's window is one the bridge cannot drive.
+    owner = default_browser().lower()
+
+    def is_browser(c):
+        cls = (c.get("class") or "").lower() if c else ""
+        if not cls:
+            return False
+        return cls.startswith("chrome-") or (owner in cls)
+
+    def describe(c):
         cls = c.get("class") or ""
-        low = cls.lower()
-        if not any(b in low for b in ("brave", "chromium", "chrome")):
-            continue
-        if c.get("workspace", {}).get("id") != ws.get("id"):
-            continue
         title = c.get("title") or ""
         return {
             "title": title.rsplit(" - ", 1)[0] if " - " in title else title,
             "app_id": cls,
-            "chromeless": low.startswith("chrome-"),
+            "chromeless": cls.lower().startswith("chrome-"),
         }
-    return None
+
+    def ask(what):
+        try:
+            return json.loads(subprocess.run(
+                ["hyprctl", "-j", what],
+                capture_output=True, text=True, timeout=3).stdout)
+        except Exception:
+            return None
+
+    active = ask("activewindow") or {}
+    if is_browser(active) and active.get("class"):
+        return describe(active)
+
+    ws_id = (ask("activeworkspace") or {}).get("id")
+    here = [c for c in (ask("clients") or [])
+            if is_browser(c) and c.get("workspace", {}).get("id") == ws_id]
+    for c in here:
+        if not c.get("hidden"):
+            return describe(c)
+    return describe(here[0]) if here else None
 
 
 # ------------------------------------------------------------------ hyprland
