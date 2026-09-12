@@ -40,6 +40,16 @@ Item {
   property int selected: 0
   property real spread: 0
 
+  // Whether the pointer, rather than the keyboard, is driving the selection.
+  //
+  // Cards move when the selection changes, so a stationary cursor has cards
+  // slide *underneath* it -- and a plain `onEntered` then fires and drags the
+  // selection to whichever card arrived. Arrowing left would advance a card or
+  // two and snap back to whatever sat under the pointer, and opening the
+  // overview with the cursor on the right would select the rightmost card
+  // immediately. Hover only counts while the pointer is genuinely moving.
+  property bool pointerDriving: false
+
   readonly property var members: root.active ? root.groupMembers() : []
   readonly property int count: members.length
 
@@ -60,7 +70,10 @@ Item {
     root.spread = active ? 1 : 0
     if (active) {
       Hyprland.refreshToplevels()
-      root.selected = root.indexOfActive()
+      root.pointerDriving = false
+      // Deferred: `members` is a binding on `active`, so at this instant it can
+      // still be the old (empty) list and indexOfActive would answer 0.
+      Qt.callLater(function () { root.selected = root.indexOfActive() })
     }
   }
 
@@ -102,6 +115,7 @@ Item {
 
   function step(delta) {
     if (root.count === 0) return
+    root.pointerDriving = false
     root.selected = (root.selected + delta + root.count) % root.count
   }
 
@@ -256,7 +270,14 @@ Item {
       MouseArea {
         anchors.fill: parent
         hoverEnabled: true
-        onEntered: root.selected = card.idx
+        // Real pointer movement hands control back to the pointer...
+        onPositionChanged: {
+          root.pointerDriving = true
+          root.selected = card.idx
+        }
+        // ...while merely being arrived at does not, because that also happens
+        // when the keyboard slides this card under a cursor that never moved.
+        onEntered: if (root.pointerDriving) root.selected = card.idx
         onClicked: root.choose(card.idx)
       }
     }
