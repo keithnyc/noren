@@ -31,6 +31,10 @@ Item {
   property color accent: Color.menu.selectedText
   property string fontFamily: Style.font.menuFamily
 
+  // Two different outcomes, and they were one signal to begin with: picking a
+  // page emitted `dismissed`, which the overlay reads as "go back to the ring",
+  // so Enter activated the window and then bounced to the radial.
+  signal chosen()
   signal dismissed()
 
   property int selected: 0
@@ -104,7 +108,7 @@ Item {
   function choose(index) {
     var member = root.members[index]
     if (member && member.wayland) member.wayland.activate()
-    root.dismissed()
+    root.chosen()
   }
 
   focus: root.active
@@ -184,9 +188,11 @@ Item {
         angle: Math.max(-54, Math.min(54, -card.offset * 27))
       }
 
-      Behavior on x { NumberAnimation { duration: 280; easing.type: Easing.OutCubic } }
-      Behavior on scale { NumberAnimation { duration: 280; easing.type: Easing.OutCubic } }
-      Behavior on opacity { NumberAnimation { duration: 220 } }
+      // Tightened from 280ms. The move is short and mostly horizontal, so a
+      // long ease reads as lag rather than weight.
+      Behavior on x { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
+      Behavior on scale { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
+      Behavior on opacity { NumberAnimation { duration: 140 } }
 
       Rectangle {
         anchors.fill: parent
@@ -197,15 +203,18 @@ Item {
 
         Behavior on border.color { ColorAnimation { duration: 140 } }
 
-        // The page itself. `live` keeps it updating while the overview is up,
-        // which costs nothing when the overlay is closed because the whole
-        // delegate goes away with it.
+        // The page itself. Only the selected card captures continuously: N live
+        // screencopies, each composited through a rotation and a scale, is what
+        // made moving between cards feel heavy. The rest hold their last frame,
+        // which is all an overview needs -- and if a still capture turns out to
+        // yield nothing, the selected card still works, so this degrades rather
+        // than breaks.
         ScreencopyView {
           id: capture
           anchors.fill: parent
           anchors.margins: Math.max(1, Style.space(2))
           captureSource: modelData && modelData.wayland ? modelData.wayland : null
-          live: root.active
+          live: root.active && card.isSelected
           visible: hasContent
         }
 

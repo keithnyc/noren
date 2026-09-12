@@ -464,8 +464,11 @@ Item {
       accent: root.selectedText
       fontFamily: root.fontFamily
 
-      // Escape from the overview returns to the ring rather than closing
-      // outright, so a wrong turn costs one key instead of a re-summon.
+      // Picking a page closes everything -- the point was to get to that page.
+      onChosen: root.close()
+
+      // Escape, by contrast, returns to the ring rather than closing outright,
+      // so a wrong turn costs one key instead of a re-summon.
       onDismissed: {
         root.mode = "radial"
         Qt.callLater(function () { radial.forceActiveFocus() })
