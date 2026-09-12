@@ -468,7 +468,7 @@ def handle_client(conn):
         # Commands that act on "the window you're looking at" get a title hint
         # from Hyprland, since Chromium's own idea of focus is unreliable when
         # the call comes from a terminal or a keybind.
-        if cmd in ("navigate", "back", "forward", "reload", "peel"):
+        if cmd in ("navigate", "back", "forward", "reload", "peel", "saveBookmark"):
             hint = hypr_target_title()
             if hint:
                 req["matchTitle"] = hint

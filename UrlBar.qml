@@ -55,12 +55,37 @@ Item {
   readonly property var matches: buildMatches()
   readonly property int maxRows: 12
 
+  // A leading sigil scopes the search. Blended ranking is right by default and
+  // imprecise when you already know what you are looking for, so:
+  //   *term  bookmarks      %term  history      #term  open tabs
+  // `*` alone lists your bookmarks, which is as close to a bookmark manager as
+  // a chrome-less browser gets.
+  readonly property string scope: {
+    var t = root.filterText
+    if (t.length === 0) return ""
+    var c = t.charAt(0)
+    if (c === "*") return "bookmark"
+    if (c === "%") return "history"
+    if (c === "#") return "tab"
+    return ""
+  }
+
+  // Everything downstream matches on this, never on filterText: `*foo.com`
+  // would otherwise read as a url and Enter would try to open the sigil.
+  readonly property string query:
+    root.scope.length > 0 ? root.filterText.slice(1) : root.filterText
+
+  readonly property string scopeLabel:
+    root.scope === "bookmark" ? "bookmarks"
+      : root.scope === "history" ? "history"
+      : root.scope === "tab" ? "open tabs" : ""
+
   // Several destinations typed at once: `social.example, search.example, video.example`.
   // The comma only counts as a separator when *every* part is itself a
   // destination -- `bread, butter recipe` is a search. The same rule lives in
   // `noren open`, which does the actual splitting; this copy only decides what
   // the footer promises and what Ctrl+Enter means.
-  readonly property var destinations: splitDestinations(filterText)
+  readonly property var destinations: splitDestinations(query)
   readonly property bool multiUrl: destinations.length > 1
 
   function isDestination(text) {
@@ -88,8 +113,8 @@ Item {
   }
 
   // A typed string that looks like a destination rather than a search.
-  readonly property bool looksLikeUrl: /^[a-z][a-z0-9+.-]*:\/\//i.test(filterText)
-    || (/\./.test(filterText) && !/\s/.test(filterText))
+  readonly property bool looksLikeUrl: /^[a-z][a-z0-9+.-]*:\/\//i.test(query)
+    || (query.length > 0 && /\./.test(query) && !/\s/.test(query))
 
   function dedupeKey(url) {
     return String(url || "").replace(/^https?:\/\//, "").replace(/\/+$/, "").toLowerCase()
@@ -99,13 +124,13 @@ Item {
   // should be jumped to rather than opened a second time, so anything the
   // browser suggests that is already a tab is dropped.
   function buildMatches() {
-    var needle = root.filterText.toLowerCase().trim()
+    var needle = root.query.toLowerCase().trim()
     var out = []
     var seen = {}
 
-    var live = root.tabs
+    var live = (root.scope === "" || root.scope === "tab") ? root.tabs : []
     if (needle.length > 0) {
-      live = root.tabs.filter(function (t) {
+      live = live.filter(function (t) {
         return (t.title || "").toLowerCase().indexOf(needle) >= 0
           || (t.url || "").toLowerCase().indexOf(needle) >= 0
       })
@@ -115,7 +140,7 @@ Item {
       out.push({ kind: "tab", id: live[i].id, title: live[i].title, url: live[i].url })
     }
 
-    for (var j = 0; j < root.suggestions.length; j++) {
+    for (var j = 0; root.scope !== "tab" && j < root.suggestions.length; j++) {
       var sug = root.suggestions[j]
       var key = root.dedupeKey(sug.url)
       if (seen[key]) continue
@@ -135,6 +160,10 @@ Item {
       run: function () { root.runNoren(["reload"]) } },
     { icon: "\udb80\udd8f", key: "C", label: "Copy", hint: root.pageUrl,
       run: function () { root.copyUrl() } },
+    // U+F00C4: a bookmark with a plus in it. Rendered and looked at -- the
+    // neighbours are the same bookmark filled and outlined, with no plus.
+    { icon: "\udb80\udcc4", key: "D", label: "Save", hint: "Bookmark this page",
+      run: function () { root.runNoren(["save"]) } },
     { icon: "\udb80\udd9f", key: "U", label: "Url bar", hint: "Type a url, search tabs and history",
       run: function () { root.showUrlBar() } },
     { icon: "\udb81\udd6f", key: "P", label: "Peel", hint: "This tab into its own window",
@@ -239,7 +268,7 @@ Item {
     // Several destinations beat any suggestion: nobody types three hosts and
     // means "jump to a tab".
     if (root.multiUrl) {
-      runNoren(["open", root.filterText.trim()])
+      runNoren(["open", root.query.trim()])
       root.close()
       return
     }
@@ -250,8 +279,8 @@ Item {
       runNoren(["focus", String(pick.id)])
     } else if (honourPick) {
       runNoren(["open", pick.url])
-    } else if (root.filterText.trim().length > 0) {
-      runNoren(["open", root.filterText.trim()])
+    } else if (root.query.trim().length > 0) {
+      runNoren(["open", root.query.trim()])
     }
     root.close()
   }
@@ -260,7 +289,7 @@ Item {
   // A chrome-less window has no address bar, so this overlay is the only way to
   // redirect one — it has to be reachable, not buried.
   function replaceCurrent() {
-    var text = root.filterText.trim()
+    var text = root.query.trim()
     // "Replace this window" has no meaning for three urls, so Ctrl+Enter takes
     // the other reading there: open them all as one group. The single-url
     // invariant is untouched -- Enter opens, Ctrl+Enter replaces.
@@ -319,8 +348,13 @@ Item {
     repeat: false
     onTriggered: {
       if (!root.opened) return
+      if (root.scope === "tab") { root.suggestions = []; return }
+      var args = [root.binPath, "suggest"]
+      if (root.scope.length > 0) args = args.concat(["--kind", root.scope])
+      var q = root.query.trim()
+      if (q.length > 0) args.push(q)
       suggestLoader.running = false
-      suggestLoader.command = [root.binPath, "suggest", root.filterText.trim()]
+      suggestLoader.command = args
       suggestLoader.running = true
     }
   }
@@ -425,9 +459,11 @@ Item {
         TextField {
           id: input
           width: parent.width
-          placeholderText: root.tabs.length > 0
-            ? "Go to a url, or search " + root.tabs.length + " tabs, bookmarks and history"
-            : "Go to a url, or search bookmarks and history"
+          placeholderText: root.scope.length > 0
+            ? "Searching " + root.scopeLabel
+            : (root.tabs.length > 0
+               ? "Go to a url, or search " + root.tabs.length + " tabs, bookmarks and history   (* bookmarks, % history, # tabs)"
+               : "Go to a url, or search bookmarks and history   (* bookmarks, % history, # tabs)")
           text: root.filterText
           color: root.foreground
           font.family: root.fontFamily

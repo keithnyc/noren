@@ -38,11 +38,17 @@ deliberately small.
   `bread, butter recipe` is still a search.
 - **Url completion** — the overlay completes from open tabs, bookmarks and
   history, ranked together. A typed url stays literal until you arrow onto a
-  suggestion.
+  suggestion. A leading sigil narrows the search: `*` bookmarks, `%` history,
+  `#` open tabs — and `*` alone lists your bookmarks.
+- **Bookmarks** — `D` in the radial (or `noren save`) bookmarks the page in
+  front of you. A chrome-less window has no Ctrl+D and cannot host
+  `chrome://bookmarks`, so without this a bookmark could only be read, never
+  made. It saves silently to the default folder and will not duplicate a page
+  you have already saved.
 - **Radial menu** — `SUPER + M` rings back, forward, reload, copy, url bar,
   peel, gather and theme around the page in front of you. A chrome-less window
   has no toolbar, so these have nowhere else to live. Every item carries a
-  mnemonic letter (`B` `F` `R` `C` `U` `P` `G` `O` `S` `T`) shown on the item, so the
+  mnemonic letter (`B` `F` `R` `C` `D` `U` `P` `G` `O` `S` `T`) shown on the item, so the
   ring can be summoned and used in one gesture without reaching for arrows.
 
 Back, forward and reload already work in a chrome-less window via Chromium's own

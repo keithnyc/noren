@@ -132,13 +132,36 @@ async function handleCommand(msg) {
     case 'reload':
       return withTab(reply, msg, (id) => chrome.tabs.reload(id));
 
+    case 'saveBookmark': {
+      // A chrome-less window has no Ctrl+D and cannot host chrome://bookmarks,
+      // so without this a bookmark can only be *read*, never made. Silent by
+      // design: one keystroke, default folder. Organising is what a tabbed
+      // window is still for.
+      const tab = await focusedTab(msg.matchTitle);
+      const url = tab && tab.url;
+      if (!url || !/^https?:/i.test(url)) {
+        return reply({ ok: false, error: 'nothing bookmarkable in front of you' });
+      }
+      // Pressing it twice should not pile up duplicates.
+      const found = await chrome.bookmarks.search({ url }).catch(() => []);
+      if (found && found.length) {
+        return reply({ ok: true, already: true, title: found[0].title, url });
+      }
+      const node = await chrome.bookmarks.create({ title: tab.title || url, url });
+      return reply({ ok: true, already: false, title: node.title, url: node.url });
+    }
+
     case 'suggest': {
       // What the url bar completes against. Bookmarks and history are the two
       // things the browser knows and the shell does not, so they have to come
       // back across the bridge; open tabs are already in the overlay.
       const query = String(msg.query || '').trim();
       const limit = Math.min(Number(msg.limit) || 8, 25);
-      return reply({ ok: true, suggestions: await suggest(query, limit) });
+      // `kind` narrows the sources rather than filtering afterwards, so a
+      // bookmarks-only search returns a full page of bookmarks instead of
+      // whatever survived a mixed ranking.
+      const kind = msg.kind === 'bookmark' || msg.kind === 'history' ? msg.kind : null;
+      return reply({ ok: true, suggestions: await suggest(query, limit, kind) });
     }
 
     case 'windows': {
@@ -270,17 +293,23 @@ function scoreEntry(entry, needle) {
   return score;
 }
 
-async function suggest(query, limit) {
+async function suggest(query, limit, kind) {
   const needle = query.toLowerCase();
+  const wantMarks = kind !== 'history';
+  const wantHist = kind !== 'bookmark';
 
   const [marks, hist] = await Promise.all([
-    (query
-      ? chrome.bookmarks.search({ query })
-      : chrome.bookmarks.getRecent(limit * 2)
-    ).catch(() => []),
-    chrome.history
-      .search({ text: query, maxResults: 60, startTime: 0 })
-      .catch(() => []),
+    wantMarks
+      ? (query
+          ? chrome.bookmarks.search({ query })
+          : chrome.bookmarks.getRecent(Math.max(limit * 2, 40))
+        ).catch(() => [])
+      : Promise.resolve([]),
+    wantHist
+      ? chrome.history
+          .search({ text: query, maxResults: 60, startTime: 0 })
+          .catch(() => [])
+      : Promise.resolve([]),
   ]);
 
   const byUrl = new Map();

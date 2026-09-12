@@ -33,7 +33,9 @@ usage: noren <command> [args]
   theme <mode>      respect | tint | immerse — theme pages from Omarchy
   tabs              list open tabs as json
   windows           list browser windows and their types as json
+  save              bookmark the page in front of you
   suggest [text]    bookmark/history completions as json
+                    --kind bookmark|history narrows the sources
   focus <tab-id>    focus a tab by id
   target            which browser window is on this workspace
   status            what the focused window is showing
@@ -647,8 +649,18 @@ def main(argv):
         if not rest:
             sys.exit("noren focus: needs a tab id")
         res = call({"cmd": "focus", "tabId": rest[0]})
+    elif cmd == "save":
+        res = call({"cmd": "saveBookmark"})
     elif cmd == "suggest":
-        res = call({"cmd": "suggest", "query": " ".join(rest), "limit": 8})
+        kind = None
+        if "--kind" in rest:
+            at = rest.index("--kind")
+            kind = rest[at + 1] if at + 1 < len(rest) else None
+            rest = rest[:at] + rest[at + 2:]
+        req = {"cmd": "suggest", "query": " ".join(rest), "limit": 8}
+        if kind:
+            req["kind"] = kind
+        res = call(req)
     elif cmd == "gather":
         return gather(" ".join(rest) if rest else None)
     elif cmd == "pop":
@@ -691,6 +703,9 @@ def main(argv):
         if res.get("loaded") is False:
             line += " (no stylesheet yet)"
         print(line)
+    elif cmd == "save":
+        where = "already saved" if res.get("already") else "bookmarked"
+        print(f"noren: {where} {res.get('title') or res.get('url') or ''}")
     elif cmd == "ping":
         b = res.get("browser") or {}
         if b.get("name"):

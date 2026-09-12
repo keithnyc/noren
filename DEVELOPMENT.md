@@ -256,6 +256,21 @@ promises. Grouping cannot be fired straight after the spawns — the windows do
 not exist yet — so `open --group` waits for them to appear and folds in only the
 ones that were not there before, rather than gathering whatever was already open.
 
+**Bookmarks had to become writable, not just readable.** A chrome-less window
+has no Ctrl+D and cannot host `chrome://bookmarks` — that page is one of the
+things a fork would be needed for — so until `saveBookmark` a bookmark could be
+*found* by Noren and only *made* by opening a tabbed window, which defeats the
+model. Saving is silent and goes to the default folder: one keystroke is the
+point, and organising is still what a tabbed window is for. It refuses to
+duplicate a url already saved, since pressing `D` twice is the obvious mistake.
+
+**A leading sigil scopes the search** — `*` bookmarks, `%` history, `#` tabs.
+The scope narrows the *sources* in `suggest()` rather than filtering results
+afterwards, so a bookmarks-only search returns a full page of bookmarks instead
+of whatever survived a mixed ranking. Everything downstream matches on `query`
+rather than `filterText`; matching on the raw text would read `*foo.com` as a url
+and Enter would try to open the sigil.
+
 **A typed url stays literal until you arrow onto a suggestion.** Completion
 ranks bookmarks and history together with open tabs, so the top row is often not
 what was typed — and Enter acting on it would mean typing

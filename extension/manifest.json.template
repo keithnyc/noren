@@ -13,7 +13,7 @@
     "webNavigation"
   ],
   "background": {
-    "service_worker": "background-21.js"
+    "service_worker": "background-22.js"
   },
   "host_permissions": [
     "http://*/*",
