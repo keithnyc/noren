@@ -237,25 +237,30 @@ Item {
         // The key that fires this item. Shown rather than learned: a shortcut
         // nobody can see is a shortcut nobody uses.
         Rectangle {
-          width: Style.space(30)
+          width: Style.space(36)
           height: width
           radius: width / 2
           anchors.top: parent.top
           anchors.right: parent.right
-          anchors.topMargin: Style.space(2)
-          anchors.rightMargin: Style.space(2)
+          anchors.topMargin: Style.space(1)
+          anchors.rightMargin: Style.space(1)
           visible: String(modelData.key || "").length > 0
-          color: spoke.isHovered ? root.accent : root.borderColor
-          opacity: spoke.isHovered ? 1.0 : 0.55
+          // Opacity on the badge dims the letter inside it too -- that is what
+          // made these unreadable. Contrast comes from the theme's own
+          // background/accent pair instead, which is a real contrast pair in
+          // every theme, and the badge stays fully opaque in both states.
+          color: spoke.isHovered ? root.accent : root.background
+          border.width: Math.max(1, Style.space(1))
+          border.color: root.accent
 
           Behavior on color { ColorAnimation { duration: 120 } }
 
           Text {
             anchors.centerIn: parent
             text: String(modelData.key || "")
-            color: spoke.isHovered ? root.background : root.foreground
+            color: spoke.isHovered ? root.background : root.accent
             font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
+            font.pixelSize: Style.font.body
             font.bold: true
           }
         }
