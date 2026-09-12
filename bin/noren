@@ -29,6 +29,9 @@ usage: noren <command> [args]
   gather [match]    pull peeled windows into one Hyprland group
   pop               lift the window in front of you out of its group
   raise <address>   focus a window by Hyprland address
+  apps              report webapp launchers and their window identity
+  apps adopt [name] give webapp windows their app identity in alt-tab
+  apps revert [name] undo that
   scatter           break the focused group back into windows
   theme             report the page-theming mode
   theme <mode>      respect | tint | immerse — theme pages from Omarchy
@@ -321,6 +324,178 @@ def hypr_target():
         if not c.get("hidden"):
             return describe(c)
     return describe(here[0]) if here else None
+
+
+# -------------------------------------------------------------- window identity
+
+APPLICATIONS_DIR = os.path.expanduser("~/.local/share/applications")
+
+
+def app_id_for(url, profile="Default"):
+    """The app_id Chromium will give an `--app=<url>` window.
+
+    `--class` is ignored on Wayland, so this is not a choice -- it is a
+    prediction, and a wrong one matches nothing while looking correct.
+
+    The rule is host, an underscore, then the path with slashes as underscores.
+    Note that DEVELOPMENT.md's prose ("/ replaced by _") does not account for
+    the separator and disagrees with its own example: a root path yields *two*
+    underscores, as in `chrome-news.example.com__-Default`, which is what
+    every window observed on this machine does too.
+    """
+    raw = str(url or "").strip().strip('"').strip("'")
+    m = re.match(r"^[a-z][a-z0-9+.-]*://([^/?#]+)([^?#]*)", raw, re.I)
+    if not m:
+        return None
+    host, path = m.group(1), m.group(2) or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    return f"chrome-{host}_{path.replace('/', '_')}-{profile}"
+
+
+def live_app_ids():
+    """Classes of chrome-less windows open right now, as ground truth."""
+    return {
+        (c.get("class") or "")
+        for c in (hypr_json("clients") or [])
+        if (c.get("class") or "").startswith("chrome-")
+    }
+
+
+def observed_app_id(url, live):
+    """A live window's class for this url's host, if one is open.
+
+    Preferred over the prediction wherever available: the only authority on what
+    Chromium calls a window is Chromium.
+    """
+    guess = app_id_for(url)
+    if not guess:
+        return None
+    if guess in live:
+        return guess
+    host = guess[len("chrome-"):].split("_", 1)[0]
+    prefix = f"chrome-{host}_"
+    matches = sorted(c for c in live if c.startswith(prefix))
+    return matches[0] if len(matches) == 1 else None
+
+
+def desktop_webapps():
+    """Launchers that open a url through omarchy-launch-webapp."""
+    out = []
+    try:
+        names = sorted(os.listdir(APPLICATIONS_DIR))
+    except OSError:
+        return out
+    for name in names:
+        if not name.endswith(".desktop"):
+            continue
+        path = os.path.join(APPLICATIONS_DIR, name)
+        try:
+            with open(path, "r") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        if "omarchy-launch-webapp" not in text:
+            continue
+        url = None
+        swc = None
+        for line in text.splitlines():
+            if line.startswith("Exec=") and "omarchy-launch-webapp" in line:
+                url = line.split("omarchy-launch-webapp", 1)[1].strip()
+                url = url.strip('"').strip("'").split()[0] if url else None
+            elif line.startswith("StartupWMClass="):
+                swc = line.split("=", 1)[1].strip()
+        if url:
+            out.append({"path": path, "name": name[: -len(".desktop")],
+                        "url": url, "swc": swc, "text": text})
+    return out
+
+
+def apps_report():
+    live = live_app_ids()
+    apps = desktop_webapps()
+    if not apps:
+        print("noren: no webapp launchers found in " + APPLICATIONS_DIR)
+        return 0
+
+    print(f"{'app':<20} {'app_id':<44} state")
+    for app in apps:
+        seen = observed_app_id(app["url"], live)
+        want = seen or app_id_for(app["url"])
+        if app["swc"] == want:
+            state = "set" + (" (confirmed by a live window)" if seen else " (predicted)")
+        elif app["swc"]:
+            state = f"MISMATCH - has {app['swc']}"
+        else:
+            state = "not set" + (" (confirmed)" if seen else " (predicted)")
+        print(f"{app['name']:<20} {str(want):<44} {state}")
+    print()
+    print("A predicted app_id is unverified until that app has been opened once;")
+    print("`noren apps` confirms it against the live window. `noren apps adopt`"
+          " writes them.")
+    return 0
+
+
+def apps_adopt(only=None, revert=False):
+    live = live_app_ids()
+    apps = desktop_webapps()
+    touched = 0
+
+    for app in apps:
+        if only and app["name"].lower() != only.lower():
+            continue
+        want = observed_app_id(app["url"], live) or app_id_for(app["url"])
+        if not want:
+            print(f"noren: cannot derive an app_id for {app['name']}", file=sys.stderr)
+            continue
+
+        lines = app["text"].splitlines()
+        has = [i for i, l in enumerate(lines) if l.startswith("StartupWMClass=")]
+
+        if revert:
+            # Only remove what we would have written. A value someone else set
+            # deliberately is theirs, not ours to clean up.
+            removable = [i for i in has if lines[i].split("=", 1)[1].strip() == want]
+            if not removable:
+                continue
+            for i in reversed(removable):
+                lines.pop(i)
+            action = "removed StartupWMClass from"
+        else:
+            if has and lines[has[0]].split("=", 1)[1].strip() == want:
+                continue
+            if has:
+                lines[has[0]] = f"StartupWMClass={want}"
+            else:
+                # Into [Desktop Entry], after the last key of that section.
+                insert_at = len(lines)
+                in_entry = False
+                for i, l in enumerate(lines):
+                    if l.strip().startswith("["):
+                        if in_entry:
+                            insert_at = i
+                            break
+                        in_entry = l.strip() == "[Desktop Entry]"
+                    elif in_entry and l.strip():
+                        insert_at = i + 1
+                lines.insert(insert_at, f"StartupWMClass={want}")
+            action = "set StartupWMClass on"
+
+        body = "\n".join(lines)
+        if not body.endswith("\n"):
+            body += "\n"
+        try:
+            with open(app["path"], "w") as fh:
+                fh.write(body)
+        except OSError as err:
+            print(f"noren: could not write {app['path']}: {err}", file=sys.stderr)
+            continue
+        touched += 1
+        print(f"noren: {action} {app['name']} ({want})")
+
+    if touched == 0:
+        print("noren: nothing to change")
+    return 0
 
 
 # ------------------------------------------------------------------ hyprland
@@ -800,6 +975,14 @@ def main(argv):
         return gather(" ".join(rest) if rest else None)
     elif cmd == "pop":
         return pop()
+    elif cmd == "apps":
+        if rest and rest[0] == "adopt":
+            return apps_adopt(rest[1] if len(rest) > 1 else None)
+        if rest and rest[0] == "revert":
+            return apps_adopt(rest[1] if len(rest) > 1 else None, revert=True)
+        if rest:
+            sys.exit(f"noren apps: unknown subcommand '{rest[0]}'")
+        return apps_report()
     elif cmd == "raise":
         return raise_window(rest[0] if rest else None)
     elif cmd == "scatter":

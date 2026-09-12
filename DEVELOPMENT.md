@@ -382,13 +382,21 @@ only rule that means the same thing in both modes.
 roles**, which is the bug the contrast solver exists to avoid. It is worth an
 upstream issue independent of Noren.
 
-**`--class` is ignored** for `--app` windows on Wayland. Chromium assigns the
-app_id itself:
+**`--class` is ignored** for `--app` windows on Wayland — and for ordinary
+windows too, measured 2026-09-12: `chromium --class=noren-nursery --new-window`
+still comes up as class `chromium`. Chromium assigns the app_id itself:
 
 ```
-chrome-<host><path, / replaced by _>-<profile>
-chrome-news.example.com__-Default
+chrome-<host>_<path, / replaced by _>-<profile>
+chrome-news.example.com__-Default      (root path -> two underscores)
+chrome-mail.example.com__mail-Default      (/mail)
 ```
+
+The separator underscore is easy to miss and this doc got it wrong: the rule was
+written as "`/` replaced by `_`", which does not produce the two underscores in
+its own example. Host, separator, then the path — every window observed on this
+machine agrees. `noren apps` predicts it and confirms against a live window,
+because a wrong app_id matches nothing while looking perfectly reasonable.
 
 Per-site identity is therefore free; you just do not choose the name. This is
 what Hyprland `windowrule class:` must match, and what distinguishes a
@@ -540,7 +548,13 @@ invoking shell and kill it. Hit twice in one session. Use explicit PIDs or
   position and page state is among the hardest problems in browsers and will
   swallow the project.
 - **Per-site rules file** — the app_id format above makes declarative
-  `windowrule` generation straightforward.
+  `windowrule` generation straightforward, and `noren apps` already derives the
+  ids.
+- **Window identity beyond the launcher.** `noren apps adopt` gives installed
+  webapps a `StartupWMClass`, so their windows are matched to their launcher and
+  show the app's name and icon. A window *peeled* from an arbitrary link has no
+  launcher at all, so it still shows as its raw app_id — generating a desktop
+  entry per peeled site is the next step, and it needs an icon source.
 
 ## Background
 

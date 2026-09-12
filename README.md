@@ -240,6 +240,23 @@ A theme can override the result by shipping `noren.css` in its theme directory
 (or rendering one from a template in `~/.config/omarchy/themed/`). It replaces
 the generated rules and still gets the `--noren-*` variables.
 
+## Window identity
+
+Omarchy's webapp launchers carry an icon but no `StartupWMClass`, so the window
+that opens has app_id `chrome-app.example.com__-Default` and nothing connects it back
+to `Example.desktop` — no name, no icon in alt-tab or the launcher. Noren knows the
+app_id rule, so it can supply the missing key:
+
+```bash
+noren apps              # what each launcher is, and whether its id is confirmed
+noren apps adopt        # give them their identity
+noren apps revert       # undo — removes only the value Noren would have written
+```
+
+The id is a *prediction* until that app has been opened once; `noren apps` then
+confirms it against the live window. `--class` is ignored on Wayland, so there is
+no way to choose the name — only to predict it correctly.
+
 ## Overview
 
 `V` in the radial lays every page in the group out in depth — live captures,
