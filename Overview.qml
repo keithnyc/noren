@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Effects
 import Quickshell
 import Quickshell.Hyprland
 import Quickshell.Wayland
@@ -93,25 +94,41 @@ Item {
   }
 
   function groupMembers() {
-    var act = Hyprland.activeToplevel
-    if (!act) return []
-    var ipc = act.lastIpcObject || {}
-    var addresses = ipc.grouped || []
-    if (!addresses || addresses.length < 2) return []
-
     var all = Hyprland.toplevels ? Hyprland.toplevels.values : []
-    var out = []
-    // Walk the group's own order, not Hyprland's client list order, so the
-    // cards match the order of the group bar.
-    for (var i = 0; i < addresses.length; i++) {
-      for (var j = 0; j < all.length; j++) {
-        if (root.sameAddress(all[j].address, addresses[i])) {
-          out.push(all[j])
-          break
+    var act = Hyprland.activeToplevel
+    var ipc = act ? (act.lastIpcObject || {}) : {}
+    var addresses = ipc.grouped || []
+
+    if (addresses && addresses.length > 1) {
+      var out = []
+      // Walk the group's own order, not Hyprland's client list order, so the
+      // cards match the order of the group bar.
+      for (var i = 0; i < addresses.length; i++) {
+        for (var j = 0; j < all.length; j++) {
+          if (root.sameAddress(all[j].address, addresses[i])) {
+            out.push(all[j])
+            break
+          }
         }
       }
+      return out
     }
-    return out
+
+    // Not a group. This used to stop here and say "no group", which made the
+    // overview useless in the state most pages are actually in -- scattered
+    // across a workspace. Every chrome-less page on this workspace instead, so
+    // it is a page switcher first and a group view second.
+    var wsId = Hyprland.focusedWorkspace ? Hyprland.focusedWorkspace.id : -1
+    var loose = []
+    for (var k = 0; k < all.length; k++) {
+      var top = all[k]
+      var tipc = top.lastIpcObject || {}
+      if (String(tipc["class"] || "").indexOf("chrome-") !== 0) continue
+      var tws = top.workspace ? top.workspace.id : -1
+      if (wsId >= 0 && tws !== wsId) continue
+      loose.push(top)
+    }
+    return loose
   }
 
   function indexOfActive() {
@@ -125,6 +142,21 @@ Item {
     if (root.count === 0) return
     root.pointerDriving = false
     root.selected = (root.selected + delta + root.count) % root.count
+  }
+
+  // Closing from here is the natural companion to seeing everything at once, and
+  // Shift+Delete is the gesture the url bar already uses to drop a set. Goes
+  // through the Wayland toplevel rather than a Hyprland dispatch -- close is a
+  // protocol request, not a compositor command, and the page gets to run its
+  // own teardown.
+  function closeSelected() {
+    var member = root.members[root.selected]
+    if (!member || !member.wayland) return false
+    member.wayland.close()
+    // Keep the selection in range as the row disappears.
+    if (root.selected >= root.count - 1) root.selected = Math.max(0, root.count - 2)
+    Hyprland.refreshToplevels()
+    return true
   }
 
   function choose(index) {
@@ -155,6 +187,9 @@ Item {
                || event.key === Qt.Key_Space) {
       if (root.count > 0) root.choose(root.selected)
       else root.dismissed()
+    } else if (event.key === Qt.Key_Delete
+               && (event.modifiers & Qt.ShiftModifier)) {
+      if (!root.closeSelected()) return
     } else if (event.key >= Qt.Key_1 && event.key <= Qt.Key_9) {
       var idx = event.key - Qt.Key_1
       if (idx < root.count) root.choose(idx)
@@ -162,6 +197,15 @@ Item {
       return
     }
     event.accepted = true
+  }
+
+  // Wheel steps through the cards. A WheelHandler rather than a MouseArea so it
+  // does not sit on top of the cards and swallow their clicks.
+  WheelHandler {
+    enabled: root.active
+    onWheel: function (event) {
+      root.step(event.angleDelta.y > 0 ? -1 : 1)
+    }
   }
 
   // Nothing to show: say so rather than presenting an empty stage.
@@ -173,14 +217,14 @@ Item {
 
     Text {
       anchors.horizontalCenter: parent.horizontalCenter
-      text: "No group here"
+      text: "Nothing open here"
       color: root.foreground
       font.family: root.fontFamily
       font.pixelSize: Style.font.heading
     }
     Text {
       anchors.horizontalCenter: parent.horizontalCenter
-      text: "Gather some windows first — G in the radial, or `noren gather`"
+      text: "Open a page, or gather some windows — G in the radial"
       color: root.foreground
       opacity: 0.6
       font.family: root.fontFamily
@@ -224,6 +268,21 @@ Item {
       Behavior on scale { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
       Behavior on opacity { NumberAnimation { duration: 140 } }
 
+      // A ring of accent just outside the selected card. Cheaper than a real
+      // drop shadow and it does not read as a fake one: the depth comes from
+      // the blur on everything else.
+      Rectangle {
+        anchors.fill: parent
+        anchors.margins: -Style.space(5)
+        radius: Style.cornerRadius + Style.space(5)
+        color: "transparent"
+        border.width: Style.space(5)
+        border.color: root.accent
+        opacity: card.isSelected ? 0.22 : 0
+        visible: opacity > 0
+        Behavior on opacity { NumberAnimation { duration: 160 } }
+      }
+
       Rectangle {
         anchors.fill: parent
         color: root.background
@@ -232,6 +291,19 @@ Item {
         border.color: card.isSelected ? root.accent : root.borderColor
 
         Behavior on border.color { ColorAnimation { duration: 140 } }
+
+        // Depth of field: the selected page is sharp, the rest fall back out of
+        // focus. Only the unselected cards are layered -- they hold a still
+        // frame, so the effect is a one-off render. The selected card captures
+        // continuously and layering *that* would be an extra pass every frame.
+        layer.enabled: !card.isSelected && capture.hasContent
+        layer.effect: MultiEffect {
+          blurEnabled: true
+          blur: 0.42
+          blurMax: 24
+          brightness: -0.14
+          saturation: -0.22
+        }
 
         // The page itself. Only the selected card captures continuously: N live
         // screencopies, each composited through a rotation and a scale, is what
@@ -328,7 +400,7 @@ Item {
     y: root.height / 2 + root.cardH / 2 + Style.space(56)
     visible: root.count > 0
     opacity: root.spread * 0.55
-    text: "← →  choose  ·  1–9 jump  ·  Enter open  ·  Esc back"
+    text: "← →  choose  ·  1–9 jump  ·  Enter open  ·  ⇧⌦ close  ·  Esc back"
     color: root.foreground
     font.family: root.fontFamily
     font.pixelSize: Style.font.caption

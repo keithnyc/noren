@@ -341,6 +341,14 @@ Two others were tried for the peel flash and reverted: `windowsMove` slower and
 full-chrome window being created and destroyed, not an animation curve — and
 they changed the whole desktop to treat a symptom.
 
+**Only static cards are layered.** The overview's depth of field comes from
+`layer.enabled` plus a `MultiEffect` blur on the *unselected* cards, which hold a
+still frame, so the effect is a one-off render. The selected card captures
+continuously and layering that would add a full render pass every frame — the
+same instinct behind capturing live on one card only. Given this machine has a
+history of Chromium GPU-process aborts, extra per-frame passes over a live
+capture are worth avoiding even where they would look fine.
+
 **A hidden group member can be screencopied — measured, not assumed.** The
 overview depends entirely on this, and the instinct was that it would fail:
 Hyprland does not render an inactive group member, so why would it hand over

@@ -295,8 +295,13 @@ no way to choose the name — only to predict it correctly.
 
 ## Overview
 
-`V` in the radial lays every page in the group out in depth — live captures,
-cover-flow style — and arrow keys, number keys or a click pick one.
+`V` in the radial lays out every page on the workspace in depth — live captures,
+cover-flow style. Arrow keys, the scroll wheel, number keys or a click pick one;
+**Shift+Delete** closes the highlighted page. It works on a group *or* on loose
+windows, so it is a page switcher first and a group view second.
+
+The selected page is sharp and the rest fall out of focus — depth of field on
+the cards, not a shadow, so the depth is real rather than drawn.
 
 This works because a *hidden* Hyprland group member can still be screencopied:
 measured, an inactive member reports `hasContent` with full window dimensions.
