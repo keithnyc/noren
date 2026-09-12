@@ -141,6 +141,11 @@ Item {
       run: function () { root.runNoren(["peel"]) } },
     { icon: "\udb81\udd70", key: "G", label: "Gather", hint: "Fold windows into one group",
       run: function () { root.runNoren(["gather"]) } },
+    // U+F0616: arrows pointing apart. Rendered and checked rather than guessed
+    // from the codepoint -- the neighbours are an up-arrow, a superscript 2 and
+    // a filled square.
+    { icon: "\udb81\ude16", key: "S", label: "Scatter", hint: "Break the group into tiled windows",
+      run: function () { root.runNoren(["scatter"]) } },
     { icon: "\udb80\udd0e", key: "T", label: "Theme", hint: "Page theming: " + root.themeMode,
       run: function () { root.cycleTheme() } }
   ]
