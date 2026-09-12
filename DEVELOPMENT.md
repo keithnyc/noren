@@ -243,6 +243,25 @@ title as `matchTitle` just makes the extension fall back to its own idea of
 focus and act somewhere else entirely. Windows whose class starts with `chrome-`
 always count, since those are the chrome-less ones Noren spawned.
 
+**`gather` does not lock the group, and the reason is cosmetic.** Hyprland's
+`auto_group` is on by default, so any window spawned while a group is focused
+joins it — which is what makes a peeled page land in the right group, and also
+what puts a terminal in your reading group. Locking the group fixes that
+precisely, and Hyprland then paints the locked group's bar with
+`group:col.border_locked_active`, default `66ff5500` — orange — which Omarchy
+never overrides. Buying the behaviour costs a red tab bar, and fixing the colour
+means writing global Hyprland config, which this plugin does not do. Anyone who
+wants the behaviour can set `group { auto_group = false }` in their own
+`looknfeel.lua`.
+
+**`group.lock` is global, sticky, and silent.** Worth its own warning because it
+cost a debugging session: it is Hyprland's `lockgroups` rather than the focused
+group, it accepts a garbage argument and answers `ok`, and the state persists.
+While it is set, every group refuses every new window — so `gather` folds nothing
+and reports success, and nothing in `hyprctl`'s options, client fields or logs
+says why. `hl.dsp.group.lock("unlock")` clears it. `lock_active` is the
+per-group form.
+
 **`gather` verifies rather than assumes.** `into_group` takes a *direction*, not
 a target, so which way the group lies depends on how the layout happened to tile
 the windows. `gather` tries each direction and confirms against `grouped` in

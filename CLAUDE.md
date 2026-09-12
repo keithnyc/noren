@@ -45,6 +45,13 @@ rather than debugging by hand.
   syntax error on 0.56.2; use `hl.dsp.*` and take signatures from Omarchy's
   `bindings.lua`. Do not probe them on a live session — several ignore bad
   arguments and act anyway.
+- **`hl.dsp.group.lock` is global and sticky.** It is Hyprland's `lockgroups`,
+  not the focused group, it accepts a garbage argument and answers `ok`, and the
+  locked state persists for the session. A locked group silently refuses every
+  new window, so `gather` folds nothing while reporting success — and the cause
+  is invisible, because no option, client field or log mentions it.
+  `hl.dsp.group.lock("unlock")` clears it. Use `lock_active` if you ever want one
+  group, and see DEVELOPMENT.md for why Noren does not lock at all.
 - **Never dispatch a group or window mutation without checking the target
   first.** `group.toggle()` and `window.move()` act on whatever is *focused*, so
   an empty or wrong address silently hits the user's terminal instead. This has
