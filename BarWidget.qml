@@ -40,8 +40,19 @@ BarWidget {
     }
   }
 
+  // PanelToolTip is a plain ToolTip now: it takes a `visible` binding and no
+  // longer has a `bar` property. Binding the old one made the whole widget fail
+  // to load -- "Cannot assign to non-existent property" kills the component, so
+  // the bar icon simply vanished rather than losing only its tooltip.
+  MouseArea {
+    id: hoverProbe
+    anchors.fill: parent
+    hoverEnabled: true
+    acceptedButtons: Qt.NoButton
+  }
+
   PanelToolTip {
-    bar: root.bar
+    visible: hoverProbe.containsMouse
     text: root.summary()
   }
 }
