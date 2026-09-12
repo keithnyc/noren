@@ -368,8 +368,7 @@ def gather(pattern=None, only=None):
     if not anchor.get("grouped"):
         hypr_do("hl.dsp.group.toggle()")
 
-    moved, stuck = 0, []
-    for win in others:
+    def try_fold(win):
         addr = win["address"]
         hypr_focus(addr)
         if win.get("workspace", {}).get("id") != target_ws:
@@ -384,10 +383,30 @@ def gather(pattern=None, only=None):
         for direction in ("l", "r", "u", "d"):
             hypr_do(f'hl.dsp.window.move({{ into_group = "{direction}" }})')
             if _is_grouped(addr):
+                return True
+        return False
+
+    # Several passes, because one is not enough. With four or five windows the
+    # layout can leave one of them diagonal to the group -- adjacent in no
+    # cardinal direction at all -- and a single pass simply skips it. Every
+    # successful fold reflows the workspace and changes what is adjacent to
+    # what, so the stragglers are worth retrying. Stop as soon as a pass folds
+    # nothing, rather than spinning on a window that genuinely cannot reach.
+    moved = 0
+    pending = list(others)
+    for _ in range(4):
+        if not pending:
+            break
+        remaining = []
+        for win in pending:
+            if try_fold(win):
                 moved += 1
-                break
-        else:
-            stuck.append(win)
+            else:
+                remaining.append(win)
+        if len(remaining) == len(pending):
+            break
+        pending = remaining
+    stuck = pending
 
     if started_on:
         hypr_focus(started_on)

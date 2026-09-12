@@ -141,7 +141,12 @@ Item {
       // that HyprlandToplevel.address does, so strip and re-add rather than
       // assume. A dispatch with the wrong form fails silently.
       var hex = String(member.address).replace(/[^0-9a-fA-Fx]/g, "").replace(/^0x/, "")
-      Hyprland.dispatch('hl.dsp.focus({ window = "address:0x' + hex + '" })')
+      // Single-quoted Lua on purpose: this string travels through Quickshell's
+      // Hyprland IPC, and the double-quoted form -- which works verbatim from
+      // hyprctl -- did not take effect from here. Lua accepts either, so the
+      // form without double quotes is the one to send.
+      var expr = "hl.dsp.focus({ window = 'address:0x" + hex + "' })"
+      Hyprland.dispatch(expr)
     } else if (member.wayland) {
       member.wayland.activate()
     }
