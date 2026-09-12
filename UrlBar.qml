@@ -15,6 +15,16 @@ Item {
 
   property var shell: null
   property bool opened: false
+  // Which face the overlay is wearing. The plugin schema allows one overlay
+  // entry point, and `open()` already receives a payload, so the radial is a
+  // mode rather than a second plugin:
+  //   omarchy-shell shell toggle io.github.keithnyc.noren '{"mode":"radial"}'
+  property string mode: "url"
+  // Filled from `noren status` when the radial opens: the ring needs the live
+  // url to copy, and the theme mode to cycle from where it actually is.
+  property string pageUrl: ""
+  property string pageTitle: ""
+  property string themeMode: "tint"
   property string filterText: ""
   property int selectedIndex: 0
   property var tabs: []
@@ -84,20 +94,75 @@ Item {
     return out.slice(0, root.maxRows)
   }
 
+  readonly property var radialActions: [
+    { icon: "\uf053", label: "Back", hint: "Previous page",
+      run: function () { root.runNoren(["back"]) } },
+    { icon: "\uf054", label: "Forward", hint: "Next page",
+      run: function () { root.runNoren(["forward"]) } },
+    { icon: "\udb81\udc53", label: "Reload", hint: "Fetch this page again",
+      run: function () { root.runNoren(["reload"]) } },
+    { icon: "\udb80\udd8f", label: "Copy", hint: root.pageUrl,
+      run: function () { root.copyUrl() } },
+    { icon: "\udb80\udd9f", label: "Url bar", hint: "Type a url, search tabs and history",
+      run: function () { root.showUrlBar() } },
+    { icon: "\udb81\udd6f", label: "Peel", hint: "This tab into its own window",
+      run: function () { root.runNoren(["peel"]) } },
+    { icon: "\udb81\udd70", label: "Gather", hint: "Fold windows into one group",
+      run: function () { root.runNoren(["gather"]) } },
+    { icon: "\udb80\udd0e", label: "Theme", hint: "Page theming: " + root.themeMode,
+      run: function () { root.cycleTheme() } }
+  ]
+
+  function copyUrl() {
+    if (root.pageUrl.length > 0) Quickshell.execDetached(["wl-copy", "--", root.pageUrl])
+  }
+
+  function cycleTheme() {
+    var order = ["respect", "tint", "immerse"]
+    var at = order.indexOf(root.themeMode)
+    root.runNoren(["theme", order[(at + 1) % order.length]])
+  }
+
+  // The ring's own way back to the url bar: swap face instead of closing, so
+  // it is one gesture rather than dismiss-and-summon.
+  function showUrlBar() {
+    root.mode = "url"
+    root.filterText = ""
+    root.selectedIndex = 0
+    root.selectionMoved = false
+    tabLoader.running = true
+    root.requestSuggestions()
+    Qt.callLater(function () { input.forceActiveFocus() })
+  }
+
   function open(payloadJson) {
+    var wanted = "url"
+    try {
+      var payload = payloadJson ? JSON.parse(payloadJson) : null
+      if (payload && payload.mode === "radial") wanted = "radial"
+    } catch (e) {
+      // A malformed payload is a url bar, not an error worth surfacing.
+    }
+    root.mode = wanted
     root.opened = true
     root.filterText = ""
     root.selectedIndex = 0
     root.selectionMoved = false
     root.suggestions = []
-    tabLoader.running = true
     targetLoader.running = true
-    root.requestSuggestions()
-    Qt.callLater(function () { input.forceActiveFocus() })
+    statusLoader.running = true
+    if (root.mode === "url") {
+      tabLoader.running = true
+      root.requestSuggestions()
+      Qt.callLater(function () { input.forceActiveFocus() })
+    } else {
+      Qt.callLater(function () { radial.forceActiveFocus() })
+    }
   }
 
   function close() {
     root.opened = false
+    root.mode = "url"
     root.filterText = ""
     root.tabs = []
     root.suggestions = []
@@ -153,6 +218,26 @@ Item {
 
   function runNoren(args) {
     Quickshell.execDetached([root.binPath].concat(args))
+  }
+
+  Process {
+    id: statusLoader
+    command: [root.binPath, "status"]
+    running: false
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var res = JSON.parse(this.text)
+          var st = (res && res.state) ? res.state : {}
+          root.pageUrl = st.url || ""
+          root.pageTitle = st.title || ""
+          if (res && res.themeMode) root.themeMode = res.themeMode
+        } catch (e) {
+          root.pageUrl = ""
+          root.pageTitle = ""
+        }
+      }
+    }
   }
 
   Process {
@@ -234,8 +319,36 @@ Item {
       }
     }
 
+    RadialMenu {
+      id: radial
+      anchors.fill: parent
+      visible: root.mode === "radial"
+      active: root.opened && root.mode === "radial"
+      actions: root.radialActions
+      contextLabel: root.pageTitle.length > 0
+        ? root.pageTitle
+        : (root.pageUrl.length > 0 ? root.pageUrl : "No page in front of you")
+
+      background: root.background
+      foreground: root.foreground
+      borderColor: root.borderColor
+      accent: root.selectedText
+      selectedBackground: root.selectedBackground
+      fontFamily: root.fontFamily
+
+      onChose: function (index) {
+        var chosen = root.radialActions[index]
+        // Url bar swaps face rather than dismissing, so it must not close.
+        var staysOpen = chosen && chosen.label === "Url bar"
+        if (chosen && chosen.run) chosen.run()
+        if (!staysOpen) root.close()
+      }
+      onDismissed: root.close()
+    }
+
     Rectangle {
       id: card
+      visible: root.mode === "url"
       width: Math.min(Style.space(760), panel.width - Style.gapsOut * 2)
       height: Math.min(contentColumn.implicitHeight + Style.spacing.panelPadding * 2,
                        panel.height - Style.gapsOut * 2)

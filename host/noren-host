@@ -39,6 +39,9 @@ _last_state = {}
 # Mirrors the extension's stored auto-peel flag, so `noren status` can report it
 # without a round trip. Refreshed on every state push.
 _auto_peel = False
+# Same idea for the page-theming mode: the radial menu cycles it and needs to
+# know where it currently stands without a round trip to the extension.
+_theme_mode = "tint"
 _socket_inode = None
 
 # The generated page stylesheets for the active Omarchy theme, and the mtime of
@@ -471,6 +474,7 @@ def handle_client(conn):
                 "ok": True,
                 "state": _last_state,
                 "autoPeel": _auto_peel,
+                "themeMode": _theme_mode,
                 "browser": owning_browser(),
             }
         elif cmd == "open":
@@ -550,7 +554,7 @@ def cleanup():
 
 
 def main():
-    global _last_state, _auto_peel
+    global _last_state, _auto_peel, _theme_mode
 
     atexit.register(cleanup)
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -579,6 +583,8 @@ def main():
         elif kind == "state":
             _last_state = msg.get("state") or {}
             _auto_peel = bool(msg.get("autoPeel"))
+            if msg.get("themeMode"):
+                _theme_mode = msg["themeMode"]
             notify_shell(_last_state)
 
         elif kind == "spawn":

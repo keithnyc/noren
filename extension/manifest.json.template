@@ -12,7 +12,7 @@
     "history"
   ],
   "background": {
-    "service_worker": "background-17.js"
+    "service_worker": "background-18.js"
   },
   "host_permissions": [
     "http://*/*",

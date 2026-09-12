@@ -516,7 +516,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // ------------------------------------------------------------- state updates
 
 function pushState() {
-  focusedTab().then((tab) => send({ type: 'state', state: describe(tab), autoPeel }));
+  focusedTab().then((tab) =>
+    send({ type: 'state', state: describe(tab), autoPeel, themeMode })
+  );
 }
 
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
