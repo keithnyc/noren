@@ -127,7 +127,24 @@ Item {
 
   function choose(index) {
     var member = root.members[index]
-    if (member && member.wayland) member.wayland.activate()
+    if (!member) {
+      root.chosen()
+      return
+    }
+    // Focus by address rather than Toplevel.activate(). activate() asks through
+    // the foreign-toplevel protocol, which is a request a compositor may honour
+    // however it likes and is not specified to change which member of a group
+    // is the visible one. Focusing an address is the same call `noren` already
+    // uses for this and is known to work here.
+    if (member.address) {
+      // Normalise the prefix: hyprctl prints `0x…` and it is not guaranteed
+      // that HyprlandToplevel.address does, so strip and re-add rather than
+      // assume. A dispatch with the wrong form fails silently.
+      var hex = String(member.address).replace(/[^0-9a-fA-Fx]/g, "").replace(/^0x/, "")
+      Hyprland.dispatch('hl.dsp.focus({ window = "address:0x' + hex + '" })')
+    } else if (member.wayland) {
+      member.wayland.activate()
+    }
     root.chosen()
   }
 
