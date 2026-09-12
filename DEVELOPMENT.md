@@ -320,9 +320,27 @@ flash taught: probe before designing around a limit you have not confirmed.
 `address` matches Hyprland's own `grouped` list, `lastIpcObject` carries the
 client map, and `wayland` is the Toplevel a `ScreencopyView` captures.
 
-**One browser at a time.** The host owns a single socket, so two instrumented
-browsers would fight over it. `install.sh` clears Noren out of every other
-browser when it installs.
+**One browser at a time — and one *instance* of it.** The host owns a single
+socket, so two instrumented browsers would fight over it. `install.sh` clears
+Noren out of every other browser when it installs.
+
+Two processes of the *same* browser is the harder version, and `noren open` with
+several urls caused it. From a cold start every url falls back to
+`omarchy-launch-webapp`, and two of those firing in the same instant race
+Chromium's singleton lock — both win. Observed: two browsers started in the same
+second, one holding `--app=https://social.example` and the other `--app=https://search.example`,
+with `SingletonLock -> devbox-17454`.
+
+Both load the extension, but only one can own the native messaging socket, so
+every window in the other silently has no working extension: nothing peels
+there, and `noren windows` cannot even see them. The symptom is a link opening
+as an ordinary tabbed window and simply staying that way, which looks like
+auto-peel being broken and is not. `open_many` now launches the first url, waits
+for the extension to connect, and sends the rest through the bridge — which
+spawns them from the browser that already exists.
+
+`doctor` reports the instance count, because nothing else does: the difference
+is only visible in process arguments.
 
 **The extension key is per-machine and untracked.** `install.sh` generates
 `host/noren-extension.pem` if absent, derives the extension id from it, and

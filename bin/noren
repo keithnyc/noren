@@ -118,6 +118,29 @@ def _row(status, label, detail=""):
     print(f"[{status}] {label}" + (f"  {detail}" if detail else ""))
 
 
+def browser_instances(ext_dir):
+    """PIDs of browser processes (not helpers) that loaded Noren's extension."""
+    pids = []
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f"/proc/{entry}/cmdline", "rb") as fh:
+                    args = fh.read().split(b"\0")
+            except OSError:
+                continue
+            if not args or ext_dir.encode() not in b" ".join(args):
+                continue
+            # Helper processes carry --type=; the browser process does not.
+            if any(a.startswith(b"--type=") for a in args):
+                continue
+            pids.append(entry)
+    except OSError:
+        return []
+    return sorted(pids, key=int)
+
+
 def doctor():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     ext_dir = os.path.join(here, "extension")
@@ -129,6 +152,21 @@ def doctor():
 
     running = browser_running(name)
     _row(OK if running else MEH, "browser running", "yes" if running else "no - start it")
+
+    # One browser at a time, and one *instance* of it. Two Chromium processes
+    # can both load the extension, but only one can own the native messaging
+    # socket -- so every window in the other silently has no extension: nothing
+    # peels there and `noren windows` cannot see them. This happened from a cold
+    # multi-url open racing Chromium's singleton lock, and it is invisible
+    # without looking at process arguments, which is exactly why it belongs here.
+    browsers = browser_instances(ext_dir)
+    if len(browsers) > 1:
+        problems += 1
+        _row(BAD, "browser instances",
+             f"{len(browsers)} running (pids {', '.join(browsers)}) - only one owns "
+             "the bridge; close them all and reopen")
+    elif browsers:
+        _row(OK, "browser instances", f"1 (pid {browsers[0]})")
 
     # Expected extension id, derived from the pinned key.
     try:
@@ -571,6 +609,29 @@ def split_urls(args):
     return [joined]
 
 
+def bridge_up():
+    """Whether the host socket is there *and* answering."""
+    if not os.path.exists(SOCKET_PATH):
+        return False
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(1.0)
+            probe.connect(SOCKET_PATH)
+        return True
+    except OSError:
+        return False
+
+
+def wait_for_bridge(timeout=25.0):
+    """Block until the browser has started and its extension has connected."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if bridge_up():
+            return True
+        time.sleep(0.4)
+    return False
+
+
 def chromeless_addresses():
     return {w.get("address") for w in noren_windows()}
 
@@ -585,6 +646,29 @@ def open_many(urls, group=False):
     """
     before = chromeless_addresses() if group else set()
 
+    # From a cold start these must be serialised. With the browser closed every
+    # url falls back to `omarchy-launch-webapp`, and two of those firing in the
+    # same instant race Chromium's singleton lock: both win, and you end up with
+    # two independent browser processes. Only one can own the native messaging
+    # socket, so every window in the other has no working extension -- nothing
+    # peels there, and `noren windows` cannot even see them. Observed exactly
+    # once, with two browsers started in the same second.
+    #
+    # So: launch the first, wait for its extension to connect, then send the
+    # rest through the bridge, which spawns them from the browser that already
+    # exists.
+    total = len(urls)
+    cold = not bridge_up()
+    if cold:
+        first, urls = urls[0], urls[1:]
+        try:
+            spawn_direct(first)
+        except SystemExit:
+            print(f"noren: could not open {first!r}", file=sys.stderr)
+        if not wait_for_bridge():
+            print("noren: browser did not come up; opening the rest may start a "
+                  "second one", file=sys.stderr)
+
     for url in urls:
         try:
             call({"cmd": "open", "url": url}, fallback=lambda u=url: spawn_direct(u))
@@ -593,7 +677,7 @@ def open_many(urls, group=False):
             print(f"noren: could not open {url!r}", file=sys.stderr)
 
     if not group:
-        print(f"noren: opening {len(urls)} window(s)")
+        print(f"noren: opening {total} window(s)")
         return 0
 
     deadline = time.monotonic() + 8.0
@@ -601,11 +685,11 @@ def open_many(urls, group=False):
     while time.monotonic() < deadline:
         time.sleep(0.25)
         fresh = chromeless_addresses() - before
-        if len(fresh) >= len(urls):
+        if len(fresh) >= total:
             break
 
     if len(fresh) < 2:
-        print(f"noren: opened {len(urls)} window(s); too few appeared to group")
+        print(f"noren: opened {total} window(s); too few appeared to group")
         return 0
 
     # Let the last window settle before Hyprland is asked to move it.
