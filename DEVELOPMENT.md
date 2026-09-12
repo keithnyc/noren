@@ -26,25 +26,32 @@ turns it on, off by default.
 
 Nobody has shipped this at Chromium scale. Whether it *feels* good after a week
 of real use is the only genuine unknown in the project — everything else is
-elaboration on it. Two things to watch, because they are the only real argument
-for ever forking Chromium:
+elaboration on it. Two things were listed as the only real argument for ever
+forking Chromium. One of them is now gone:
 
-1. **The flash.** Not a tab appearing and moving — a **whole tabbed window with
-   full Chromium chrome** is drawn, then destroyed, and a chrome-less window
-   takes its place. Observed 2026-09-11 in a group, where the replacement also
-   triggers a relayout, which is what makes it read as a lurch rather than a
-   blink. Chromium draws that window before any extension event fires, so the
-   extension can only shorten the flash, never remove it: `inTabbedWindow`
-   caches window types so the hot path does not pay for a `chrome.windows.get`
-   round trip. Removing it outright needs the fork, and the fork is still not
-   worth it.
+1. ~~**The flash.**~~ **Solved 2026-09-11 — no longer an argument for forking.**
+   A whole tabbed window with full Chromium chrome was drawn and then destroyed,
+   for 270–582ms, and it was worse in a group because the replacement also
+   triggers a relayout. It looked like a Chromium-internals problem and was not:
+   a `target="_blank"` tab is created with no url, so peel waited for
+   `onUpdated`'s `info.url` — which only exists once the navigation *commits*.
+   The window was on screen for exactly as long as the site took to answer.
+   Peeling from `webNavigation.onBeforeNavigate` instead, which knows the
+   destination before the request is made, takes it to **~3ms — not perceptible**.
+
+   Two lessons worth keeping. A delay that scales with page load is not a delay
+   in your own code; that correlation, noticed by eye, located this after the
+   profiling guesses had all been wrong. And "this needs a fork" deserves
+   suspicion until the cheap explanation has been ruled out — two of the reasons
+   to fork were really one measurement, and it was never taken.
 2. **The origin strip.** Navigating cross-origin inside an `--app` window makes
    Chromium draw a small security bar at the top.
 
 **Do not fork Chromium.** Multi-hour builds plus a security-patch treadmill that
-never ends, for a solo project. Only the two items above, `chrome://` page
-access, and restyling Chromium-drawn UI would need it. If the flash proves
-intolerable, drop tabs-as-windows — do not pick up Chromium.
+never ends, for a solo project. With the flash fixed, only the origin strip,
+`chrome://` page access, and restyling Chromium-drawn UI would need it — and the
+origin strip has not had the same scrutiny the flash just got, so assume it is
+cheaper than it looks until measured.
 
 ## Architecture
 
