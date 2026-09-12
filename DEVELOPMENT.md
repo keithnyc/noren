@@ -300,6 +300,26 @@ Two others were tried for the peel flash and reverted: `windowsMove` slower and
 full-chrome window being created and destroyed, not an animation curve — and
 they changed the whole desktop to treat a symptom.
 
+**A hidden group member can be screencopied — measured, not assumed.** The
+overview depends entirely on this, and the instinct was that it would fail:
+Hyprland does not render an inactive group member, so why would it hand over
+frames? It does. Probed 2026-09-12 with a throwaway Quickshell config against a
+live two-window group:
+
+```
+chrome-search.example__-Default | activated=true  | hasContent=true | 3795x2014
+chrome-social.example__-Default    | activated=false | hasContent=true | 3795x2014
+```
+
+That killed the whole frame-caching design that would otherwise have been
+needed — capture each member as it becomes active, show stills, blanks for
+anything not yet visited. None of it is required. The lesson is the same one the
+flash taught: probe before designing around a limit you have not confirmed.
+
+`HyprlandToplevel` is the piece that makes it work without shelling out —
+`address` matches Hyprland's own `grouped` list, `lastIpcObject` carries the
+client map, and `wayland` is the Toplevel a `ScreencopyView` captures.
+
 **One browser at a time.** The host owns a single socket, so two instrumented
 browsers would fight over it. `install.sh` clears Noren out of every other
 browser when it installs.

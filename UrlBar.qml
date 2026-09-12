@@ -168,6 +168,10 @@ Item {
       run: function () { root.showUrlBar() } },
     { icon: "\udb81\udd6f", key: "P", label: "Peel", hint: "This tab into its own window",
       run: function () { root.runNoren(["peel"]) } },
+    // U+F1400: a window with content panels. U+F00C5 was the first pick and is
+    // a bookmark-plus -- all but identical to Save, two items along.
+    { icon: "\udb85\udc00", key: "V", label: "Overview", hint: "See every page in the group",
+      run: function () { root.showOverview() } },
     { icon: "\udb81\udd70", key: "G", label: "Gather", hint: "Fold windows into one group",
       run: function () { root.runNoren(["gather"]) } },
     // U+F0207: an arrow leaving a box. Rendered and looked at, not guessed --
@@ -193,6 +197,13 @@ Item {
     root.runNoren(["theme", order[(at + 1) % order.length]])
   }
 
+  // Like the url bar, the overview swaps face rather than closing -- the ring
+  // is how you get to it, not something to dismiss first.
+  function showOverview() {
+    root.mode = "overview"
+    Qt.callLater(function () { overview.forceActiveFocus() })
+  }
+
   // The ring's own way back to the url bar: swap face instead of closing, so
   // it is one gesture rather than dismiss-and-summon.
   function showUrlBar() {
@@ -210,6 +221,7 @@ Item {
     try {
       var payload = payloadJson ? JSON.parse(payloadJson) : null
       if (payload && payload.mode === "radial") wanted = "radial"
+      if (payload && payload.mode === "overview") wanted = "overview"
     } catch (e) {
       // A malformed payload is a url bar, not an error worth surfacing.
     }
@@ -225,6 +237,8 @@ Item {
       tabLoader.running = true
       root.requestSuggestions()
       Qt.callLater(function () { input.forceActiveFocus() })
+    } else if (root.mode === "overview") {
+      Qt.callLater(function () { overview.forceActiveFocus() })
     } else {
       Qt.callLater(function () { radial.forceActiveFocus() })
     }
@@ -429,12 +443,33 @@ Item {
 
       onChose: function (index) {
         var chosen = root.radialActions[index]
-        // Url bar swaps face rather than dismissing, so it must not close.
-        var staysOpen = chosen && chosen.label === "Url bar"
+        // These two swap face rather than dismissing, so they must not close.
+        var staysOpen = chosen
+          && (chosen.label === "Url bar" || chosen.label === "Overview")
         if (chosen && chosen.run) chosen.run()
         if (!staysOpen) root.close()
       }
       onDismissed: root.close()
+    }
+
+    Overview {
+      id: overview
+      anchors.fill: parent
+      visible: root.mode === "overview"
+      active: root.opened && root.mode === "overview"
+
+      background: root.background
+      foreground: root.foreground
+      borderColor: root.borderColor
+      accent: root.selectedText
+      fontFamily: root.fontFamily
+
+      // Escape from the overview returns to the ring rather than closing
+      // outright, so a wrong turn costs one key instead of a re-summon.
+      onDismissed: {
+        root.mode = "radial"
+        Qt.callLater(function () { radial.forceActiveFocus() })
+      }
     }
 
     Rectangle {

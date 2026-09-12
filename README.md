@@ -48,7 +48,7 @@ deliberately small.
 - **Radial menu** — `SUPER + M` rings back, forward, reload, copy, url bar,
   peel, gather and theme around the page in front of you. A chrome-less window
   has no toolbar, so these have nowhere else to live. Every item carries a
-  mnemonic letter (`B` `F` `R` `C` `D` `U` `P` `G` `O` `S` `T`) shown on the item, so the
+  mnemonic letter (`B` `F` `R` `C` `D` `U` `V` `P` `G` `O` `S` `T`) shown on the item, so the
   ring can be summoned and used in one gesture without reaching for arrows.
 
 Back, forward and reload already work in a chrome-less window via Chromium's own
@@ -239,6 +239,18 @@ The theme switches live: the host watches `colors.toml` and re-pushes on every
 A theme can override the result by shipping `noren.css` in its theme directory
 (or rendering one from a template in `~/.config/omarchy/themed/`). It replaces
 the generated rules and still gets the `--noren-*` variables.
+
+## Overview
+
+`V` in the radial lays every page in the group out in depth — live captures,
+cover-flow style — and arrow keys, number keys or a click pick one.
+
+This works because a *hidden* Hyprland group member can still be screencopied:
+measured, an inactive member reports `hasContent` with full window dimensions.
+That is why there is no frame caching here and no compositor plugin — it is a
+Quickshell overlay like the rest of Noren, built on `HyprlandToplevel`, which
+carries both Hyprland's address and the Wayland toplevel a `ScreencopyView` can
+capture.
 
 ## Gather
 
