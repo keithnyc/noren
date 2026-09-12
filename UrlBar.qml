@@ -31,6 +31,8 @@ Item {
   // Completions from the browser's bookmarks and history, fetched per keystroke.
   // The shell cannot see either, so they come across the bridge.
   property var suggestions: []
+  // Named sets of pages, from `noren set list --json`.
+  property var sets: []
   // Whether the user has actually moved off the first row. Enter treats a typed
   // url as literal until they do -- see activate().
   property bool selectionMoved: false
@@ -67,6 +69,7 @@ Item {
     if (c === "*") return "bookmark"
     if (c === "%") return "history"
     if (c === "#") return "tab"
+    if (c === "@") return "set"
     return ""
   }
 
@@ -78,7 +81,8 @@ Item {
   readonly property string scopeLabel:
     root.scope === "bookmark" ? "bookmarks"
       : root.scope === "history" ? "history"
-      : root.scope === "tab" ? "open tabs" : ""
+      : root.scope === "tab" ? "open tabs"
+      : root.scope === "set" ? "your sets" : ""
 
   // Several destinations typed at once: `social.example, search.example, video.example`.
   // The comma only counts as a separator when *every* part is itself a
@@ -123,10 +127,42 @@ Item {
   // Open tabs first, then bookmarks and history. A page that is already open
   // should be jumped to rather than opened a second time, so anything the
   // browser suggests that is already a tab is dropped.
+  function setRows(needle) {
+    var rows = []
+    for (var i = 0; i < root.sets.length; i++) {
+      var entry = root.sets[i]
+      if (needle.length > 0 && entry.name.toLowerCase().indexOf(needle) < 0) continue
+      var hosts = []
+      for (var j = 0; j < entry.urls.length && j < 5; j++) hosts.push(root.hostOf(entry.urls[j]))
+      if (entry.urls.length > 5) hosts.push("+" + (entry.urls.length - 5))
+      rows.push({
+        kind: "set",
+        id: -1,
+        name: entry.name,
+        title: entry.name + "  \u00B7  " + entry.urls.length + " pages"
+          + (entry.grouped ? ", as a group" : ", tiled"),
+        url: hosts.join("  ")
+      })
+    }
+    return rows
+  }
+
+  function hostOf(url) {
+    var m = String(url || "").match(/^[a-z][a-z0-9+.-]*:\/\/([^\/?#]+)/i)
+    return m ? m[1].replace(/^www\./, "") : String(url || "")
+  }
+
   function buildMatches() {
     var needle = root.query.toLowerCase().trim()
     var out = []
     var seen = {}
+
+    // Sets first, and also when no sigil was typed: a set named `news` should
+    // turn up for someone who typed `news` and has never heard of `@`.
+    if (root.scope === "set" || root.scope === "") {
+      out = out.concat(root.setRows(needle))
+    }
+    if (root.scope === "set") return out.slice(0, root.maxRows)
 
     var live = (root.scope === "" || root.scope === "tab") ? root.tabs : []
     if (needle.length > 0) {
@@ -233,6 +269,7 @@ Item {
     root.suggestions = []
     targetLoader.running = true
     statusLoader.running = true
+    setLoader.running = true
     if (root.mode === "url") {
       tabLoader.running = true
       root.requestSuggestions()
@@ -279,6 +316,15 @@ Item {
     // could land on `example.com/inbox` because history ranked it first --
     // a launcher that sometimes goes somewhere else is a launcher you cannot
     // trust, which is the same rule Enter already follows for windows.
+    // A set the user explicitly arrowed onto, or asked for with @, wins over
+    // the literal-url rule: `@news` is not a hostname.
+    if (root.scope === "set" && picks.length > 0
+        && root.selectedIndex < picks.length) {
+      runNoren(["set", "open", picks[root.selectedIndex].name])
+      root.close()
+      return
+    }
+
     // Several destinations beat any suggestion: nobody types three hosts and
     // means "jump to a tab".
     if (root.multiUrl) {
@@ -288,6 +334,12 @@ Item {
     }
 
     var honourPick = pick && (root.selectionMoved || !root.looksLikeUrl)
+
+    if (honourPick && pick.kind === "set") {
+      runNoren(["set", "open", pick.name])
+      root.close()
+      return
+    }
 
     if (honourPick && pick.kind === "tab") {
       runNoren(["focus", String(pick.id)])
@@ -318,6 +370,32 @@ Item {
 
   function runNoren(args) {
     Quickshell.execDetached([root.binPath].concat(args))
+  }
+
+  Process {
+    id: setLoader
+    command: [root.binPath, "set", "list", "--json"]
+    running: false
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var out = []
+        try {
+          var raw = JSON.parse(this.text)
+          for (var name in raw) {
+            var entry = raw[name] || {}
+            out.push({
+              name: name,
+              urls: entry.urls || [],
+              grouped: Boolean(entry.grouped)
+            })
+          }
+          out.sort(function (a, b) { return a.name.localeCompare(b.name) })
+        } catch (e) {
+          out = []
+        }
+        root.sets = out
+      }
+    }
   }
 
   Process {
@@ -503,8 +581,8 @@ Item {
           placeholderText: root.scope.length > 0
             ? "Searching " + root.scopeLabel
             : (root.tabs.length > 0
-               ? "Go to a url, or search " + root.tabs.length + " tabs, bookmarks and history   (* bookmarks, % history, # tabs)"
-               : "Go to a url, or search bookmarks and history   (* bookmarks, % history, # tabs)")
+               ? "Go to a url, or search " + root.tabs.length + " tabs, bookmarks and history   (@ sets, * bookmarks, % history, # tabs)"
+               : "Go to a url, or search bookmarks and history   (@ sets, * bookmarks, % history, # tabs)")
           text: root.filterText
           color: root.foreground
           font.family: root.fontFamily
@@ -569,6 +647,7 @@ Item {
               anchors.right: parent.right
               anchors.rightMargin: Style.spacing.rowPaddingX
               text: modelData.kind === "tab" ? "tab"
+                : modelData.kind === "set" ? "set"
                 : modelData.kind === "bookmark" ? "saved" : "visited"
               color: index === root.selectedIndex ? root.selectedText : root.foreground
               opacity: 0.45

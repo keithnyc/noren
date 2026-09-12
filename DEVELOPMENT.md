@@ -273,6 +273,18 @@ of whatever survived a mixed ranking. Everything downstream matches on `query`
 rather than `filterText`; matching on the raw text would read `*foo.com` as a url
 and Enter would try to open the sigil.
 
+**A set is defined by capture, not by syntax.** The obvious design is a config
+file listing urls, and it fails the actual requirement: the urls are already on
+screen, and retyping them is the thing worth avoiding. `noren set save <name>`
+reads the open chrome-less windows from the extension — `hyprctl` knows titles
+and classes, not urls — and records whether they were a group, so the set
+reopens in the shape it was saved. Group order is preferred over window order so
+the tab strip comes back as it was.
+
+Sets also appear unscoped in the overlay, not only behind `@`: a set named
+`news` should turn up for someone who typed `news` and has never heard of the
+sigil.
+
 **A typed url stays literal until you arrow onto a suggestion.** Completion
 ranks bookmarks and history together with open tabs, so the top row is often not
 what was typed — and Enter acting on it would mean typing
@@ -544,7 +556,9 @@ invoking shell and kill it. Hit twice in one session. Use explicit PIDs or
   A budgeted loop on a 0ms timer makes progress whether the page is busy or not.
 
 - **Workspace sessions** — each Hyprland workspace owning a named, restorable
-  set of pages. Scope v1 to URL set + window order + profile. Restoring scroll
+  set of pages. `noren set` is the smaller half of this and deliberately stops
+  short of it: a set is a list of urls plus whether it was grouped, with no
+  workspace binding and no page state. Scope v1 to URL set + window order + profile. Restoring scroll
   position and page state is among the hardest problems in browsers and will
   swallow the project.
 - **Per-site rules file** — the app_id format above makes declarative

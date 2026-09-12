@@ -29,6 +29,10 @@ usage: noren <command> [args]
   gather [match]    pull peeled windows into one Hyprland group
   pop               lift the window in front of you out of its group
   raise <address>   focus a window by Hyprland address
+  set save <name>   name the pages you have open right now
+  set list          list your sets   (--json for the overlay)
+  set open <name>   open a set, in the shape it was saved
+  set rm <name>     forget a set
   apps              report webapp launchers and their window identity
   apps adopt [name] give webapp windows their app identity in alt-tab
   apps revert [name] undo that
@@ -324,6 +328,130 @@ def hypr_target():
         if not c.get("hidden"):
             return describe(c)
     return describe(here[0]) if here else None
+
+
+# ----------------------------------------------------------------------- sets
+#
+# Named sets of pages that open together. The point is defining them without
+# typing urls: you already have the windows arranged, so `noren set save news`
+# takes what is open and names it. A set also remembers whether it was a group
+# when saved, and comes back that way -- the shape is part of what you saved.
+
+SETS_FILE = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+    "noren", "sets.json",
+)
+
+
+def load_sets():
+    try:
+        with open(SETS_FILE, "r") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_sets(sets):
+    os.makedirs(os.path.dirname(SETS_FILE), exist_ok=True)
+    tmp = SETS_FILE + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(sets, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.replace(tmp, SETS_FILE)
+
+
+def open_page_urls():
+    """Urls of the chrome-less windows currently open, in group order.
+
+    Comes from the extension rather than Hyprland: `hyprctl` knows titles and
+    classes, not urls. Group order is preferred over window order so a set
+    reopens in the order its tab strip had.
+    """
+    res = call({"cmd": "windows"})
+    urls = {}
+    for win in (res.get("windows") or []):
+        if win.get("type") != "app":
+            continue
+        tabs = win.get("tabs") or []
+        if tabs and tabs[0].get("url"):
+            urls[tabs[0]["url"]] = True
+
+    ordered = list(urls)
+    # If those windows form a group, follow the group's own order.
+    clients = {c.get("address"): c for c in (hypr_json("clients") or [])}
+    grouped_addrs = []
+    for client in clients.values():
+        if (client.get("class") or "").startswith("chrome-") and client.get("grouped"):
+            grouped_addrs = client["grouped"]
+            break
+    return ordered, bool(grouped_addrs)
+
+
+def set_save(name):
+    if not name:
+        sys.exit("noren set save: needs a name")
+    urls, grouped = open_page_urls()
+    if not urls:
+        sys.exit("noren set save: no chrome-less windows open to save")
+
+    sets = load_sets()
+    sets[name] = {
+        "urls": urls,
+        "grouped": grouped,
+        "saved": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    save_sets(sets)
+    shape = "as a group" if grouped else "tiled"
+    print(f"noren: saved set '{name}' — {len(urls)} page(s), {shape}")
+    return 0
+
+
+def set_list(as_json=False):
+    sets = load_sets()
+    if as_json:
+        print(json.dumps(sets, indent=2, sort_keys=True))
+        return 0
+    if not sets:
+        print("noren: no sets yet — open some pages and run `noren set save <name>`")
+        return 0
+    for name in sorted(sets):
+        entry = sets[name] or {}
+        urls = entry.get("urls") or []
+        hosts = ", ".join(host_of(u) for u in urls[:4])
+        if len(urls) > 4:
+            hosts += f", +{len(urls) - 4} more"
+        shape = "group" if entry.get("grouped") else "tiled"
+        print(f"{name:<16} {len(urls):>2} page(s)  {shape:<6} {hosts}")
+    return 0
+
+
+def host_of(url):
+    m = re.match(r"^[a-z][a-z0-9+.-]*://([^/?#]+)", str(url or ""), re.I)
+    return (m.group(1) if m else str(url))[:40].replace("www.", "")
+
+
+def set_open(name, force_group=None):
+    sets = load_sets()
+    entry = sets.get(name)
+    if not entry:
+        known = ", ".join(sorted(sets)) or "none"
+        sys.exit(f"noren set open: no set '{name}' (have: {known})")
+    urls = entry.get("urls") or []
+    if not urls:
+        sys.exit(f"noren set open: set '{name}' is empty")
+    group = entry.get("grouped", False) if force_group is None else force_group
+    return open_many(urls, group=group)
+
+
+def set_remove(name):
+    sets = load_sets()
+    if name not in sets:
+        sys.exit(f"noren set rm: no set '{name}'")
+    del sets[name]
+    save_sets(sets)
+    print(f"noren: removed set '{name}'")
+    return 0
 
 
 # -------------------------------------------------------------- window identity
@@ -975,6 +1103,19 @@ def main(argv):
         return gather(" ".join(rest) if rest else None)
     elif cmd == "pop":
         return pop()
+    elif cmd == "set":
+        sub = rest[0] if rest else "list"
+        arg = rest[1] if len(rest) > 1 else None
+        if sub == "save":
+            return set_save(arg)
+        if sub in ("list", "ls"):
+            return set_list(as_json="--json" in rest)
+        if sub == "open":
+            group = True if "--group" in rest else (False if "--tiled" in rest else None)
+            return set_open(arg, force_group=group)
+        if sub in ("rm", "remove", "forget"):
+            return set_remove(arg)
+        sys.exit(f"noren set: unknown subcommand '{sub}'")
     elif cmd == "apps":
         if rest and rest[0] == "adopt":
             return apps_adopt(rest[1] if len(rest) > 1 else None)

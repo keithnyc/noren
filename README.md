@@ -240,6 +240,25 @@ A theme can override the result by shipping `noren.css` in its theme directory
 (or rendering one from a template in `~/.config/omarchy/themed/`). It replaces
 the generated rules and still gets the `--noren-*` variables.
 
+## Sets
+
+Pages you open together, named. Defining one requires typing no urls at all —
+arrange the windows you want, then name what is already there:
+
+```bash
+noren set save news        # names the chrome-less windows open right now
+noren set list             # what you have
+noren set open news        # opens them, in the shape they were saved
+noren set rm news
+```
+
+A set remembers whether it was a **group** when you saved it and comes back that
+way, so `gather` your reading into one group, save it, and it reopens as one
+group. The shape is part of what you saved.
+
+From the overlay, `@` scopes the search to your sets — and a set also turns up
+when you simply type its name, so you do not have to know the sigil exists.
+
 ## Window identity
 
 Omarchy's webapp launchers carry an icon but no `StartupWMClass`, so the window
