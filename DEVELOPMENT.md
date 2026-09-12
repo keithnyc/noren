@@ -211,6 +211,20 @@ fold in rather than claiming success. It only ever touches `chrome-<host>-<profi
 windows: an ordinary tabbed window has class `chromium`, and grouping that would
 drag the extension's host window in with the pages.
 
+**A typed url stays literal until you arrow onto a suggestion.** Completion
+ranks bookmarks and history together with open tabs, so the top row is often not
+what was typed — and Enter acting on it would mean typing
+`example.com/invoices` and landing on `example.com/inbox` because history ranked
+it higher. Enter only honours a suggestion once the selection has actually been
+moved for the current text; typing re-arms the rule. This is the same principle
+as Enter never mutating the window behind the overlay: a launcher that sometimes
+goes somewhere else is a launcher you cannot trust.
+
+Ranking lives extension-side in `suggest()`: a host that *starts with* the typed
+text outranks a page whose title merely mentions it, bookmarks carry a standing
+bonus over history, and visit counts are flattened through `log2` so the tenth
+visit does not outrank a good match.
+
 **One browser at a time.** The host owns a single socket, so two instrumented
 browsers would fight over it. `install.sh` clears Noren out of every other
 browser when it installs.

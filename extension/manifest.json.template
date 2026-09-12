@@ -7,10 +7,12 @@
     "tabs",
     "nativeMessaging",
     "storage",
-    "scripting"
+    "scripting",
+    "bookmarks",
+    "history"
   ],
   "background": {
-    "service_worker": "background-16.js"
+    "service_worker": "background-17.js"
   },
   "host_permissions": [
     "http://*/*",

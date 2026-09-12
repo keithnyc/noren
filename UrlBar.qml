@@ -18,6 +18,12 @@ Item {
   property string filterText: ""
   property int selectedIndex: 0
   property var tabs: []
+  // Completions from the browser's bookmarks and history, fetched per keystroke.
+  // The shell cannot see either, so they come across the bridge.
+  property var suggestions: []
+  // Whether the user has actually moved off the first row. Enter treats a typed
+  // url as literal until they do -- see activate().
+  property bool selectionMoved: false
   // The chrome-less window on this workspace, if any — the one Ctrl+Enter
   // would replace. Queried straight from Hyprland so it works with the
   // browser closed.
@@ -36,27 +42,57 @@ Item {
   property color selectedText: Color.menu.selectedText
   property string fontFamily: Style.font.menuFamily
 
-  readonly property var matches: filterTabs()
+  readonly property var matches: buildMatches()
+  readonly property int maxRows: 12
 
   // A typed string that looks like a destination rather than a search.
   readonly property bool looksLikeUrl: /^[a-z][a-z0-9+.-]*:\/\//i.test(filterText)
     || (/\./.test(filterText) && !/\s/.test(filterText))
 
-  function filterTabs() {
+  function dedupeKey(url) {
+    return String(url || "").replace(/^https?:\/\//, "").replace(/\/+$/, "").toLowerCase()
+  }
+
+  // Open tabs first, then bookmarks and history. A page that is already open
+  // should be jumped to rather than opened a second time, so anything the
+  // browser suggests that is already a tab is dropped.
+  function buildMatches() {
     var needle = root.filterText.toLowerCase().trim()
-    if (needle.length === 0) return root.tabs
-    return root.tabs.filter(function (t) {
-      return (t.title || "").toLowerCase().indexOf(needle) >= 0
-        || (t.url || "").toLowerCase().indexOf(needle) >= 0
-    })
+    var out = []
+    var seen = {}
+
+    var live = root.tabs
+    if (needle.length > 0) {
+      live = root.tabs.filter(function (t) {
+        return (t.title || "").toLowerCase().indexOf(needle) >= 0
+          || (t.url || "").toLowerCase().indexOf(needle) >= 0
+      })
+    }
+    for (var i = 0; i < live.length; i++) {
+      seen[root.dedupeKey(live[i].url)] = true
+      out.push({ kind: "tab", id: live[i].id, title: live[i].title, url: live[i].url })
+    }
+
+    for (var j = 0; j < root.suggestions.length; j++) {
+      var sug = root.suggestions[j]
+      var key = root.dedupeKey(sug.url)
+      if (seen[key]) continue
+      seen[key] = true
+      out.push({ kind: sug.kind || "history", id: -1, title: sug.title, url: sug.url })
+    }
+
+    return out.slice(0, root.maxRows)
   }
 
   function open(payloadJson) {
     root.opened = true
     root.filterText = ""
     root.selectedIndex = 0
+    root.selectionMoved = false
+    root.suggestions = []
     tabLoader.running = true
     targetLoader.running = true
+    root.requestSuggestions()
     Qt.callLater(function () { input.forceActiveFocus() })
   }
 
@@ -64,6 +100,8 @@ Item {
     root.opened = false
     root.filterText = ""
     root.tabs = []
+    root.suggestions = []
+    root.selectionMoved = false
     root.target = null
   }
 
@@ -71,6 +109,12 @@ Item {
     var n = root.matches.length
     if (n === 0) return
     root.selectedIndex = (root.selectedIndex + delta + n) % n
+    root.selectionMoved = true
+  }
+
+  // Debounced: a process per keystroke would spawn faster than it can answer.
+  function requestSuggestions() {
+    suggestDebounce.restart()
   }
 
   // Enter: jump to the highlighted tab, or open what was typed as a new tiled
@@ -78,8 +122,20 @@ Item {
   // that sometimes mutates the window behind it is a launcher you cannot trust.
   function activate() {
     var picks = root.matches
-    if (picks.length > 0 && root.selectedIndex < picks.length && !root.looksLikeUrl) {
-      runNoren(["focus", String(picks[root.selectedIndex].id)])
+    var pick = (picks.length > 0 && root.selectedIndex < picks.length)
+      ? picks[root.selectedIndex] : null
+
+    // A typed url is taken literally until the user actually arrows onto a
+    // suggestion. Otherwise typing `example.com/invoices` and pressing Enter
+    // could land on `example.com/inbox` because history ranked it first --
+    // a launcher that sometimes goes somewhere else is a launcher you cannot
+    // trust, which is the same rule Enter already follows for windows.
+    var honourPick = pick && (root.selectionMoved || !root.looksLikeUrl)
+
+    if (honourPick && pick.kind === "tab") {
+      runNoren(["focus", String(pick.id)])
+    } else if (honourPick) {
+      runNoren(["open", pick.url])
     } else if (root.filterText.trim().length > 0) {
       runNoren(["open", root.filterText.trim()])
     }
@@ -110,6 +166,33 @@ Item {
           root.target = (t && t.app_id) ? t : null
         } catch (e) {
           root.target = null
+        }
+      }
+    }
+  }
+
+  Timer {
+    id: suggestDebounce
+    interval: 140
+    repeat: false
+    onTriggered: {
+      if (!root.opened) return
+      suggestLoader.running = false
+      suggestLoader.command = [root.binPath, "suggest", root.filterText.trim()]
+      suggestLoader.running = true
+    }
+  }
+
+  Process {
+    id: suggestLoader
+    running: false
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var res = JSON.parse(this.text)
+          root.suggestions = (res && res.ok && res.suggestions) ? res.suggestions : []
+        } catch (e) {
+          root.suggestions = []
         }
       }
     }
@@ -173,8 +256,8 @@ Item {
           id: input
           width: parent.width
           placeholderText: root.tabs.length > 0
-            ? "Go to a url, or search " + root.tabs.length + " open tabs"
-            : "Go to a url"
+            ? "Go to a url, or search " + root.tabs.length + " tabs, bookmarks and history"
+            : "Go to a url, or search bookmarks and history"
           text: root.filterText
           color: root.foreground
           font.family: root.fontFamily
@@ -184,6 +267,10 @@ Item {
           onTextChanged: {
             root.filterText = text
             root.selectedIndex = 0
+            // Typing re-arms the literal-url rule: a pick only wins once the
+            // user has arrowed onto it for *this* text.
+            root.selectionMoved = false
+            root.requestSuggestions()
           }
 
           Keys.onPressed: function (event) {
@@ -226,10 +313,26 @@ Item {
             color: index === root.selectedIndex ? root.selectedBackground : "transparent"
             radius: Style.cornerRadius
 
+            // Where the row came from. An open tab is jumped to; a bookmark or
+            // a history entry is opened fresh, and those behave differently
+            // enough to be worth naming.
+            Text {
+              id: kindBadge
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.right: parent.right
+              anchors.rightMargin: Style.spacing.rowPaddingX
+              text: modelData.kind === "tab" ? "tab"
+                : modelData.kind === "bookmark" ? "saved" : "visited"
+              color: index === root.selectedIndex ? root.selectedText : root.foreground
+              opacity: 0.45
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
             Column {
               anchors.verticalCenter: parent.verticalCenter
               anchors.left: parent.left
-              anchors.right: parent.right
+              anchors.right: kindBadge.left
               anchors.leftMargin: Style.spacing.rowPaddingX
               anchors.rightMargin: Style.spacing.rowPaddingX
               spacing: Style.space(2)

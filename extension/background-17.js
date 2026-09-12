@@ -132,6 +132,15 @@ async function handleCommand(msg) {
     case 'reload':
       return withTab(reply, msg, (id) => chrome.tabs.reload(id));
 
+    case 'suggest': {
+      // What the url bar completes against. Bookmarks and history are the two
+      // things the browser knows and the shell does not, so they have to come
+      // back across the bridge; open tabs are already in the overlay.
+      const query = String(msg.query || '').trim();
+      const limit = Math.min(Number(msg.limit) || 8, 25);
+      return reply({ ok: true, suggestions: await suggest(query, limit) });
+    }
+
     case 'windows': {
       // What Chromium thinks each window *is*. Auto-peel keys off window type,
       // and the types are not obvious: a chrome-less `--app` window does not
@@ -223,6 +232,93 @@ function normalize(url) {
     return 'https://duckduckgo.com/?q=' + encodeURIComponent(raw);
   }
   return 'https://' + raw;
+}
+
+// ---------------------------------------------------------------- suggestions
+
+function normalizeUrl(url) {
+  // Dedupe key only -- never shown, never navigated to. http/https and a
+  // trailing slash are the same destination as far as a url bar is concerned.
+  return String(url || '')
+    .replace(/^https?:\/\//, '')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+}
+
+function scoreEntry(entry, needle) {
+  const url = normalizeUrl(entry.url);
+  const title = (entry.title || '').toLowerCase();
+  let score = entry.kind === 'bookmark' ? 120 : 0;
+
+  if (needle) {
+    // A host that starts with what was typed is almost always the intent --
+    // "git" should reach github.com before a page whose title mentions git.
+    if (url.startsWith(needle)) score += 200;
+    else if (url.indexOf('/' + needle) >= 0) score += 60;
+    else if (url.indexOf(needle) >= 0) score += 40;
+    if (title.startsWith(needle)) score += 80;
+    else if (title.indexOf(needle) >= 0) score += 30;
+  }
+
+  // Frequency, flattened: the tenth visit should not outrank a good match.
+  score += Math.min(60, Math.log2(1 + (entry.visitCount || 0)) * 12);
+
+  if (entry.lastVisitTime) {
+    const days = (Date.now() - entry.lastVisitTime) / 86400000;
+    score += Math.max(0, 40 - days * 2);
+  }
+  return score;
+}
+
+async function suggest(query, limit) {
+  const needle = query.toLowerCase();
+
+  const [marks, hist] = await Promise.all([
+    (query
+      ? chrome.bookmarks.search({ query })
+      : chrome.bookmarks.getRecent(limit * 2)
+    ).catch(() => []),
+    chrome.history
+      .search({ text: query, maxResults: 60, startTime: 0 })
+      .catch(() => []),
+  ]);
+
+  const byUrl = new Map();
+  const add = (entry, kind) => {
+    if (!entry || !entry.url || !/^https?:/i.test(entry.url)) return;
+    const key = normalizeUrl(entry.url);
+    const existing = byUrl.get(key);
+    // A bookmarked page that is also in history keeps the bookmark's standing
+    // and borrows history's visit counts.
+    if (existing) {
+      if (kind === 'bookmark') existing.kind = 'bookmark';
+      existing.visitCount = Math.max(existing.visitCount || 0, entry.visitCount || 0);
+      existing.lastVisitTime = Math.max(existing.lastVisitTime || 0, entry.lastVisitTime || 0);
+      if (!existing.title && entry.title) existing.title = entry.title;
+      return;
+    }
+    byUrl.set(key, {
+      url: entry.url,
+      title: entry.title || '',
+      kind,
+      visitCount: entry.visitCount || 0,
+      lastVisitTime: entry.lastVisitTime || 0,
+    });
+  };
+
+  for (const m of marks) add(m, 'bookmark');
+  for (const h of hist) add(h, 'history');
+
+  return Array.from(byUrl.values())
+    .map((e) => ({ entry: e, score: scoreEntry(e, needle) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(({ entry }) => ({
+      url: entry.url,
+      title: entry.title,
+      kind: entry.kind,
+      visits: entry.visitCount,
+    }));
 }
 
 // ----------------------------------------------------------------- auto-peel

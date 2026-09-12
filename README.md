@@ -32,6 +32,9 @@ deliberately small.
   its own window instead. This is the experiment; see below.
 - **Page theming (tint by default)** — web pages follow the active Omarchy
   theme, live. See below.
+- **Url completion** — the overlay completes from open tabs, bookmarks and
+  history, ranked together. A typed url stays literal until you arrow onto a
+  suggestion.
 
 Back, forward and reload already work in a chrome-less window via Chromium's own
 `Alt+←` / `Alt+→` / `Ctrl+R`. The CLI versions exist so you can bind them to

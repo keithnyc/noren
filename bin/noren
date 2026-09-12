@@ -30,6 +30,7 @@ usage: noren <command> [args]
   theme <mode>      respect | tint | immerse — theme pages from Omarchy
   tabs              list open tabs as json
   windows           list browser windows and their types as json
+  suggest [text]    bookmark/history completions as json
   focus <tab-id>    focus a tab by id
   target            which browser window is on this workspace
   status            what the focused window is showing
@@ -482,6 +483,8 @@ def main(argv):
         if not rest:
             sys.exit("noren focus: needs a tab id")
         res = call({"cmd": "focus", "tabId": rest[0]})
+    elif cmd == "suggest":
+        res = call({"cmd": "suggest", "query": " ".join(rest), "limit": 8})
     elif cmd == "gather":
         return gather(" ".join(rest) if rest else None)
     elif cmd == "scatter":
@@ -510,7 +513,7 @@ def main(argv):
 
     # Navigation commands stay silent so Hyprland binds don't spam. Anything
     # whose purpose is to report, reports.
-    if cmd in ("tabs", "windows", "status"):
+    if cmd in ("tabs", "windows", "suggest", "status"):
         print(json.dumps(res, indent=2))
     elif cmd == "peel" and "autoPeel" in res:
         print("auto-peel", "on" if res["autoPeel"] else "off")
