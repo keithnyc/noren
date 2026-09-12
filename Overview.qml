@@ -49,6 +49,12 @@ Item {
   // overview with the cursor on the right would select the rightmost card
   // immediately. Hover only counts while the pointer is genuinely moving.
   property bool pointerDriving: false
+  // Last physical pointer position, in *root* coordinates. Item-local
+  // coordinates are useless for this: when a card slides under a cursor that
+  // never moved, its local mouse position changes and positionChanged fires,
+  // which is indistinguishable from a real movement. Mapped back to root space
+  // a stationary pointer stays put no matter what the cards do.
+  property point lastPointer: Qt.point(-1, -1)
 
   readonly property var members: root.active ? root.groupMembers() : []
   readonly property int count: members.length
@@ -270,13 +276,18 @@ Item {
       MouseArea {
         anchors.fill: parent
         hoverEnabled: true
-        // Real pointer movement hands control back to the pointer...
-        onPositionChanged: {
+        // Only a pointer that actually moved in root space takes control. The
+        // 3px slack absorbs float noise from the card's rotation and scale.
+        onPositionChanged: function (mouse) {
+          var here = mapToItem(root, mouse.x, mouse.y)
+          if (Math.abs(here.x - root.lastPointer.x) < 3
+              && Math.abs(here.y - root.lastPointer.y) < 3) return
+          root.lastPointer = here
           root.pointerDriving = true
           root.selected = card.idx
         }
-        // ...while merely being arrived at does not, because that also happens
-        // when the keyboard slides this card under a cursor that never moved.
+        // Being arrived at is not movement -- that also happens when the
+        // keyboard slides this card under a cursor that never moved.
         onEntered: if (root.pointerDriving) root.selected = card.idx
         onClicked: root.choose(card.idx)
       }
