@@ -7,6 +7,7 @@ import re
 import socket
 import subprocess
 import sys
+import time
 
 SOCKET_PATH = os.path.join(
     os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "noren.sock"
@@ -16,7 +17,8 @@ USAGE = """\
 usage: noren <command> [args]
 
   goto <url>        navigate if you're looking at a page, else open a window
-  open <url>        open a url as its own chrome-less window
+  open <url>...     open each url as its own chrome-less window
+  open --group ...  open them and fold them into one Hyprland group
   go <url>          navigate the focused window (force)
   back              history back
   forward           history forward
@@ -329,7 +331,7 @@ def noren_windows(pattern=None):
     return wins
 
 
-def gather(pattern=None):
+def gather(pattern=None, only=None):
     """Pull peeled windows back into one Hyprland group -- the return path.
 
     `peel` scatters and nothing brought them back, which makes a week of
@@ -337,6 +339,9 @@ def gather(pattern=None):
     (SUPER+Tab is `group.active`), which is the whole premise.
     """
     wins = noren_windows(pattern)
+    if only is not None:
+        wanted = set(only)
+        wins = [w for w in wins if w.get("address") in wanted]
     if not wins:
         print("noren: no chrome-less windows to gather"
               + (f" matching '{pattern}'" if pattern else ""))
@@ -421,6 +426,86 @@ def normalize(url):
     return "https://" + raw
 
 
+def looks_like_destination(text):
+    """A token that is a place to go rather than something to search for."""
+    raw = str(text or "").strip()
+    if not raw or " " in raw:
+        return False
+    return bool(re.match(r"^[a-z][a-z0-9+.-]*://", raw, re.I)) or "." in raw
+
+
+def split_urls(args):
+    """Split `social.example, search.example video.example` into destinations.
+
+    Comma is the separator. It only *counts* as one when every part is itself a
+    destination -- `bread, butter recipe` is a search, and splitting it would
+    open two windows for a phrase someone meant to look up. The rule lives here
+    rather than in the overlay so the CLI and the url bar cannot disagree.
+    """
+    raw = [str(a).strip() for a in args if str(a).strip()]
+    if not raw:
+        return []
+
+    # Several argv entries that are all destinations: the shell already split
+    # them, as in `noren open social.example search.example`.
+    if len(raw) > 1 and all(looks_like_destination(a) for a in raw):
+        out = []
+        for arg in raw:
+            out.extend(p.strip() for p in arg.split(",") if p.strip())
+        return out
+
+    joined = " ".join(raw)
+    if "," not in joined:
+        return [joined]
+
+    parts = [p.strip() for p in joined.split(",") if p.strip()]
+    if len(parts) > 1 and all(looks_like_destination(p) for p in parts):
+        return parts
+    return [joined]
+
+
+def chromeless_addresses():
+    return {w.get("address") for w in noren_windows()}
+
+
+def open_many(urls, group=False):
+    """Open each url as its own chrome-less window, optionally as one group.
+
+    Grouping cannot be fired straight after the spawns: the windows do not exist
+    yet. Wait for them to actually appear, then fold in only the ones that were
+    not there before -- gathering everything would drag in whatever was already
+    open, which is not what was asked for.
+    """
+    before = chromeless_addresses() if group else set()
+
+    for url in urls:
+        try:
+            call({"cmd": "open", "url": url}, fallback=lambda u=url: spawn_direct(u))
+        except SystemExit:
+            # One bad url should not strand the rest.
+            print(f"noren: could not open {url!r}", file=sys.stderr)
+
+    if not group:
+        print(f"noren: opening {len(urls)} window(s)")
+        return 0
+
+    deadline = time.monotonic() + 8.0
+    fresh = set()
+    while time.monotonic() < deadline:
+        time.sleep(0.25)
+        fresh = chromeless_addresses() - before
+        if len(fresh) >= len(urls):
+            break
+
+    if len(fresh) < 2:
+        print(f"noren: opened {len(urls)} window(s); too few appeared to group")
+        return 0
+
+    # Let the last window settle before Hyprland is asked to move it.
+    time.sleep(0.3)
+    return gather(only=fresh)
+
+
 def spawn_direct(url):
     """Open a chrome-less window without the bridge.
 
@@ -481,10 +566,14 @@ def main(argv):
         return doctor()
 
     if cmd == "open":
-        if not rest:
+        group = "--group" in rest
+        urls = split_urls([a for a in rest if a != "--group"])
+        if not urls:
             sys.exit("noren open: needs a url")
-        res = call({"cmd": "open", "url": rest[0]},
-                   fallback=lambda: spawn_direct(rest[0]))
+        if len(urls) > 1 or group:
+            return open_many(urls, group=group)
+        res = call({"cmd": "open", "url": urls[0]},
+                   fallback=lambda: spawn_direct(urls[0]))
     elif cmd == "go":
         if not rest:
             sys.exit("noren go: needs a url")

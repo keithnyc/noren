@@ -55,6 +55,38 @@ Item {
   readonly property var matches: buildMatches()
   readonly property int maxRows: 12
 
+  // Several destinations typed at once: `social.example, search.example, video.example`.
+  // The comma only counts as a separator when *every* part is itself a
+  // destination -- `bread, butter recipe` is a search. The same rule lives in
+  // `noren open`, which does the actual splitting; this copy only decides what
+  // the footer promises and what Ctrl+Enter means.
+  readonly property var destinations: splitDestinations(filterText)
+  readonly property bool multiUrl: destinations.length > 1
+
+  function isDestination(text) {
+    var raw = String(text || "").trim()
+    if (raw.length === 0 || raw.indexOf(" ") >= 0) return false
+    return /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || raw.indexOf(".") >= 0
+  }
+
+  function splitDestinations(text) {
+    var raw = String(text || "").trim()
+    if (raw.indexOf(",") < 0) return raw.length > 0 ? [raw] : []
+    var parts = []
+    var pieces = raw.split(",")
+    for (var i = 0; i < pieces.length; i++) {
+      var piece = pieces[i].trim()
+      if (piece.length > 0) parts.push(piece)
+    }
+    if (parts.length > 1) {
+      for (var j = 0; j < parts.length; j++) {
+        if (!root.isDestination(parts[j])) return [raw]
+      }
+      return parts
+    }
+    return [raw]
+  }
+
   // A typed string that looks like a destination rather than a search.
   readonly property bool looksLikeUrl: /^[a-z][a-z0-9+.-]*:\/\//i.test(filterText)
     || (/\./.test(filterText) && !/\s/.test(filterText))
@@ -195,6 +227,14 @@ Item {
     // could land on `example.com/inbox` because history ranked it first --
     // a launcher that sometimes goes somewhere else is a launcher you cannot
     // trust, which is the same rule Enter already follows for windows.
+    // Several destinations beat any suggestion: nobody types three hosts and
+    // means "jump to a tab".
+    if (root.multiUrl) {
+      runNoren(["open", root.filterText.trim()])
+      root.close()
+      return
+    }
+
     var honourPick = pick && (root.selectionMoved || !root.looksLikeUrl)
 
     if (honourPick && pick.kind === "tab") {
@@ -212,6 +252,14 @@ Item {
   // redirect one — it has to be reachable, not buried.
   function replaceCurrent() {
     var text = root.filterText.trim()
+    // "Replace this window" has no meaning for three urls, so Ctrl+Enter takes
+    // the other reading there: open them all as one group. The single-url
+    // invariant is untouched -- Enter opens, Ctrl+Enter replaces.
+    if (root.multiUrl) {
+      runNoren(["open", "--group", text])
+      root.close()
+      return
+    }
     if (text.length > 0 && root.canReplace) runNoren(["go", text])
     root.close()
   }
@@ -488,9 +536,11 @@ Item {
           spacing: Style.spacing.md
 
           Text {
-            text: root.matches.length > 0 && !root.looksLikeUrl
-              ? "\u21B5 go to tab"
-              : "\u21B5 new window"
+            text: root.multiUrl
+              ? "\u21B5 open " + root.destinations.length + " windows"
+              : (root.matches.length > 0 && !root.looksLikeUrl
+                 ? "\u21B5 go to tab"
+                 : "\u21B5 new window")
             color: root.foreground
             opacity: 0.75
             font.family: root.fontFamily
@@ -507,11 +557,13 @@ Item {
 
           Text {
             width: Math.max(0, parent.width - Style.space(220))
-            text: root.canReplace
-              ? "^\u21B5 replace \u201C" + root.target.title + "\u201D"
-              : "^\u21B5 replace \u2014 no page on this workspace"
+            text: root.multiUrl
+              ? "^\u21B5 open " + root.destinations.length + " as one group"
+              : (root.canReplace
+                 ? "^\u21B5 replace \u201C" + root.target.title + "\u201D"
+                 : "^\u21B5 replace \u2014 no page on this workspace")
             color: root.foreground
-            opacity: root.canReplace ? 0.75 : 0.35
+            opacity: (root.multiUrl || root.canReplace) ? 0.75 : 0.35
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
             elide: Text.ElideRight

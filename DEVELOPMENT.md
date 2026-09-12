@@ -229,6 +229,19 @@ fold in rather than claiming success. It only ever touches `chrome-<host>-<profi
 windows: an ordinary tabbed window has class `chromium`, and grouping that would
 drag the extension's host window in with the pages.
 
+**Ctrl+Enter means something different for several urls, and that does not
+break the invariant.** Enter opens, Ctrl+Enter replaces — for *one* url. Replace
+has no meaning for three, so there Ctrl+Enter takes the other reading: open them
+all and fold them into a group. The single-url behaviour is untouched, which is
+the part the invariant is actually about.
+
+The comma only separates when *every* part is a destination, so
+`bread, butter recipe` stays a search. That rule lives in `noren open`, which
+does the splitting; the overlay keeps a copy only to decide what the footer
+promises. Grouping cannot be fired straight after the spawns — the windows do
+not exist yet — so `open --group` waits for them to appear and folds in only the
+ones that were not there before, rather than gathering whatever was already open.
+
 **A typed url stays literal until you arrow onto a suggestion.** Completion
 ranks bookmarks and history together with open tabs, so the top row is often not
 what was typed — and Enter acting on it would mean typing

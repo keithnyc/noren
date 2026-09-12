@@ -32,6 +32,10 @@ deliberately small.
   its own window instead. This is the experiment; see below.
 - **Page theming (tint by default)** — web pages follow the active Omarchy
   theme, live. See below.
+- **Several urls at once** — type `social.example, search.example, video.example` and Enter opens
+  three tiled windows; Ctrl+Enter opens them and folds them into one Hyprland
+  group. The comma only separates when every part is a destination, so
+  `bread, butter recipe` is still a search.
 - **Url completion** — the overlay completes from open tabs, bookmarks and
   history, ranked together. A typed url stays literal until you arrow onto a
   suggestion.
