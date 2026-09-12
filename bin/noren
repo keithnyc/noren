@@ -3,6 +3,7 @@
 
 import json
 import os
+import math
 import re
 import socket
 import subprocess
@@ -261,6 +262,19 @@ def doctor():
         problems += 1
         _row(BAD, "page theme", str(exc))
 
+    # Completion still has to work with the browser closed, which is the first
+    # summon of the day. If the profile cannot be read, the url bar is silently
+    # empty until the browser happens to be open -- worth a row.
+    marks = len(offline_bookmarks())
+    visits = len(offline_history(limit=1))
+    if marks or visits:
+        _row(OK, "offline completion",
+             f"{marks} bookmark(s), history "
+             + ("readable" if visits else "locked (browser running)"))
+    else:
+        _row(MEH, "offline completion", "profile not readable - no completions "
+             "while the browser is closed")
+
     # And finally the live bridge.
     if os.path.exists(SOCKET_PATH):
         try:
@@ -329,6 +343,159 @@ def hypr_target():
         if not c.get("hidden"):
             return describe(c)
     return describe(here[0]) if here else None
+
+
+# ------------------------------------------------------- offline completions
+#
+# With the browser closed there is no bridge, so the extension cannot answer --
+# and that is precisely the summon where completion helps most, the first one of
+# the day. Chromium's own profile has both: `Bookmarks` is JSON and `History` is
+# SQLite. The locking works out: History is locked while Chromium runs, which is
+# exactly when this path is not needed.
+#
+# The ranking below is a second implementation of the extension's `scoreEntry`.
+# Duplicating it is a real cost, accepted because the alternative is an empty
+# url bar until the browser happens to be open. Keep the two in step.
+
+WEBKIT_EPOCH_OFFSET = 11644473600  # seconds between 1601-01-01 and 1970-01-01
+
+
+def profile_dir():
+    cfg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(cfg, default_browser(), "Default")
+
+
+def offline_bookmarks():
+    path = os.path.join(profile_dir(), "Bookmarks")
+    try:
+        with open(path, "r") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+
+    found = []
+
+    def walk(node):
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "url" and node.get("url"):
+            found.append({"url": node["url"], "title": node.get("name") or ""})
+        for child in node.get("children") or []:
+            walk(child)
+
+    for root in (data.get("roots") or {}).values():
+        walk(root)
+    return found
+
+
+def offline_history(limit=400):
+    path = os.path.join(profile_dir(), "History")
+    if not os.path.exists(path):
+        return []
+    try:
+        import sqlite3
+
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "SELECT url, title, visit_count, typed_count, last_visit_time "
+                "FROM urls WHERE hidden = 0 ORDER BY visit_count DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        # Locked (browser running) or unreadable. Bookmarks alone is still
+        # better than nothing.
+        return []
+
+    out = []
+    for url, title, visits, typed, last in rows:
+        out.append({
+            "url": url,
+            "title": title or "",
+            "visitCount": visits or 0,
+            "typedCount": typed or 0,
+            # Chromium stores microseconds since 1601-01-01.
+            "lastVisit": ((last or 0) / 1e6) - WEBKIT_EPOCH_OFFSET,
+        })
+    return out
+
+
+def _offline_score(entry, needle):
+    url = re.sub(r"^https?://", "", entry["url"]).lower().rstrip("/")
+    title = entry["title"].lower()
+    score = 120 if entry["kind"] == "bookmark" else 0
+
+    if needle:
+        if url.startswith(needle):
+            score += 200
+        elif ("/" + needle) in url:
+            score += 60
+        elif needle in url:
+            score += 40
+        if title.startswith(needle):
+            score += 80
+        elif needle in title:
+            score += 30
+
+    visits = entry.get("visitCount", 0)
+    score += min(60, math.log2(1 + visits) * 12)
+    # A url typed by hand is a stronger signal of intent than one merely visited.
+    score += min(20, entry.get("typedCount", 0) * 4)
+
+    last = entry.get("lastVisit", 0)
+    if last > 0:
+        days = (time.time() - last) / 86400.0
+        score += max(0, 40 - days * 2)
+    return score
+
+
+def suggest_offline(query, kind=None, limit=8):
+    needle = (query or "").strip().lower()
+    pool = {}
+
+    def add(entry, entry_kind):
+        url = entry.get("url") or ""
+        if not re.match(r"^https?://", url, re.I):
+            return
+        key = re.sub(r"^https?://", "", url).lower().rstrip("/")
+        existing = pool.get(key)
+        if existing:
+            if entry_kind == "bookmark":
+                existing["kind"] = "bookmark"
+            for field in ("visitCount", "typedCount", "lastVisit"):
+                existing[field] = max(existing.get(field, 0), entry.get(field, 0))
+            if not existing["title"] and entry.get("title"):
+                existing["title"] = entry["title"]
+            return
+        merged = dict(entry)
+        merged["kind"] = entry_kind
+        merged.setdefault("visitCount", 0)
+        merged.setdefault("typedCount", 0)
+        merged.setdefault("lastVisit", 0)
+        pool[key] = merged
+
+    if kind != "history":
+        for mark in offline_bookmarks():
+            add(mark, "bookmark")
+    if kind != "bookmark":
+        for visit in offline_history():
+            add(visit, "history")
+
+    rows = list(pool.values())
+    if needle:
+        rows = [
+            r for r in rows
+            if needle in re.sub(r"^https?://", "", r["url"]).lower()
+            or needle in r["title"].lower()
+        ]
+    rows.sort(key=lambda r: _offline_score(r, needle), reverse=True)
+    return [
+        {"url": r["url"], "title": r["title"], "kind": r["kind"],
+         "visits": r.get("visitCount", 0)}
+        for r in rows[:limit]
+    ]
 
 
 # ----------------------------------------------------------------------- sets
@@ -1120,10 +1287,17 @@ def main(argv):
             at = rest.index("--kind")
             kind = rest[at + 1] if at + 1 < len(rest) else None
             rest = rest[:at] + rest[at + 2:]
-        req = {"cmd": "suggest", "query": " ".join(rest), "limit": 8}
-        if kind:
-            req["kind"] = kind
-        res = call(req)
+        query = " ".join(rest)
+        if bridge_up():
+            req = {"cmd": "suggest", "query": query, "limit": 8}
+            if kind:
+                req["kind"] = kind
+            res = call(req)
+        else:
+            # No browser, no extension. Read Chromium's profile instead, so the
+            # first summon of the day still completes.
+            res = {"ok": True, "offline": True,
+                   "suggestions": suggest_offline(query, kind, 8)}
     elif cmd == "gather":
         return gather(" ".join(rest) if rest else None)
     elif cmd == "pop":

@@ -299,6 +299,21 @@ inside an overlay is worse than the mistake it prevents. The key is only
 *consumed* when it actually removed something, so Shift+Delete still edits text
 everywhere else in the field.
 
+**Completion has to work with the browser closed**, because that is the first
+summon of the day — and until it did, the url bar came up empty until a window
+happened to be open. With no browser there is no bridge, so the extension cannot
+answer; Chromium's own profile can. `Bookmarks` is JSON and `History` is SQLite,
+and the locking works out in exactly the right direction: `History` is locked
+while Chromium runs, which is precisely when this path is not needed. A locked
+or missing database degrades to bookmarks-only rather than failing.
+
+Two things worth knowing about it. `last_visit_time` is **microseconds since
+1601-01-01**, not a unix timestamp — treat it as one and every result looks
+ancient. And `suggest_offline`'s ranking is a second implementation of the
+extension's `scoreEntry`: real duplication, accepted because the alternative is
+an empty url bar, and the two need keeping in step. `doctor` reports whether the
+profile is readable, since otherwise the failure is a silently empty list.
+
 **A typed url stays literal until you arrow onto a suggestion.** Completion
 ranks bookmarks and history together with open tabs, so the top row is often not
 what was typed — and Enter acting on it would mean typing

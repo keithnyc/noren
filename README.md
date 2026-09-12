@@ -37,7 +37,8 @@ deliberately small.
   group. The comma only separates when every part is a destination, so
   `bread, butter recipe` is still a search.
 - **Url completion** — the overlay completes from open tabs, bookmarks and
-  history, ranked together. A typed url stays literal until you arrow onto a
+  history, ranked together, and **works with the browser closed** by reading
+  Chromium's own profile. A typed url stays literal until you arrow onto a
   suggestion. A leading sigil narrows the search: `*` bookmarks, `%` history,
   `#` open tabs — and `*` alone lists your bookmarks.
 - **Bookmarks** — `D` in the radial (or `noren save`) bookmarks the page in
