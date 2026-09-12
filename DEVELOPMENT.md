@@ -352,6 +352,15 @@ arrives — the card lands on a live window rather than on a stale picture of on
 And the scrim fades during the flight, so what it lands on is the real desktop
 rather than a dimmed copy.
 
+**The raise has to happen twice.** The overlay holds
+`WlrKeyboardFocus.Exclusive`, and when it closes Hyprland restores focus to
+whatever was focused before it opened — silently undoing the raise. The symptom
+is precise and misleading: the animation is perfect and the page never changes,
+which looks like the dispatch failing when it actually succeeded and was
+reverted. So the window is raised again once the overlay is gone. Raising an
+already-focused window is a no-op, so the second call costs nothing in the case
+where the first survives.
+
 `at`/`size` are global **logical** coordinates and the monitors here have
 non-zero origins and different scales (DP-2 at -960, eDP-1 at -2560, scales 1.875
 and 1.6), so the monitor origin has to be subtracted. The overlay ignores

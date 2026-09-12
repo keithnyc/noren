@@ -25,6 +25,9 @@ Item {
   property string pageUrl: ""
   property string pageTitle: ""
   property string themeMode: "tint"
+  // The window the overview asked for, kept across the close so it can be
+  // raised again afterwards -- see onChosen.
+  property string pendingRaise: ""
   property string filterText: ""
   property int selectedIndex: 0
   property var tabs: []
@@ -438,6 +441,16 @@ Item {
   }
 
   Timer {
+    id: reRaise
+    interval: 90
+    repeat: false
+    onTriggered: {
+      if (root.pendingRaise.length > 0) root.runNoren(["raise", root.pendingRaise])
+      root.pendingRaise = ""
+    }
+  }
+
+  Timer {
     id: setRefresh
     interval: 260
     repeat: false
@@ -641,12 +654,26 @@ Item {
       accent: root.selectedText
       fontFamily: root.fontFamily
 
-      // The raise happens as the card starts flying, so the switch is already
-      // done when it lands; closing waits for the animation.
+      // Raised twice, on purpose.
+      //
+      // The first is as the card starts flying, so the switch happens behind it
+      // and the card lands on a live window. That alone does not stick: this
+      // overlay holds WlrKeyboardFocus.Exclusive, and when it closes Hyprland
+      // restores focus to whatever was focused before it opened -- undoing the
+      // raise. The animation looked perfect and the page never changed.
+      //
+      // So the same window is raised again once the overlay is gone. `noren
+      // raise` verifies the focus landed, and raising an already-focused window
+      // is a no-op, so the second call costs nothing when the first survives.
       onRaiseRequested: function (address) {
-        if (address && address.length > 0) root.runNoren(["raise", address])
+        if (!address || address.length === 0) return
+        root.pendingRaise = address
+        root.runNoren(["raise", address])
       }
-      onChosen: root.close()
+      onChosen: {
+        root.close()
+        if (root.pendingRaise.length > 0) reRaise.restart()
+      }
 
       // Escape, by contrast, returns to the ring rather than closing outright,
       // so a wrong turn costs one key instead of a re-summon.
