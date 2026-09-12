@@ -16,7 +16,7 @@ import qs.Ui
 Item {
   id: root
 
-  // Each entry: { icon, label, hint, run }
+  // Each entry: { key, icon, label, hint, run }
   property var actions: []
   property bool active: false
   property string contextLabel: ""
@@ -52,6 +52,15 @@ Item {
     root.spread = active ? 1 : 0
   }
 
+  function indexForKey(text) {
+    if (!text || text.length !== 1) return -1
+    var want = text.toUpperCase()
+    for (var i = 0; i < root.actions.length; i++) {
+      if (String(root.actions[i].key || "").toUpperCase() === want) return i
+    }
+    return -1
+  }
+
   function step(delta) {
     var n = root.actions.length
     if (n === 0) return
@@ -85,7 +94,13 @@ Item {
       var idx = event.key - Qt.Key_1
       if (idx < root.actions.length) root.chose(idx)
     } else {
-      return
+      // A mnemonic letter fires its action straight away -- the ring is meant
+      // to be summoned and dismissed in one gesture, and reaching for arrows
+      // first would undo that. Falls through to ignored if the key is not one
+      // of ours, so the compositor still sees it.
+      var typed = root.indexForKey(event.text)
+      if (typed < 0) return
+      root.chose(typed)
     }
     event.accepted = true
   }
@@ -147,7 +162,7 @@ Item {
           horizontalAlignment: Text.AlignHCenter
           text: root.hovered >= 0
             ? (root.actions[root.hovered].hint || "")
-            : root.contextLabel
+            : (root.contextLabel + "  ·  press a letter")
           color: root.foreground
           opacity: 0.55
           font.family: root.fontFamily
@@ -216,6 +231,32 @@ Item {
               font.pixelSize: Style.font.caption
               elide: Text.ElideRight
             }
+          }
+        }
+
+        // The key that fires this item. Shown rather than learned: a shortcut
+        // nobody can see is a shortcut nobody uses.
+        Rectangle {
+          width: Style.space(30)
+          height: width
+          radius: width / 2
+          anchors.top: parent.top
+          anchors.right: parent.right
+          anchors.topMargin: Style.space(2)
+          anchors.rightMargin: Style.space(2)
+          visible: String(modelData.key || "").length > 0
+          color: spoke.isHovered ? root.accent : root.borderColor
+          opacity: spoke.isHovered ? 1.0 : 0.55
+
+          Behavior on color { ColorAnimation { duration: 120 } }
+
+          Text {
+            anchors.centerIn: parent
+            text: String(modelData.key || "")
+            color: spoke.isHovered ? root.background : root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
           }
         }
 

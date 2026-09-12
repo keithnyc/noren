@@ -35,9 +35,11 @@ deliberately small.
 - **Url completion** — the overlay completes from open tabs, bookmarks and
   history, ranked together. A typed url stays literal until you arrow onto a
   suggestion.
-- **Radial menu** — `SUPER + ALT + B` rings back, forward, reload, copy, url
-  bar, peel, gather and theme around the page in front of you. A chrome-less
-  window has no toolbar, so these have nowhere else to live.
+- **Radial menu** — `SUPER + M` rings back, forward, reload, copy, url bar,
+  peel, gather and theme around the page in front of you. A chrome-less window
+  has no toolbar, so these have nowhere else to live. Every item carries a
+  mnemonic letter (`B` `F` `R` `C` `U` `P` `G` `T`) shown on the item, so the
+  ring can be summoned and used in one gesture without reaching for arrows.
 
 Back, forward and reload already work in a chrome-less window via Chromium's own
 `Alt+←` / `Alt+→` / `Ctrl+R`. The CLI versions exist so you can bind them to

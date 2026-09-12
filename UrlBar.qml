@@ -95,21 +95,21 @@ Item {
   }
 
   readonly property var radialActions: [
-    { icon: "\uf053", label: "Back", hint: "Previous page",
+    { icon: "\uf053", key: "B", label: "Back", hint: "Previous page",
       run: function () { root.runNoren(["back"]) } },
-    { icon: "\uf054", label: "Forward", hint: "Next page",
+    { icon: "\uf054", key: "F", label: "Forward", hint: "Next page",
       run: function () { root.runNoren(["forward"]) } },
-    { icon: "\udb81\udc53", label: "Reload", hint: "Fetch this page again",
+    { icon: "\udb81\udc53", key: "R", label: "Reload", hint: "Fetch this page again",
       run: function () { root.runNoren(["reload"]) } },
-    { icon: "\udb80\udd8f", label: "Copy", hint: root.pageUrl,
+    { icon: "\udb80\udd8f", key: "C", label: "Copy", hint: root.pageUrl,
       run: function () { root.copyUrl() } },
-    { icon: "\udb80\udd9f", label: "Url bar", hint: "Type a url, search tabs and history",
+    { icon: "\udb80\udd9f", key: "U", label: "Url bar", hint: "Type a url, search tabs and history",
       run: function () { root.showUrlBar() } },
-    { icon: "\udb81\udd6f", label: "Peel", hint: "This tab into its own window",
+    { icon: "\udb81\udd6f", key: "P", label: "Peel", hint: "This tab into its own window",
       run: function () { root.runNoren(["peel"]) } },
-    { icon: "\udb81\udd70", label: "Gather", hint: "Fold windows into one group",
+    { icon: "\udb81\udd70", key: "G", label: "Gather", hint: "Fold windows into one group",
       run: function () { root.runNoren(["gather"]) } },
-    { icon: "\udb80\udd0e", label: "Theme", hint: "Page theming: " + root.themeMode,
+    { icon: "\udb80\udd0e", key: "T", label: "Theme", hint: "Page theming: " + root.themeMode,
       run: function () { root.cycleTheme() } }
   ]
 
