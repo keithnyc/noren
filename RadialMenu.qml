@@ -32,8 +32,23 @@ Item {
   signal chose(int index)
   signal dismissed()
 
-  readonly property real ringRadius: Style.space(148)
   readonly property real itemSize: Style.space(96)
+
+  // Derived from the item count, not fixed. A fixed radius means every item
+  // added packs the ring tighter, and at ten items the circles were touching
+  // and the key badges were overlapping their neighbours.
+  //
+  // Fit n circles of `itemSize` plus a gap around a circumference: the radius
+  // that needs is n * (itemSize + gap) / 2pi. Take whichever is larger, that or
+  // the base radius, so a small ring stays compact. Then clamp so the whole
+  // thing still fits on screen.
+  readonly property real gapBetween: Style.space(26)
+  readonly property real neededRadius:
+    (Math.max(1, actions.length) * (itemSize + gapBetween)) / (2 * Math.PI)
+  readonly property real maxRadius:
+    Math.max(Style.space(120), (Math.min(root.width, root.height) - itemSize) / 2 - Style.space(24))
+  readonly property real ringRadius:
+    Math.min(maxRadius, Math.max(Style.space(148), neededRadius))
 
   // Drives the whole entrance: items fly out from the centre and the ring
   // scales up behind them. One property so nothing can animate out of step.
