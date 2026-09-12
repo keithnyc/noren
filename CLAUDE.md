@@ -45,6 +45,11 @@ rather than debugging by hand.
   syntax error on 0.56.2; use `hl.dsp.*` and take signatures from Omarchy's
   `bindings.lua`. Do not probe them on a live session — several ignore bad
   arguments and act anyway.
+- **Never dispatch a group or window mutation without checking the target
+  first.** `group.toggle()` and `window.move()` act on whatever is *focused*, so
+  an empty or wrong address silently hits the user's terminal instead. This has
+  grouped keith's shell twice. Verify the address is non-empty, focus it, confirm
+  `activewindow` matches, and only then dispatch.
 - **`pgrep -f` / `pkill -f` with a path pattern kills this shell.** Use explicit
   PIDs or `-x`.
 

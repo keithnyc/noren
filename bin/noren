@@ -899,7 +899,8 @@ def gather(pattern=None, only=None):
 
     # The anchor has to be a group before anything can join it.
     hypr_focus(anchor["address"])
-    if not anchor.get("grouped"):
+    made_group = not anchor.get("grouped")
+    if made_group:
         hypr_do("hl.dsp.group.toggle()")
 
     def try_fold(win):
@@ -916,6 +917,12 @@ def gather(pattern=None, only=None):
         # check: `grouped` in `hyprctl clients` is the only honest confirmation.
         for direction in ("l", "r", "u", "d"):
             hypr_do(f'hl.dsp.window.move({{ into_group = "{direction}" }})')
+            # Give the compositor a moment before believing it failed. Checking
+            # immediately read a successful fold as a failure, and the loop then
+            # tried the remaining three directions -- each of which can move the
+            # window somewhere else. That is why a window would end up outside
+            # the group *and* somewhere unexpected.
+            time.sleep(0.12)
             if _is_grouped(addr):
                 return True
         return False
@@ -942,10 +949,36 @@ def gather(pattern=None, only=None):
         pending = remaining
     stuck = pending
 
+    # Lock the group so it stops collecting whatever you launch next.
+    #
+    # Hyprland's `auto_group` is on by default, which means *any* new window
+    # spawned while a group is focused joins it -- a terminal, a file manager,
+    # anything. That is what makes a peeled page land in the right group, and
+    # also what puts a terminal in your reading group. A locked group does not
+    # accept new windows, so `gather` now means "this group is what I
+    # gathered".
+    #
+    # lock_active, not lock: the latter is Hyprland's `lockgroups` and applies to
+    # every group on the machine. Locking is documented as refusing *new*
+    # windows, so `pop` and `scatter` are left alone -- removal is not addition.
+    # If nothing folded in, undo the group we made. A group of one is not what
+    # anyone asked for, and leaving it behind means the next `gather` sees the
+    # anchor as "already grouped" and behaves differently for no visible reason.
+    if moved == 0 and made_group:
+        hypr_focus(anchor["address"])
+        hypr_do("hl.dsp.group.toggle()")
+
+    locked = False
+    if moved > 0:
+        hypr_focus(anchor["address"])
+        out = hypr_do('hl.dsp.group.lock_active("lock")')
+        locked = "not in a group" not in (out or "").lower()
+
     if started_on:
         hypr_focus(started_on)
 
-    print(f"noren: gathered {moved} of {len(others)} window(s) into a group")
+    note = " (locked)" if locked else ""
+    print(f"noren: gathered {moved} of {len(others)} window(s) into a group{note}")
     for win in stuck:
         print(f"       left out: {(win.get('title') or win.get('class'))[:60]}")
     return 0
