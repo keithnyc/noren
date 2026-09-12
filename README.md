@@ -250,6 +250,18 @@ It only touches `chrome-<host>-<profile>` windows, never an ordinary tabbed
 window, and it confirms each move against Hyprland rather than assuming —
 `into_group` takes a direction, not a target, so it tries each and checks.
 
+## Optional: fade between tabs
+
+Omarchy disables Hyprland's `fadeSwitch`, so changing the active window in a
+group swaps instantly — and with tabs-as-windows, that swap is a tab change.
+Noren does not touch this: animations are global, and a browser plugin should
+not restyle your compositor. If you want the crossfade, put it in your own
+`~/.config/hypr/looknfeel.lua`:
+
+```lua
+hl.animation({ leaf = "fadeSwitch", enabled = true, speed = 2.6, bezier = "almostLinear" })
+```
+
 ## Not done yet
 
 Per-site theming modes, deeper immerse, workspace sessions, per-site window

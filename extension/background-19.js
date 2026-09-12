@@ -370,9 +370,28 @@ function peelable(url) {
 // flow that depends on `window.opener` and on being closed by the page that
 // opened it. Peeling one into a chrome-less window breaks the login it belongs
 // to.
+// Window types, cached. `chrome.windows.get` is an IPC round trip to the browser
+// process and it sits directly in the peel hot path -- and that path is watched:
+// a link opening in a new window puts a full-chrome Chromium window on screen,
+// which exists only until this decides to peel it. Every millisecond here is a
+// millisecond of window the user sees and then sees destroyed.
+//
+// This shortens the flash. It cannot remove it: the window is Chromium's, drawn
+// before any extension event fires. See DEVELOPMENT.md -- that flash is one of
+// the two standing arguments for forking, and the standing answer is not to.
+const windowTypes = new Map();
+
+chrome.windows.onCreated.addListener((win) => {
+  if (win && win.id !== undefined) windowTypes.set(win.id, win.type);
+});
+chrome.windows.onRemoved.addListener((id) => windowTypes.delete(id));
+
 async function inTabbedWindow(windowId) {
+  const known = windowTypes.get(windowId);
+  if (known !== undefined) return known === 'normal';
   try {
     const win = await chrome.windows.get(windowId);
+    if (win && win.id !== undefined) windowTypes.set(win.id, win.type);
     return Boolean(win) && win.type === 'normal';
   } catch (e) {
     return false;
@@ -563,6 +582,12 @@ chrome.windows.onFocusChanged.addListener(pushState);
 // for the stored auto-peel value so `noren status` never reports a stale off.
 connect();
 autoPeelReady.then(pushState);
+// Seed the window-type cache so the first peel after a worker restart is not
+// the one that pays for the round trip.
+chrome.windows
+  .getAll()
+  .then((wins) => wins.forEach((w) => windowTypes.set(w.id, w.type)))
+  .catch(() => {});
 // The worker restarts far more often than the host does, so ask rather than
 // waiting for the next theme change to bring one.
 themeReady.then(() => send({ type: 'wantTheme' }));

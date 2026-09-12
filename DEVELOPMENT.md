@@ -29,8 +29,15 @@ of real use is the only genuine unknown in the project — everything else is
 elaboration on it. Two things to watch, because they are the only real argument
 for ever forking Chromium:
 
-1. **The flash.** A peeled tab exists briefly before it is moved out. Visible on
-   every link click.
+1. **The flash.** Not a tab appearing and moving — a **whole tabbed window with
+   full Chromium chrome** is drawn, then destroyed, and a chrome-less window
+   takes its place. Observed 2026-09-11 in a group, where the replacement also
+   triggers a relayout, which is what makes it read as a lurch rather than a
+   blink. Chromium draws that window before any extension event fires, so the
+   extension can only shorten the flash, never remove it: `inTabbedWindow`
+   caches window types so the hot path does not pay for a `chrome.windows.get`
+   round trip. Removing it outright needs the fork, and the fork is still not
+   worth it.
 2. **The origin strip.** Navigating cross-origin inside an `--app` window makes
    Chromium draw a small security bar at the top.
 
@@ -255,6 +262,19 @@ Ranking lives extension-side in `suggest()`: a host that *starts with* the typed
 text outranks a page whose title merely mentions it, bookmarks carry a standing
 bonus over history, and visit counts are flattened through `log2` so the tenth
 visit does not outrank a good match.
+
+**Noren must never change Hyprland's animations.** They are global — every
+window on the desktop gets them — and a browser plugin has no business
+restyling someone's compositor. `install.sh` touches none of it. Omarchy
+disables `fadeSwitch`, so switching the active window in a group swaps with
+nothing in between, and with tabs-as-windows that swap *is* a tab change;
+enabling it is a real improvement, but it belongs in the user's own
+`looknfeel.lua` as a documented suggestion, not in the installer.
+
+Two others were tried for the peel flash and reverted: `windowsMove` slower and
+`windowsIn` at `popin 95%`. They were aimed at the wrong cause — the flash is a
+full-chrome window being created and destroyed, not an animation curve — and
+they changed the whole desktop to treat a symptom.
 
 **One browser at a time.** The host owns a single socket, so two instrumented
 browsers would fight over it. `install.sh` clears Noren out of every other
