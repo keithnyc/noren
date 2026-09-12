@@ -591,6 +591,10 @@ Item {
     Rectangle {
       anchors.fill: parent
       color: root.scrim
+      // Fades while the overview launches a page, so the card lands on the real
+      // window rather than on a dimmed copy of the desktop.
+      opacity: (root.mode === "overview" && overview.launching) ? 0 : 1
+      Behavior on opacity { NumberAnimation { duration: 240 } }
       MouseArea {
         anchors.fill: parent
         onClicked: root.close()
@@ -637,11 +641,12 @@ Item {
       accent: root.selectedText
       fontFamily: root.fontFamily
 
-      // Picking a page closes everything -- the point was to get to that page.
-      onChosen: function (address) {
+      // The raise happens as the card starts flying, so the switch is already
+      // done when it lands; closing waits for the animation.
+      onRaiseRequested: function (address) {
         if (address && address.length > 0) root.runNoren(["raise", address])
-        root.close()
       }
+      onChosen: root.close()
 
       // Escape, by contrast, returns to the ring rather than closing outright,
       // so a wrong turn costs one key instead of a re-summon.

@@ -341,6 +341,22 @@ Two others were tried for the peel flash and reverted: `windowsMove` slower and
 full-chrome window being created and destroyed, not an animation curve — and
 they changed the whole desktop to treat a symptom.
 
+**Selecting a page flies the card to the window's real geometry.** A fade would
+have been easier and would have said nothing; animating to `at`/`size` from the
+client map makes the card read as *becoming* the window, because it lands exactly
+where the window is.
+
+Two details that matter. The raise is dispatched when the flight *starts*, not
+when it ends, so the compositor has already switched by the time the card
+arrives — the card lands on a live window rather than on a stale picture of one.
+And the scrim fades during the flight, so what it lands on is the real desktop
+rather than a dimmed copy.
+
+`at`/`size` are global **logical** coordinates and the monitors here have
+non-zero origins and different scales (DP-2 at -960, eDP-1 at -2560, scales 1.875
+and 1.6), so the monitor origin has to be subtracted. The overlay ignores
+exclusion zones, which is what makes its 0,0 the monitor's origin.
+
 **Only static cards are layered.** The overview's depth of field comes from
 `layer.enabled` plus a `MultiEffect` blur on the *unselected* cards, which hold a
 still frame, so the effect is a one-off render. The selected card captures

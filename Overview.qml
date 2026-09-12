@@ -35,13 +35,22 @@ Item {
   // Two different outcomes, and they were one signal to begin with: picking a
   // page emitted `dismissed`, which the overlay reads as "go back to the ring",
   // so Enter activated the window and then bounced to the radial.
-  // Carries the address, because focusing is done by the `noren` CLI rather
-  // than Hyprland.dispatch -- see choose().
-  signal chosen(string address)
+  // Two moments, not one. The window is raised as the card starts flying, so the
+  // compositor has already switched by the time the card lands on it; the
+  // overlay closes only when the animation is done.
+  signal raiseRequested(string address)
+  signal chosen()
   signal dismissed()
 
   property int selected: 0
   property real spread: 0
+
+  // The card being launched, and where it is flying to. Selecting a page should
+  // read as that card *becoming* the window, so it animates to the window's real
+  // geometry rather than just fading out.
+  property int launchIndex: -1
+  readonly property bool launching: launchIndex >= 0
+  property rect launchRect: Qt.rect(0, 0, 0, 0)
 
   // Whether the pointer, rather than the keyboard, is driving the selection.
   //
@@ -79,6 +88,7 @@ Item {
     root.spread = active ? 1 : 0
     if (active) {
       Hyprland.refreshToplevels()
+      root.launchIndex = -1
       root.pointerDriving = false
       // Deferred: `members` is a binding on `active`, so at this instant it can
       // still be the old (empty) list and indexOfActive would answer 0.
@@ -131,6 +141,28 @@ Item {
     return loose
   }
 
+  // Where a member's window actually sits, in this overlay's coordinates.
+  //
+  // `at`/`size` from Hyprland are global *logical* coordinates, and monitors
+  // here have non-zero origins and different scales (DP-2 at -960, eDP-1 at
+  // -2560), so the monitor origin has to come off. The overlay ignores
+  // exclusion zones, so its 0,0 is the monitor's origin.
+  function rectFor(member) {
+    var fallback = Qt.rect(root.width / 2 - root.cardW / 2,
+                           root.height / 2 - root.cardH / 2,
+                           root.cardW, root.cardH)
+    if (!member) return fallback
+    var ipc = member.lastIpcObject || {}
+    var at = ipc.at
+    var size = ipc.size
+    if (!at || !size || at.length < 2 || size.length < 2) return fallback
+
+    var mon = member.monitor || Hyprland.focusedMonitor
+    var ox = mon ? mon.x : 0
+    var oy = mon ? mon.y : 0
+    return Qt.rect(at[0] - ox, at[1] - oy, size[0], size[1])
+  }
+
   function indexOfActive() {
     for (var i = 0; i < root.members.length; i++) {
       if (root.members[i] && root.members[i].activated) return i
@@ -160,9 +192,10 @@ Item {
   }
 
   function choose(index) {
+    if (root.launching) return
     var member = root.members[index]
     if (!member) {
-      root.chosen("")
+      root.chosen()
       return
     }
     // Hand the address up rather than dispatching here. Hyprland.dispatch from
@@ -170,7 +203,20 @@ Item {
     // appeared dead while the key handler was provably fine. The `noren` CLI
     // does the same focus and verifies it took, and it is the path every other
     // radial action already uses, so there is one dispatch route instead of two.
-    root.chosen(String(member.address || ""))
+    root.launchRect = root.rectFor(member)
+    root.selected = index
+    root.launchIndex = index
+    // Raise immediately: the switch happens behind the flying card, so the card
+    // lands on a window that is already active.
+    root.raiseRequested(String(member.address || ""))
+    launchTimer.restart()
+  }
+
+  Timer {
+    id: launchTimer
+    interval: 300
+    repeat: false
+    onTriggered: root.chosen()
   }
 
   focus: root.active
@@ -242,16 +288,26 @@ Item {
       readonly property int offset: index - root.selected
       readonly property real away: Math.abs(offset)
       readonly property bool isSelected: offset === 0
+      readonly property bool isLaunching: root.launchIndex === index
 
-      width: root.cardW
-      height: root.cardH
       // Cards stack outward from the middle; the selected one sits square to
-      // the viewer and everything else leans away.
-      x: root.width / 2 - width / 2 + offset * root.cardStep * root.spread
-      y: root.height / 2 - height / 2
-      z: 100 - away
-      opacity: root.spread * Math.max(0.22, 1 - away * 0.24)
-      scale: Math.max(0.55, 1 - away * 0.12) * (0.86 + 0.14 * root.spread)
+      // the viewer and everything else leans away. The launching card leaves
+      // the ring entirely and takes the window's own geometry.
+      width: card.isLaunching ? root.launchRect.width : root.cardW
+      height: card.isLaunching ? root.launchRect.height : root.cardH
+      x: card.isLaunching
+        ? root.launchRect.x
+        : root.width / 2 - root.cardW / 2 + offset * root.cardStep * root.spread
+      y: card.isLaunching
+        ? root.launchRect.y
+        : root.height / 2 - root.cardH / 2
+      z: card.isLaunching ? 999 : 100 - away
+      opacity: root.launching
+        ? (card.isLaunching ? 1 : 0)
+        : root.spread * Math.max(0.22, 1 - away * 0.24)
+      scale: card.isLaunching
+        ? 1
+        : Math.max(0.55, 1 - away * 0.12) * (0.86 + 0.14 * root.spread)
 
       // Rotation about the vertical axis is what sells the depth: the flat
       // scale alone reads as a carousel, the foreshortening reads as space.
@@ -259,14 +315,32 @@ Item {
         origin.x: card.width / 2
         origin.y: card.height / 2
         axis { x: 0; y: 1; z: 0 }
-        angle: Math.max(-54, Math.min(54, -card.offset * 27))
+        // Square to the viewer as it flies: the card stops being a card.
+        angle: card.isLaunching ? 0 : Math.max(-54, Math.min(54, -card.offset * 27))
+        Behavior on angle {
+          NumberAnimation { duration: root.launching ? 280 : 170; easing.type: Easing.OutCubic }
+        }
       }
 
-      // Tightened from 280ms. The move is short and mostly horizontal, so a
-      // long ease reads as lag rather than weight.
-      Behavior on x { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
-      Behavior on scale { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
-      Behavior on opacity { NumberAnimation { duration: 140 } }
+      // Stepping between cards is a short horizontal nudge and wants 170ms;
+      // the launch crosses the screen and changes size, where the same 170ms
+      // reads as a snap. One duration, chosen by which is happening.
+      Behavior on x {
+        NumberAnimation { duration: root.launching ? 280 : 170; easing.type: Easing.OutCubic }
+      }
+      Behavior on y {
+        NumberAnimation { duration: root.launching ? 280 : 170; easing.type: Easing.OutCubic }
+      }
+      Behavior on width {
+        NumberAnimation { duration: root.launching ? 280 : 170; easing.type: Easing.OutCubic }
+      }
+      Behavior on height {
+        NumberAnimation { duration: root.launching ? 280 : 170; easing.type: Easing.OutCubic }
+      }
+      Behavior on scale {
+        NumberAnimation { duration: root.launching ? 280 : 170; easing.type: Easing.OutCubic }
+      }
+      Behavior on opacity { NumberAnimation { duration: root.launching ? 200 : 140 } }
 
       // A ring of accent just outside the selected card. Cheaper than a real
       // drop shadow and it does not read as a fake one: the depth comes from
@@ -278,7 +352,7 @@ Item {
         color: "transparent"
         border.width: Style.space(5)
         border.color: root.accent
-        opacity: card.isSelected ? 0.22 : 0
+        opacity: (card.isSelected && !root.launching) ? 0.22 : 0
         visible: opacity > 0
         Behavior on opacity { NumberAnimation { duration: 160 } }
       }
@@ -289,14 +363,17 @@ Item {
         radius: Style.cornerRadius
         border.width: Math.max(1, Style.space(card.isSelected ? 2 : 1))
         border.color: card.isSelected ? root.accent : root.borderColor
+        // A window has no accent frame, so the card loses its one on the way in.
+        opacity: card.isLaunching ? 0.5 : 1
 
         Behavior on border.color { ColorAnimation { duration: 140 } }
+        Behavior on opacity { NumberAnimation { duration: 260 } }
 
         // Depth of field: the selected page is sharp, the rest fall back out of
         // focus. Only the unselected cards are layered -- they hold a still
         // frame, so the effect is a one-off render. The selected card captures
         // continuously and layering *that* would be an extra pass every frame.
-        layer.enabled: !card.isSelected && capture.hasContent
+        layer.enabled: !card.isSelected && !card.isLaunching && capture.hasContent
         layer.effect: MultiEffect {
           blurEnabled: true
           blur: 0.42
@@ -339,7 +416,7 @@ Item {
           anchors.top: parent.top
           anchors.left: parent.left
           anchors.margins: Style.space(8)
-          visible: card.idx < 9
+          visible: card.idx < 9 && !root.launching
           color: card.isSelected ? root.accent : root.background
           border.width: Math.max(1, Style.space(1))
           border.color: root.accent
@@ -383,7 +460,7 @@ Item {
     y: root.height / 2 + root.cardH / 2 + Style.space(28)
     width: root.width * 0.6
     horizontalAlignment: Text.AlignHCenter
-    visible: root.count > 0
+    visible: root.count > 0 && !root.launching
     opacity: root.spread
     text: {
       var m = root.members[root.selected]
@@ -398,7 +475,7 @@ Item {
   Text {
     anchors.horizontalCenter: parent.horizontalCenter
     y: root.height / 2 + root.cardH / 2 + Style.space(56)
-    visible: root.count > 0
+    visible: root.count > 0 && !root.launching
     opacity: root.spread * 0.55
     text: "← →  choose  ·  1–9 jump  ·  Enter open  ·  ⇧⌦ close  ·  Esc back"
     color: root.foreground
