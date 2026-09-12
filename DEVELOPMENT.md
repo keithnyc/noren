@@ -3,9 +3,15 @@
 Architecture, design decisions, and the environment facts behind the Noren v1
 build. First stop for future development sessions.
 
-Built 2026-09-11 in a single session. Everything below was verified on
-devbox against Chromium 152.0.7977.82 and Omarchy `quattro` — the numbers
-and behaviours are measured, not assumed.
+Built 2026-09-11, extended 2026-09-12. Everything below was verified on
+devbox against Omarchy `quattro` — the numbers and behaviours are measured,
+not assumed.
+
+Browser versions are called out where they matter rather than stated once here,
+because they move: the v1 findings were taken against Chromium 152.0.7977.82 and
+still held on 153.0.8010.36, which is what is installed now. A claim tied to a
+version that has since moved is worse than no version at all, so anything
+re-measured on 153 says so at the point it is made.
 
 ## What this is
 
