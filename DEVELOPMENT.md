@@ -225,8 +225,10 @@ workspace and list order then picks an arbitrary member, usually the oldest. The
 symptom is precise — open a link into a new window, hit Back, and the window you
 came *from* goes back instead. The scan survives as the fallback for commands
 issued while the browser is not focused at all (a terminal, a keybind), and it
-now skips `hidden` windows, since the inactive members of a group sit behind the
-active one.
+also skips `hidden` windows — though measured 2026-09-12, Hyprland reports
+`hidden: false` for *both* members of a two-window group, so that filter does
+less than its name suggests and the active-window preference is what actually
+fixes this.
 
 **Only the bridge's own browser counts as a browser.** The match used to be any
 of brave/chromium/chrome. Only one browser can hold the socket, so a window

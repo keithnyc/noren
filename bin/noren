@@ -412,6 +412,12 @@ def front_window():
     normally invoked from the radial menu -- whose overlay is on screen at the
     time. So the target is resolved here and focused explicitly rather than
     assumed; guessing wrong ungroups a different group than the one you meant.
+
+    The `hidden` check below carries less weight than it looks: measured
+    2026-09-12, Hyprland reports `hidden: false` for *both* members of a
+    two-window group, so it does not mark inactive group members. It still
+    filters genuinely hidden windows, but the real work is done by preferring
+    the active window above.
     """
     clients = hypr_json("clients") or []
     by_address = {c.get("address"): c for c in clients}
