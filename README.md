@@ -245,8 +245,20 @@ the generated rules and still gets the `--noren-*` variables.
 Pages you open together, named. Defining one requires typing no urls at all —
 arrange the windows you want, then name what is already there:
 
+From the overlay — `SUPER + B`, then `@`:
+
+| you type | you get |
+|---|---|
+| `@` | your sets, with their page count, shape and hosts |
+| `@news` (no such set) | a **save** row — Enter names the open pages `news` |
+| `@news` (exists) | the set first, and a **replace** row below it |
+
+A matching set stays first so Enter opens rather than overwrites; replacing is a
+deliberate arrow-down. The same from the CLI:
+
 ```bash
 noren set save news        # names the chrome-less windows open right now
+noren set preview          # what a save would capture
 noren set list             # what you have
 noren set open news        # opens them, in the shape they were saved
 noren set rm news
@@ -256,8 +268,8 @@ A set remembers whether it was a **group** when you saved it and comes back that
 way, so `gather` your reading into one group, save it, and it reopens as one
 group. The shape is part of what you saved.
 
-From the overlay, `@` scopes the search to your sets — and a set also turns up
-when you simply type its name, so you do not have to know the sigil exists.
+A set also turns up when you simply type its name, so you do not have to know
+the sigil exists.
 
 ## Window identity
 

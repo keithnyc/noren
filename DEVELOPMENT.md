@@ -285,6 +285,13 @@ Sets also appear unscoped in the overlay, not only behind `@`: a set named
 `news` should turn up for someone who typed `news` and has never heard of the
 sigil.
 
+**Saving belongs in the url bar, not the radial.** A name is the only input a
+save needs and the url bar is already where names get typed, so `@news` with no
+such set turns the first row into the save. The radial would have needed a name
+prompt of its own, and the ring is already at eleven items. When the name *does*
+match, the existing set stays first so Enter opens rather than overwrites —
+replacing is a deliberate arrow-down.
+
 **A typed url stays literal until you arrow onto a suggestion.** Completion
 ranks bookmarks and history together with open tabs, so the top row is often not
 what was typed — and Enter acting on it would mean typing

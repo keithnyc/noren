@@ -33,6 +33,9 @@ Item {
   property var suggestions: []
   // Named sets of pages, from `noren set list --json`.
   property var sets: []
+  // What `set save` would capture right now, so the save row can show what it
+  // is about to save instead of a bare count.
+  property var pending: ({ urls: [], grouped: false })
   // Whether the user has actually moved off the first row. Enter treats a typed
   // url as literal until they do -- see activate().
   property bool selectionMoved: false
@@ -162,7 +165,38 @@ Item {
     if (root.scope === "set" || root.scope === "") {
       out = out.concat(root.setRows(needle))
     }
-    if (root.scope === "set") return out.slice(0, root.maxRows)
+    if (root.scope === "set") {
+      // Saving lives here rather than in the radial: a name is the only input a
+      // save needs, and this is already where names get typed. Type `@news`
+      // with no such set and the first row becomes the save.
+      var typed = root.query.trim()
+      var pages = (root.pending && root.pending.urls) ? root.pending.urls.length : 0
+      if (typed.length > 0 && pages > 0) {
+        var exists = false
+        for (var k = 0; k < root.sets.length; k++) {
+          if (root.sets[k].name.toLowerCase() === typed.toLowerCase()) exists = true
+        }
+        var hosts = []
+        for (var h = 0; h < root.pending.urls.length && h < 5; h++) {
+          hosts.push(root.hostOf(root.pending.urls[h]))
+        }
+        if (root.pending.urls.length > 5) hosts.push("+" + (root.pending.urls.length - 5))
+        var row = {
+          kind: "save",
+          id: -1,
+          name: typed,
+          title: (exists ? "Replace \u201C" + typed + "\u201D with " : "Save as \u201C" + typed + "\u201D  \u00B7  ")
+            + pages + " open page" + (pages === 1 ? "" : "s")
+            + (root.pending.grouped ? ", as a group" : ", tiled"),
+          url: hosts.join("  ")
+        }
+        // A matching set stays first, so Enter opens rather than overwrites;
+        // replacing is a deliberate arrow-down.
+        if (exists) out.push(row)
+        else out = [row].concat(out)
+      }
+      return out.slice(0, root.maxRows)
+    }
 
     var live = (root.scope === "" || root.scope === "tab") ? root.tabs : []
     if (needle.length > 0) {
@@ -270,6 +304,7 @@ Item {
     targetLoader.running = true
     statusLoader.running = true
     setLoader.running = true
+    pendingLoader.running = true
     if (root.mode === "url") {
       tabLoader.running = true
       root.requestSuggestions()
@@ -320,7 +355,9 @@ Item {
     // the literal-url rule: `@news` is not a hostname.
     if (root.scope === "set" && picks.length > 0
         && root.selectedIndex < picks.length) {
-      runNoren(["set", "open", picks[root.selectedIndex].name])
+      var chosen = picks[root.selectedIndex]
+      if (chosen.kind === "save") runNoren(["set", "save", chosen.name])
+      else runNoren(["set", "open", chosen.name])
       root.close()
       return
     }
@@ -334,6 +371,12 @@ Item {
     }
 
     var honourPick = pick && (root.selectionMoved || !root.looksLikeUrl)
+
+    if (honourPick && pick.kind === "save") {
+      runNoren(["set", "save", pick.name])
+      root.close()
+      return
+    }
 
     if (honourPick && pick.kind === "set") {
       runNoren(["set", "open", pick.name])
@@ -370,6 +413,25 @@ Item {
 
   function runNoren(args) {
     Quickshell.execDetached([root.binPath].concat(args))
+  }
+
+  Process {
+    id: pendingLoader
+    command: [root.binPath, "set", "preview", "--json"]
+    running: false
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var raw = JSON.parse(this.text)
+          root.pending = {
+            urls: raw.urls || [],
+            grouped: Boolean(raw.grouped)
+          }
+        } catch (e) {
+          root.pending = { urls: [], grouped: false }
+        }
+      }
+    }
   }
 
   Process {
@@ -647,6 +709,7 @@ Item {
               anchors.right: parent.right
               anchors.rightMargin: Style.spacing.rowPaddingX
               text: modelData.kind === "tab" ? "tab"
+                : modelData.kind === "save" ? "save"
                 : modelData.kind === "set" ? "set"
                 : modelData.kind === "bookmark" ? "saved" : "visited"
               color: index === root.selectedIndex ? root.selectedText : root.foreground

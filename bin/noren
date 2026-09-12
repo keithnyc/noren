@@ -30,6 +30,7 @@ usage: noren <command> [args]
   pop               lift the window in front of you out of its group
   raise <address>   focus a window by Hyprland address
   set save <name>   name the pages you have open right now
+  set preview       what `set save` would capture   (--json)
   set list          list your sets   (--json for the overlay)
   set open <name>   open a set, in the shape it was saved
   set rm <name>     forget a set
@@ -404,6 +405,30 @@ def set_save(name):
     save_sets(sets)
     shape = "as a group" if grouped else "tiled"
     print(f"noren: saved set '{name}' — {len(urls)} page(s), {shape}")
+    return 0
+
+
+def set_preview(as_json=False):
+    """What `set save` would capture right now.
+
+    Exists for the overlay: the url bar offers to save the open pages under a
+    typed name, and it should show what it is about to save rather than a count
+    with no evidence.
+    """
+    try:
+        urls, grouped = open_page_urls()
+    except SystemExit:
+        urls, grouped = [], False
+    if as_json:
+        print(json.dumps({"urls": urls, "grouped": grouped}))
+        return 0
+    if not urls:
+        print("noren: no chrome-less windows open")
+        return 0
+    shape = "as a group" if grouped else "tiled"
+    print(f"noren: {len(urls)} page(s), {shape}")
+    for url in urls:
+        print("  " + url)
     return 0
 
 
@@ -1110,6 +1135,8 @@ def main(argv):
             return set_save(arg)
         if sub in ("list", "ls"):
             return set_list(as_json="--json" in rest)
+        if sub == "preview":
+            return set_preview(as_json="--json" in rest)
         if sub == "open":
             group = True if "--group" in rest else (False if "--tiled" in rest else None)
             return set_open(arg, force_group=group)
