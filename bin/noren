@@ -27,6 +27,7 @@ usage: noren <command> [args]
   peel on|off       auto-peel every new tab into its own window (persists)
   peel status       report whether auto-peel is on
   gather [match]    pull peeled windows into one Hyprland group
+  pop               lift the window in front of you out of its group
   scatter           break the focused group back into windows
   theme             report the page-theming mode
   theme <mode>      respect | tint | immerse — theme pages from Omarchy
@@ -402,6 +403,43 @@ def _is_grouped(address):
     return False
 
 
+def pop():
+    """Lift the window in front of you out of its group, leaving the rest.
+
+    `gather` is all-or-nothing and `scatter` undoes the lot; this is the middle
+    case -- you grouped everything, then wanted one of them back out.
+
+    The target is resolved and focused explicitly rather than trusting whatever
+    Hyprland calls active. `out_of_group` acts on the active window, and this is
+    usually invoked from the radial menu, whose overlay is on screen at the time.
+    """
+    clients = hypr_json("clients") or []
+    by_address = {c.get("address"): c for c in clients}
+
+    active = hypr_json("activewindow") or {}
+    target = by_address.get(active.get("address"))
+    if not target or not (target.get("class") or "").lower().startswith("chrome-"):
+        target = None
+        ws_id = (hypr_json("activeworkspace") or {}).get("id")
+        for c in noren_windows():
+            if c.get("workspace", {}).get("id") == ws_id and not c.get("hidden"):
+                target = c
+                break
+
+    if not target:
+        print("noren: no chrome-less window in front of you")
+        return 1
+    if len(target.get("grouped") or []) < 2:
+        print("noren: that window is not in a group")
+        return 1
+
+    hypr_focus(target["address"])
+    hypr_do("hl.dsp.window.move({ out_of_group = true })")
+    title = (target.get("title") or target.get("class") or "")[:60]
+    print(f"noren: popped out {title}")
+    return 0
+
+
 def scatter():
     """Break the group under the cursor back into ordinary windows."""
     win = hypr_json("activewindow") or {}
@@ -597,6 +635,8 @@ def main(argv):
         res = call({"cmd": "suggest", "query": " ".join(rest), "limit": 8})
     elif cmd == "gather":
         return gather(" ".join(rest) if rest else None)
+    elif cmd == "pop":
+        return pop()
     elif cmd == "scatter":
         return scatter()
     elif cmd == "theme":

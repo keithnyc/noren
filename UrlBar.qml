@@ -141,6 +141,10 @@ Item {
       run: function () { root.runNoren(["peel"]) } },
     { icon: "\udb81\udd70", key: "G", label: "Gather", hint: "Fold windows into one group",
       run: function () { root.runNoren(["gather"]) } },
+    // U+F0207: an arrow leaving a box. Rendered and looked at, not guessed --
+    // its neighbour U+F0342 is the same arrow pointing *into* the box.
+    { icon: "\udb80\ude07", key: "O", label: "Pop out", hint: "Lift this window out of the group",
+      run: function () { root.runNoren(["pop"]) } },
     // U+F0616: arrows pointing apart. Rendered and checked rather than guessed
     // from the codepoint -- the neighbours are an up-arrow, a superscript 2 and
     // a filled square.

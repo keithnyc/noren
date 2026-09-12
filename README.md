@@ -42,7 +42,7 @@ deliberately small.
 - **Radial menu** — `SUPER + M` rings back, forward, reload, copy, url bar,
   peel, gather and theme around the page in front of you. A chrome-less window
   has no toolbar, so these have nowhere else to live. Every item carries a
-  mnemonic letter (`B` `F` `R` `C` `U` `P` `G` `S` `T`) shown on the item, so the
+  mnemonic letter (`B` `F` `R` `C` `U` `P` `G` `O` `S` `T`) shown on the item, so the
   ring can be summoned and used in one gesture without reaching for arrows.
 
 Back, forward and reload already work in a chrome-less window via Chromium's own
@@ -243,8 +243,12 @@ group bar becomes the tab strip and `hl.dsp.group.active` switches tabs.
 ```bash
 noren gather              # every chrome-less window
 noren gather github       # only those matching a host or title
+noren pop                 # lift just the window in front of you back out
 noren scatter             # break the focused group apart again
 ```
+
+A group is a single tiled node in Hyprland's layout, so a popped-out window
+tiles beside the group rather than replacing it.
 
 It only touches `chrome-<host>-<profile>` windows, never an ordinary tabbed
 window, and it confirms each move against Hyprland rather than assuming —
