@@ -198,6 +198,24 @@ Item {
         if (exists) out.push(row)
         else out = [row].concat(out)
       }
+
+      // A bare `@` with nothing saved used to show an empty list: no sets, no
+      // save row (there is no name yet), and no clue that either exists. A dead
+      // end where the answer was one sentence.
+      if (out.length === 0) {
+        out.push({
+          kind: "hint",
+          id: -1,
+          name: "",
+          title: pages > 0
+            ? "No sets yet \u00B7 type a name to save the " + pages
+              + " open page" + (pages === 1 ? "" : "s")
+            : "No sets yet",
+          url: pages > 0
+            ? "e.g. \u201Cnews\u201D \u2014 then Enter"
+            : "Open some pages first, then come back and name them"
+        })
+      }
       return out.slice(0, root.maxRows)
     }
 
@@ -381,6 +399,7 @@ Item {
     if (root.scope === "set" && picks.length > 0
         && root.selectedIndex < picks.length) {
       var chosen = picks[root.selectedIndex]
+      if (chosen.kind === "hint") return   // nothing to act on; keep typing
       if (chosen.kind === "save") runNoren(["set", "save", chosen.name])
       else runNoren(["set", "open", chosen.name])
       root.close()
@@ -778,7 +797,8 @@ Item {
               anchors.verticalCenter: parent.verticalCenter
               anchors.right: parent.right
               anchors.rightMargin: Style.spacing.rowPaddingX
-              text: modelData.kind === "tab" ? "tab"
+              text: modelData.kind === "hint" ? ""
+                : modelData.kind === "tab" ? "tab"
                 : modelData.kind === "save" ? "save"
                 : modelData.kind === "set" ? "set"
                 : modelData.kind === "bookmark" ? "saved" : "visited"
@@ -818,6 +838,8 @@ Item {
 
             MouseArea {
               anchors.fill: parent
+              // A hint is text, not a button.
+              enabled: modelData.kind !== "hint"
               onClicked: {
                 root.selectedIndex = index
                 root.activate()
@@ -836,6 +858,7 @@ Item {
           Text {
             text: {
               var row = root.currentRow()
+              if (row && row.kind === "hint") return "type a name to save a set"
               if (row && row.kind === "set") return "\u21B5 open set  \u00B7  \u21E7\u2326 delete"
               if (row && row.kind === "save") return "\u21B5 save set"
               if (root.multiUrl) return "\u21B5 open " + root.destinations.length + " windows"
