@@ -415,6 +415,16 @@ stopped using an hour ago" are otherwise indistinguishable.
 
 ## Bugs fixed — do not reintroduce
 
+- **A peeled link waited for the page to load.** `target="_blank"` creates the
+  tab with no url at all — the navigation is renderer-initiated, so Chromium
+  does not populate `pendingUrl` either — and the fallback then waited for
+  `onUpdated` to carry `info.url`, which only exists once the navigation has
+  *committed*. So the doomed full-chrome window stayed on screen for exactly as
+  long as the site took to answer: measured 270ms on one cold site and 582ms on
+  another, while an already-visited link was barely visible. `onBeforeNavigate`
+  knows the destination before the request is made, so the peel happens there
+  and the flash stops tracking the network. The tell was the symptom itself —
+  a delay that scales with page load is not a delay in your own code.
 - **Middle-click did not peel, intermittently.** `onCreated` said "wait for
   onUpdated to carry one" for a tab with no URL yet, and nothing in `onUpdated`
   ever did — so those tabs were dropped silently. Chromium creates a

@@ -9,10 +9,11 @@
     "storage",
     "scripting",
     "bookmarks",
-    "history"
+    "history",
+    "webNavigation"
   ],
   "background": {
-    "service_worker": "background-19.js"
+    "service_worker": "background-21.js"
   },
   "host_permissions": [
     "http://*/*",

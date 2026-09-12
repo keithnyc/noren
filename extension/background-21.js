@@ -353,7 +353,21 @@ const autoPeelReady = chrome.storage.local
 // silently, and middle-click peeled only when the URL happened to arrive in
 // time. Verified against `noren windows`: a chrome-less window reports type
 // 'app', so 'normal' still excludes our own windows either way.
-const pendingPeel = new Set();
+// tabId -> windowId. A Map rather than a Set because the window was already
+// validated when the tab was created, and webNavigation does not report one:
+// carrying it here keeps the fast path free of a chrome.tabs.get round trip.
+const pendingPeel = new Map();
+// When each deferred tab was first seen, so the trace can report how long a
+// peel actually took and which path it went down. The flash lasts exactly as
+// long as this, so it is the only number that matters.
+const peelSeenAt = new Map();
+
+function peelTrace(tabId, path, url) {
+  const started = peelSeenAt.get(tabId);
+  const ms = started === undefined ? 0 : Math.round(performance.now() - started);
+  peelSeenAt.delete(tabId);
+  console.log(`noren peel: ${path} ${ms}ms ${String(url).slice(0, 60)}`);
+}
 
 function peelable(url) {
   return Boolean(url) && url !== 'about:blank' && url !== 'chrome://newtab/';
@@ -406,17 +420,27 @@ async function peelTab(tabId, windowId, url) {
 }
 
 chrome.tabs.onCreated.addListener(async (tab) => {
+  peelSeenAt.set(tab.id, performance.now());
   await autoPeelReady;
-  if (!autoPeel) return;
-
-  const url = tab.pendingUrl || tab.url;
-  if (!peelable(url)) {
-    // Remember it; onUpdated finishes the job once the navigation commits.
-    if (await inTabbedWindow(tab.windowId)) pendingPeel.add(tab.id);
+  if (!autoPeel) {
+    peelSeenAt.delete(tab.id);
     return;
   }
 
-  await peelTab(tab.id, tab.windowId, url);
+  const url = tab.pendingUrl || tab.url;
+  if (!peelable(url)) {
+    // Remember it; onUpdated finishes the job once a url turns up.
+    if (await inTabbedWindow(tab.windowId)) {
+      pendingPeel.set(tab.id, tab.windowId);
+      console.log(`noren peel: deferred at onCreated (no url yet) tab=${tab.id}`);
+    } else {
+      peelSeenAt.delete(tab.id);
+    }
+    return;
+  }
+
+  if (await peelTab(tab.id, tab.windowId, url)) peelTrace(tab.id, 'oncreated', url);
+  else peelSeenAt.delete(tab.id);
 });
 
 // -------------------------------------------------------------- page theming
@@ -532,6 +556,34 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   surfaced.delete(tabId);
 });
 
+// A tab opened by `target="_blank"` is created with no url at all: the
+// navigation is renderer-initiated, so Chromium does not populate `pendingUrl`
+// either. Waiting for `onUpdated` to carry one means waiting for the navigation
+// to *commit* -- DNS, connect, response -- and the doomed full-chrome window is
+// on screen for every millisecond of it. Measured on a cold site: 582ms.
+//
+// `onBeforeNavigate` fires before the request is made, so the destination is
+// known almost immediately. Peeling here closes the tab before the page is ever
+// fetched: no wasted load, and the flash stops tracking the network.
+chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
+  // Main frame only; a subframe navigating is not a new destination.
+  if (!details || details.frameId !== 0) return;
+  const windowId = pendingPeel.get(details.tabId);
+  if (windowId === undefined) return;
+
+  await autoPeelReady;
+  if (!autoPeel) {
+    pendingPeel.delete(details.tabId);
+    return;
+  }
+  if (!peelable(details.url)) return;
+
+  pendingPeel.delete(details.tabId);
+  if (await peelTab(details.tabId, windowId, details.url)) {
+    peelTrace(details.tabId, 'beforenavigate', details.url);
+  }
+});
+
 // ------------------------------------------------------------- state updates
 
 function pushState() {
@@ -543,7 +595,9 @@ function pushState() {
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (info.status || info.title || info.url) pushState();
 
-  // The other half of auto-peel: a tab that had no URL when it was created.
+  // Last-resort half of auto-peel: a tab that had no URL when it was created
+  // and whose navigation onBeforeNavigate never reported. Slow by nature --
+  // info.url only exists once the navigation has committed.
   if (pendingPeel.has(tabId)) {
     await autoPeelReady;
     const url = (info && info.url) || (tab && (tab.url || tab.pendingUrl)) || '';
@@ -551,7 +605,14 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
       pendingPeel.delete(tabId);
     } else if (peelable(url)) {
       pendingPeel.delete(tabId);
-      if (await peelTab(tabId, (tab && tab.windowId) || info.windowId, url)) return;
+      if (await peelTab(tabId, (tab && tab.windowId) || info.windowId, url)) {
+        // Which field carried the url says whether we waited for the navigation
+        // to commit (info.url) or acted on the intended destination
+        // (pendingUrl). Only the second can be fast on a cold site.
+        const via = info && info.url ? 'info.url' : (tab && tab.pendingUrl ? 'pendingUrl' : 'tab.url');
+        peelTrace(tabId, `onupdated/${via}/status=${info && info.status}`, url);
+        return;
+      }
     }
   }
   // 'loading' is the earliest this API will tell us about a new document.
@@ -574,6 +635,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
 chrome.tabs.onActivated.addListener(pushState);
 chrome.tabs.onRemoved.addListener((tabId) => {
   pendingPeel.delete(tabId);
+  peelSeenAt.delete(tabId);
   pushState();
 });
 chrome.windows.onFocusChanged.addListener(pushState);
