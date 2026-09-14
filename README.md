@@ -291,9 +291,9 @@ your **most visited** sites over the last month (one tile per site, ranked from
 history), and your **sets**. It repaints
 with the Omarchy theme, live.
 
-It follows the url bar's rule: a **click opens a new window** and leaves the
-start page where it is, so it stays a home base you work outward from.
-**Ctrl+click** goes there in place instead. `1`–`9` open tiles by number.
+A **click opens the site in the same window**, the way a new-tab page does.
+**Ctrl+click** (or a middle click) opens it as a new window and leaves the start
+page where it is. `1`–`9` open tiles by number, with Ctrl for a new window.
 
 The url bar does the same before you type anything: `SUPER + B` on an empty
 query lists the bookmarks bar, then most visited, then sets, then everything

@@ -512,9 +512,13 @@ exception cannot be used to open arbitrary extension pages. `noren start` finds
 an open start page by its exact title, `Noren Start`, or by the extension id in
 its app_id, and raises it rather than stacking another.
 
-A click opens a new window and Ctrl+click navigates in place, the url bar's
-Enter / Ctrl+Enter rule. A start page that turns into the first site you click is
-a home base you lose on the first click.
+A click navigates in place and Ctrl+click opens a new window — the *reverse* of
+the url bar's Enter / Ctrl+Enter, deliberately. It shipped the url bar's way
+first (the start page as a home base that stays) and in use it was wrong: the
+start page is where the day begins, like a new-tab page, and clicking a site
+should become that site. The url bar's invariant is about not mutating a window
+*behind* an overlay; here the page being replaced is the one you clicked in, so
+nothing unseen changes. `noren start` brings a fresh one back.
 
 ## Environment facts that cost real time
 

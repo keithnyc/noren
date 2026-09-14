@@ -6,9 +6,10 @@
 // what the browser already knows -- the bookmarks bar, then the sites you
 // actually visit -- and your sets.
 //
-// Opening follows the url bar's rule: a click opens a new window and leaves this
-// page where it is, so it stays a home base you work outward from. Ctrl opens
-// it here instead.
+// A click goes there in this window, the way a new-tab page does: the start
+// page is where the day begins, not a window to keep. Ctrl+click (or a middle
+// click) opens a new window and leaves this page where it is. This is the
+// reverse of the url bar's Enter / Ctrl+Enter, on purpose -- see DEVELOPMENT.md.
 //
 // Editing writes to the bookmarks bar itself. It is already an ordered list the
 // browser stores, syncs and lets you rename, so "pin", "reorder" and "unpin"
@@ -286,11 +287,11 @@ function tile(entry, where, index) {
   }
 
   a.addEventListener('click', (event) => {
-    // Never let the link navigate on its own: a plain click must leave this
-    // page where it is. Ctrl is the one way to go somewhere from here.
+    // Handled rather than left to the link, so edit mode can swallow it and
+    // Ctrl can mean "new window" instead of Chromium's background tab.
     event.preventDefault();
     if (editing) return;
-    open(entry.url, event.ctrlKey || event.metaKey);
+    open(entry.url, !(event.ctrlKey || event.metaKey));
   });
   a.addEventListener('auxclick', (event) => {
     if (event.button !== 1 || editing) return;
@@ -364,7 +365,7 @@ document.addEventListener('keydown', (event) => {
   const entry = tiles[Number(event.key) - 1];
   if (!entry) return;
   event.preventDefault();
-  open(entry.url, event.ctrlKey || event.metaKey);
+  open(entry.url, !(event.ctrlKey || event.metaKey));
 });
 
 // --------------------------------------------------------------------- data
