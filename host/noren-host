@@ -404,7 +404,7 @@ def set_op(msg):
     write_native({"type": "setOpResult", "id": msg.get("id"), "ok": ok, "error": error})
 
 
-def open_set(name):
+def open_set(name, replace=False):
     """Open a set through the CLI, which owns grouping.
 
     Grouping means waiting for windows to appear and then driving Hyprland,
@@ -417,7 +417,7 @@ def open_set(name):
         return
     try:
         subprocess.Popen(
-            [NOREN_BIN, "set", "open", name],
+            [NOREN_BIN, "set", "open", name] + (["--replace"] if replace else []),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
@@ -764,7 +764,7 @@ def main():
             write_native({"type": "sets", "id": msg.get("id"), "sets": read_sets()})
 
         elif kind == "openSet":
-            open_set(msg.get("name"))
+            open_set(msg.get("name"), replace=bool(msg.get("replace")))
 
         elif kind == "setOp":
             # Off the main loop: `set save` asks the extension for the open

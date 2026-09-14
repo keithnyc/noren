@@ -374,6 +374,14 @@ document.addEventListener('keydown', (event) => {
 });
 
 // --------------------------------------------------------------------- sets
+
+// A set opens in place of the start page, like a tile: the start page is a
+// launcher, and leaving it behind a freshly opened group is only clutter.
+// Ctrl+click or a middle click opens the set alongside instead.
+function openSet(name, event) {
+  const alongside = Boolean(event && (event.ctrlKey || event.metaKey || event.button === 1));
+  chrome.runtime.sendMessage({ noren: 'openSet', name, replace: !alongside }).catch(() => {});
+}
 //
 // Every edit goes to the CLI through the worker and the host: `noren set put`
 // owns the file format and all validation, so the page never writes sets.json
@@ -497,8 +505,8 @@ function setCard(set) {
   const openBtn = el('button', 'tool', 'Open');
   openBtn.type = 'button';
   openBtn.title = 'Open this set';
-  openBtn.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ noren: 'openSet', name: set.name }).catch(() => {});
+  openBtn.addEventListener('click', (event) => {
+    openSet(set.name, event);
   });
   head.appendChild(openBtn);
 
@@ -723,8 +731,9 @@ async function render() {
         count.textContent = String((set.urls || []).length);
         b.appendChild(count);
         b.title = (set.urls || []).map(hostOf).join('  ');
-        b.addEventListener('click', () => {
-          chrome.runtime.sendMessage({ noren: 'openSet', name: set.name }).catch(() => {});
+        b.addEventListener('click', (event) => openSet(set.name, event));
+        b.addEventListener('auxclick', (event) => {
+          if (event.button === 1) openSet(set.name, event);
         });
         return b;
       }),

@@ -614,6 +614,45 @@ const revealBarReady = chrome.storage.local
   })
   .catch(() => {});
 
+// Favicons for the bar, as data: urls.
+//
+// The bar cannot load chrome-extension://…/_favicon/ itself without that path
+// being web-accessible -- and web-accessible means every website can load it
+// too, for any url. A favicon is only cached for a site you have visited, so
+// that turned Noren into a history probe any page could run, and a fingerprint.
+// Verified with a hostile test page: fetch returned 200 for an arbitrary url.
+//
+// So the worker reads the cache (it needs no web access to its own origin) and
+// hands the bar bytes. It does so only for urls the bar has a reason to show:
+// the sender's own page and the bookmarks bar. A compromised renderer asking
+// for anything else gets nothing.
+const faviconCache = new Map();
+
+async function faviconData(url) {
+  if (!/^https?:/i.test(url || '')) return null;
+  if (faviconCache.has(url)) return faviconCache.get(url);
+  let data = null;
+  try {
+    const u = new URL(chrome.runtime.getURL('/_favicon/'));
+    u.searchParams.set('pageUrl', url);
+    u.searchParams.set('size', '32');
+    const res = await fetch(u.toString());
+    if (res.ok) {
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      }
+      data = 'data:' + (res.headers.get('content-type') || 'image/png') + ';base64,' + btoa(binary);
+    }
+  } catch (e) {
+    data = null;
+  }
+  if (faviconCache.size > 200) faviconCache.delete(faviconCache.keys().next().value);
+  faviconCache.set(url, data);
+  return data;
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.norenBar || sender.id !== chrome.runtime.id || !sender.tab) return false;
   const tab = sender.tab;
@@ -641,8 +680,56 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         })
         .catch(() => {});
       return false;
+    case 'favicon':
+      // Only the page the bar is sitting on -- sender.tab.url, never a url the
+      // content script names.
+      faviconData(tab.url).then((icon) => sendResponse({ icon }));
+      return true;
     case 'home':
-      chrome.tabs.update(tab.id, { url: START_URL }).catch(() => {});
+      // `edit` opens the start page straight into edit mode, from "Edit pins…".
+      chrome.tabs.update(tab.id, { url: START_URL + (msg.edit ? '#edit' : '') }).catch(() => {});
+      return false;
+    case 'pins':
+      // The bookmarks bar and sets, for the bar's menu. Pins need their urls to
+      // be opened in place; sets are opened by name through the host, so they
+      // come without urls -- a name, a count, a shape and a few hosts is all a
+      // menu row shows.
+      Promise.all([
+        chrome.bookmarks.getSubTree('1').catch(() => [{ children: [] }]),
+        askSets(),
+      ])
+        .then(async ([[root], sets]) =>
+          sendResponse({
+            pins: await Promise.all(
+              (root.children || [])
+                .filter((n) => /^https?:/i.test(n.url || ''))
+                .map(async (n) => ({ url: n.url, title: n.title || '', icon: await faviconData(n.url) })),
+            ),
+            sets: sets.map((s) => ({
+              name: s.name,
+              count: (s.urls || []).length,
+              grouped: Boolean(s.grouped),
+              hosts: (s.urls || []).slice(0, 3).map(placeHost).filter(Boolean),
+            })),
+          }),
+        )
+        .catch(() => sendResponse({ pins: [], sets: [] }));
+      return true;
+    case 'openSet':
+      // By name only; the host opens it only if a set by that name exists.
+      send({ type: 'openSet', name: String(msg.name || ''), replace: Boolean(msg.replace) });
+      return false;
+    case 'openPin':
+      // A new window, but only for a url that really is on the bookmarks bar:
+      // a content script speaks for a renderer that may be compromised, and
+      // "open any url in a new window" is not something to hand it.
+      chrome.bookmarks
+        .getSubTree('1')
+        .then(([root]) => {
+          const ok = (root.children || []).some((n) => n.url && n.url === msg.url);
+          if (ok) send({ type: 'spawn', url: msg.url });
+        })
+        .catch(() => {});
       return false;
     case 'urlbar':
       // Clicking the bar already focused this window, so the url bar's
@@ -666,7 +753,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true });
       return false;
     case 'openSet':
-      send({ type: 'openSet', name: String(msg.name || '') });
+      send({ type: 'openSet', name: String(msg.name || ''), replace: Boolean(msg.replace) });
       sendResponse({ ok: true });
       return false;
     case 'sets':

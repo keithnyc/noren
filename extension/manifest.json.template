@@ -14,7 +14,7 @@
     "favicon"
   ],
   "background": {
-    "service_worker": "background-28.js"
+    "service_worker": "background-30.js"
   },
   "host_permissions": [
     "http://*/*",
@@ -31,20 +31,6 @@
         "bar.js"
       ],
       "run_at": "document_idle"
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "_favicon/*"
-      ],
-      "matches": [
-        "http://*/*",
-        "https://*/*"
-      ],
-      "extension_ids": [
-        "*"
-      ]
     }
   ]
 }

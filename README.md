@@ -304,6 +304,19 @@ group. The shape is part of what you saved.
 A set also turns up when you simply type its name, so you do not have to know
 the sigil exists.
 
+**Where you open a set decides what happens to the page you were on:**
+
+| opened from | click / Enter | Ctrl+click / Ctrl+Enter |
+|---|---|---|
+| start page | replaces the start page | opens alongside |
+| reveal bar menu | replaces the page you are on | opens alongside |
+| url bar (`@name`) | opens alongside | replaces the page in front |
+
+Replacing turns that window into the set's first page, and a grouped set folds
+the rest into it — nothing is left behind. If the page in front is already in a
+group, a set opens alongside instead, so it never pours into an unrelated group.
+From the CLI: `noren set open news --replace`.
+
 Or manage them on the **start page**: press `E` and each set becomes a card.
 Rename it in place, flip it between **Group** and **Tiled**, drag its pages into
 order, remove one with `×`, add one by typing it, or delete the set (two clicks).
@@ -361,9 +374,13 @@ window.
 
 A chrome-less window has no toolbar, so each one gets a bar that stays out of
 sight: **rest the pointer on the window's top edge** and it slides down over the
-page — back, forward, reload, the address with its favicon, and home. Click the
+page — back, forward, reload, the address with its favicon, your pinned sites,
+and home. Click the
 address to change it (it opens the url bar, where Ctrl+Enter redirects this
-window). Move away, or press Esc, and it goes. The **pin** button keeps it down
+window). Move away, or press Esc, and it goes. The **bookmark** button drops down your pinned sites (the bookmarks bar) and
+your sets: click a site to go there in this window (Ctrl+click or middle-click
+for a new window), click a set to open it, or **Edit pins and sets…** to open the
+start page in edit mode. The **pin** button keeps it down
 on that window — across navigations, until you unpin it or quit the browser.
 A pinned bar still floats over the top of the page rather than pushing it down.
 

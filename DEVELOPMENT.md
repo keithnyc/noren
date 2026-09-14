@@ -525,8 +525,41 @@ starting and runs only when its window's type is `app`.
 
 Content scripts are the least trusted code the extension has — a compromised
 renderer can speak for one — so the worker gives the bar its own listener and
-vocabulary: `hello`, `home` and `urlbar`, each acting on `sender.tab` only. The
+vocabulary: `hello`, `home`, `urlbar`, `pin`, `pins`, `openPin` and `openSet`, each acting on
+`sender.tab` only. `pins` hands over the bookmarks bar's titles and urls — the
+least a pins menu needs, and nothing outside that folder. `openPin` opens a new
+window only for a url that is actually on the bar, so a compromised renderer
+cannot turn it into "open any url". Sets reach the bar without their urls — a
+name, a count, a shape and a few hosts — because `openSet` works by name, and the
+host opens only a name that is actually saved. Going to a pin in place needs no worker at
+all: the page can already set its own `location`. The
 start page's listener still refuses anything not sent from `start.html`.
+
+**Favicons reach the reveal bar as data urls — never make `_favicon` web
+accessible.** The first version of the bar loaded
+`chrome-extension://<id>/_favicon/?pageUrl=…` in the page, which requires listing
+`_favicon/*` under `web_accessible_resources`. That makes it loadable by *every*
+website, for *any* url. Chromium only caches a favicon for a site you have been
+to, so any page could probe your history site by site, and fingerprint Noren.
+Found by a hostile test page: `fetch` returned 200 and an `<img>` loaded for an
+arbitrary url. Now the worker reads its own favicon cache (`faviconData()`) and
+sends bytes, and only for the sender's own page and the bookmarks bar.
+
+The same hostile page confirmed what does hold: the closed shadow root gave the
+page `shadowRoot === null` and none of the menu's text, and no resource-timing
+entry named a favicon. The `<noren-bar>` host element itself is visible to the
+page once the bar has been shown, which reveals that Noren is installed but
+nothing the bar contains.
+
+**A set can replace the page it was opened from.** `set open --replace`
+navigates the focused chrome-less window to the first url, then opens the rest
+and, for a grouped set, gathers them with that window as the anchor
+(`gather(anchor_address=…)`; before that, gather anchored on whichever window
+came first on the workspace). It declines when the page in front is already in a
+group — replacing a member would pour the set into an unrelated group. Click
+means replace on the start page and in the reveal bar menu, as tiles and pins
+already did; in the url bar Enter still opens alongside and Ctrl+Enter replaces,
+because Enter must never mutate the window behind the overlay.
 
 **A cold start blocks the start page.** Chromium creates the `--app` window
 before it has loaded the extension, refuses `chrome-extension://…` as

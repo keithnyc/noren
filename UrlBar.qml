@@ -490,8 +490,14 @@ Item {
     // nothing at all, since nothing had been typed.
     var pick = root.currentRow()
     var honourPick = pick && (root.selectionMoved || !root.looksLikeUrl)
-    if (honourPick && (pick.kind === "set" || pick.kind === "save" || pick.kind === "hint")) {
-      // "Replace this window" has no meaning for a set; do what Enter does.
+    if (honourPick && pick.kind === "set") {
+      // Ctrl+Enter's meaning, for a set: in place of the page in front, which
+      // becomes the set's first page (and its group). Enter opens alongside.
+      runNoren(["set", "open", pick.name, "--replace"])
+      root.close()
+      return
+    }
+    if (honourPick && (pick.kind === "save" || pick.kind === "hint")) {
       root.activate()
       return
     }

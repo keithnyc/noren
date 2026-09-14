@@ -38,6 +38,7 @@ usage: noren <command> [args]
   set preview       what `set save` would capture   (--json)
   set list          list your sets   (--json for the overlay)
   set open <name>   open a set, in the shape it was saved
+                    --replace: in place of the page in front of you
   set rm <name>     forget a set
   set put           create, edit or rename a set from JSON on stdin
   apps              report webapp launchers and their window identity
@@ -689,7 +690,15 @@ def host_of(url):
     return (m.group(1) if m else str(url))[:40].replace("www.", "")
 
 
-def set_open(name, force_group=None):
+def set_open(name, force_group=None, replace=False):
+    """Open a set -- alongside what is open, or in place of the page in front.
+
+    Replacing turns the focused chrome-less window into the set's first page
+    and, for a grouped set, folds the rest into it, so the page a set was opened
+    from is not left behind. It falls back to opening alongside when there is
+    nothing to replace, or when the page in front already belongs to a group:
+    replacing a member would pour the set into a group it has nothing to do with.
+    """
     sets = load_sets()
     entry = sets.get(name)
     if not entry:
@@ -699,6 +708,27 @@ def set_open(name, force_group=None):
     if not urls:
         sys.exit(f"noren set open: set '{name}' is empty")
     group = entry.get("grouped", False) if force_group is None else force_group
+
+    if replace:
+        # The focused window exactly -- not "some page on this workspace".
+        active = hypr_json("activewindow") or {}
+        cls = (active.get("class") or "").lower()
+        addr = active.get("address")
+        in_group = len(active.get("grouped") or []) > 1
+        if not addr or not cls.startswith("chrome-") or not bridge_up():
+            print("noren: no page in front to replace; opening alongside")
+        elif in_group:
+            print("noren: the page in front is in a group; opening alongside")
+        else:
+            res = call({"cmd": "navigate", "url": urls[0]})
+            if res.get("ok") is False:
+                print(f"noren: could not replace ({res.get('error')}); opening alongside")
+            else:
+                rest = urls[1:]
+                if not rest:
+                    return 0
+                return open_many(rest, group=group, join=addr if group else None)
+
     return open_many(urls, group=group)
 
 
@@ -985,7 +1015,7 @@ def noren_windows(pattern=None):
     return wins
 
 
-def gather(pattern=None, only=None):
+def gather(pattern=None, only=None, anchor_address=None):
     """Pull peeled windows back into one Hyprland group -- the return path.
 
     `peel` scatters and nothing brought them back, which makes a week of
@@ -1009,8 +1039,10 @@ def gather(pattern=None, only=None):
     started_on = (hypr_json("activewindow") or {}).get("address")
 
     # Anchor on this workspace if there is one, so gather pulls pages *to* you.
-    anchor = next((c for c in wins if c.get("workspace", {}).get("id") == active_ws),
-                  wins[0])
+    # A caller that knows which window the group belongs to -- a set replacing
+    # the page you were on -- names it instead.
+    anchor = next((c for c in wins if c.get("address") == anchor_address), None) \
+        or next((c for c in wins if c.get("workspace", {}).get("id") == active_ws), wins[0])
     target_ws = anchor.get("workspace", {}).get("id")
     others = [c for c in wins if c["address"] != anchor["address"]]
 
@@ -1262,8 +1294,11 @@ def chromeless_addresses():
     return {w.get("address") for w in noren_windows()}
 
 
-def open_many(urls, group=False):
+def open_many(urls, group=False, join=None):
     """Open each url as its own chrome-less window, optionally as one group.
+
+    `join` is the address of a window already showing the first page: the new
+    windows are grouped with it, and it anchors the group.
 
     Grouping cannot be fired straight after the spawns: the windows do not exist
     yet. Wait for them to actually appear, then fold in only the ones that were
@@ -1314,13 +1349,14 @@ def open_many(urls, group=False):
         if len(fresh) >= total:
             break
 
-    if len(fresh) < 2:
+    members = fresh | ({join} if join else set())
+    if len(members) < 2:
         print(f"noren: opened {total} window(s); too few appeared to group")
         return 0
 
     # Let the last window settle before Hyprland is asked to move it.
     time.sleep(0.3)
-    return gather(only=fresh)
+    return gather(only=members, anchor_address=join)
 
 
 START_TITLE = "Noren Start"
@@ -1533,7 +1569,7 @@ def main(argv):
             return set_preview(as_json="--json" in rest)
         if sub == "open":
             group = True if "--group" in rest else (False if "--tiled" in rest else None)
-            return set_open(arg, force_group=group)
+            return set_open(arg, force_group=group, replace="--replace" in rest)
         if sub in ("rm", "remove", "forget"):
             return set_remove(arg)
         if sub == "put":
