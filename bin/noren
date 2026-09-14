@@ -18,7 +18,8 @@ USAGE = """\
 usage: noren <command> [args]
 
   goto <url>        navigate if you're looking at a page, else open a window
-  start             open the start page, or bring it forward
+  start             send the page in front of you to the start page, or open one
+  start --new       always open the start page in a new window
   open <url>...     open each url as its own chrome-less window
   open --group ...  open them and fold them into one Hyprland group
   go <url>          navigate the focused window (force)
@@ -1279,21 +1280,41 @@ def extension_id():
     return ext_id if ext_id.isalpha() else None
 
 
-def start_page():
-    """Open the start page -- or, if one is already open, go to it.
+def start_page(new=False):
+    """Go home: the page in front of you becomes the start page.
 
-    One start page is a home base; five is clutter nobody asked for, and the
-    obvious way to get five is pressing the bind every morning without closing
-    yesterday's. Found by the page's title, or by the extension id Chromium
-    folds into an extension page's app_id.
+    Like a browser's Home button, and like a tile click, which also navigates
+    in place. Only when there is no page in front of you -- a terminal, the
+    desktop, a tabbed window -- does this open one, and then an open start page
+    is raised rather than a second stacked. `--new` skips straight to that.
+
+    Five start pages is clutter nobody asked for, and the obvious way to get
+    five is pressing the bind every morning without closing yesterday's.
+
+    Matched on the title, not the app_id alone. Chromium fixes an `--app`
+    window's app_id when the window is created -- here
+    `chrome-<ext id>__start.html-Default` -- and never changes it. A click on a
+    tile navigates in place, so that window goes on carrying the start page's
+    id while showing some other site; matching the id alone "raised" the page
+    you were already on and nothing happened. The title is only `Noren Start`
+    while the start page is actually showing.
     """
     ext_id = extension_id()
     if not ext_id:
         sys.exit("noren start: no extension id -- run install.sh")
 
+    # Focused window only, not "a page somewhere on this workspace": home should
+    # land on the page you are looking at or nowhere.
+    active = hypr_json("activewindow") or {}
+    front = (active.get("class") or "").lower()
+    if not new and front.startswith("chrome-") and bridge_up():
+        res = call({"cmd": "home"})
+        if res.get("ok"):
+            return 0
+
     for win in noren_windows():
         cls = (win.get("class") or "").lower()
-        if ext_id in cls or (win.get("title") or "") == START_TITLE:
+        if (win.get("title") or "") == START_TITLE and ext_id in cls:
             return raise_window(win.get("address"))
 
     if bridge_up():
@@ -1375,7 +1396,7 @@ def main(argv):
         return doctor()
 
     if cmd == "start":
-        return start_page()
+        return start_page(new="--new" in rest)
 
     if cmd == "open":
         group = "--group" in rest

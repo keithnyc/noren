@@ -283,10 +283,13 @@ bookmarks bar is just there. A chrome-less window has no bar, so Noren gives the
 guide back as a page:
 
 ```bash
-noren start     # open the start page, or go to it if it is already open
+noren start         # the page in front of you goes home to the start page
+noren start --new   # a start page in a new window
 ```
 
-Or `H` in the radial. It shows a clock, your **bookmarks bar** in its own order,
+Or `H` in the radial, which works like a browser's Home button. With no page in
+front of you — a terminal, the desktop — it opens a start page instead, or raises
+the one already open. It shows a clock, your **bookmarks bar** in its own order,
 your **most visited** sites over the last month (one tile per site, ranked from
 history), and your **sets**. It repaints
 with the Omarchy theme, live.

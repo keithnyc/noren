@@ -596,6 +596,14 @@ def handle_client(conn):
         elif cmd == "open":
             spawn_window(req.get("url"))
             reply = {"ok": True}
+        elif cmd == "home":
+            # Only a chrome-less page can go home. A tabbed window in front is
+            # the extension's host, not a page, and a terminal is nothing.
+            win = hypr_browser_window()
+            if win and win.get("chromeless") and win.get("title"):
+                reply = ask_extension("home", matchTitle=win["title"])
+            else:
+                reply = {"ok": False, "error": "no page in front of you"}
         elif cmd == "start":
             if spawn_start():
                 reply = {"ok": True}

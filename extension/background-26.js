@@ -217,6 +217,25 @@ async function handleCommand(msg) {
       return reply({ ok: true });
     }
 
+    case 'home': {
+      // Send the page in front of you back to the start page, the way a
+      // browser's Home button does. Strict about the target: focusedTab falls
+      // back to Chromium's last-focused window when the title hint matches
+      // nothing, and "go home" landing on some other window is exactly the
+      // silent retargeting this bridge exists to avoid. No hint, no match, no
+      // navigation -- the CLI then opens a start page instead.
+      if (!msg.matchTitle) return reply({ ok: false, error: 'no page in front of you' });
+      const tab = await focusedTab(msg.matchTitle);
+      const title = ((tab && tab.title) || '').trim();
+      const wanted = String(msg.matchTitle).trim();
+      if (!tab || !(title === wanted || title.startsWith(wanted) || wanted.startsWith(title))) {
+        return reply({ ok: false, error: 'page in front of you not found' });
+      }
+      if ((tab.url || '').startsWith(START_URL)) return reply({ ok: true, already: true });
+      await chrome.tabs.update(tab.id, { url: START_URL });
+      return reply({ ok: true });
+    }
+
     case 'state':
       return reply({ ok: true, state: describe(await focusedTab()) });
 

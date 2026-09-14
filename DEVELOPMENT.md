@@ -508,9 +508,16 @@ writes whenever the host pushes a palette: injection refuses extension pages, an
 
 `normalize_url` still refuses every non-web scheme. The start url is built from
 `host/.extid` by `start_url()` rather than accepted from a caller, so the one
-exception cannot be used to open arbitrary extension pages. `noren start` finds
-an open start page by its exact title, `Noren Start`, or by the extension id in
-its app_id, and raises it rather than stacking another.
+exception cannot be used to open arbitrary extension pages. `noren start` goes home in place when a chrome-less page is focused — the
+extension's `home` command, which refuses to navigate unless the host's title
+hint actually matches, because `focusedTab`'s last-focused fallback would
+otherwise send some other window home. Otherwise it finds
+an open start page by its exact title, `Noren Start`, *and* the extension id in
+its app_id (`chrome-<ext id>__start.html-Default`), and raises it rather than
+stacking another. Both, because the app_id is fixed when the window is created:
+after a click navigates the start page in place, that window still carries the
+start page's id while showing a site, and matching on the id alone raised the
+window you were already on — `H` in the radial silently did nothing.
 
 A click navigates in place and Ctrl+click opens a new window — the *reverse* of
 the url bar's Enter / Ctrl+Enter, deliberately. It shipped the url bar's way

@@ -288,7 +288,7 @@ Item {
       run: function () { root.showUrlBar() } },
     // U+F02DC: a house. Rendered and looked at; its neighbour U+F07D1 is a
     // house with a wifi signal in it.
-    { icon: "\udb80\udedc", key: "H", label: "Home", hint: "Your start page",
+    { icon: "\udb80\udedc", key: "H", label: "Home", hint: "This page goes to your start page",
       run: function () { root.runNoren(["start"]) } },
     { icon: "\udb81\udd6f", key: "P", label: "Peel", hint: "This tab into its own window",
       run: function () { root.runNoren(["peel"]) } },
