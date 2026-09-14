@@ -357,6 +357,27 @@ Your bookmarks bar is Chromium's. If it lives in another browser today, export
 it there and import it through `chrome://settings/importData` in a tabbed
 window.
 
+## Reveal bar
+
+A chrome-less window has no toolbar, so each one gets a bar that stays out of
+sight: **rest the pointer on the window's top edge** and it slides down over the
+page — back, forward, reload, the address with its favicon, and home. Click the
+address to change it (it opens the url bar, where Ctrl+Enter redirects this
+window). Move away, or press Esc, and it goes. The **pin** button keeps it down
+on that window — across navigations, until you unpin it or quit the browser.
+A pinned bar still floats over the top of the page rather than pushing it down.
+
+```bash
+noren bar          # show or hide it on the page in front of you (bindable)
+noren bar off      # no reveal bar at all; `noren bar on` brings it back
+```
+
+It floats over the page rather than pushing it down, so it never breaks a
+site's layout, and it hides during fullscreen. It appears only in Noren's
+chrome-less windows — never in a tabbed window, which has a toolbar of its own —
+and not on Chromium's own pages (`chrome://`, the Web Store), where extensions
+cannot run. Pages open before the extension loaded get it on their next reload.
+
 ## Window identity
 
 Omarchy's webapp launchers carry an icon but no `StartupWMClass`, so the window

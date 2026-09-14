@@ -20,6 +20,8 @@ usage: noren <command> [args]
   goto <url>        navigate if you're looking at a page, else open a window
   start             send the page in front of you to the start page, or open one
   start --new       always open the start page in a new window
+  bar               show or hide the reveal bar on the page in front of you
+  bar on|off        whether pages get a reveal bar at all (persists)
   open <url>...     open each url as its own chrome-less window
   open --group ...  open them and fold them into one Hyprland group
   go <url>          navigate the focused window (force)
@@ -1451,6 +1453,19 @@ def main(argv):
 
     if cmd == "start":
         return start_page(new="--new" in rest)
+
+    if cmd == "bar":
+        if rest and rest[0] in ("on", "off"):
+            res = call({"cmd": "setRevealBar", "value": rest[0] == "on"})
+            if res.get("ok") is False:
+                sys.exit(f"noren: {res.get('error', 'failed')}")
+            print("reveal bar", "on" if res.get("revealBar") else "off",
+                  "-- reload open pages to apply")
+            return 0
+        res = call({"cmd": "bar"})
+        if res.get("ok") is False:
+            sys.exit(f"noren: {res.get('error', 'failed')}")
+        return 0
 
     if cmd == "open":
         group = "--group" in rest

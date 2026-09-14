@@ -629,6 +629,12 @@ def handle_client(conn):
         elif cmd == "open":
             spawn_window(req.get("url"))
             reply = {"ok": True}
+        elif cmd == "bar":
+            win = hypr_browser_window()
+            if win and win.get("chromeless") and win.get("title"):
+                reply = ask_extension("toggleBar", matchTitle=win["title"])
+            else:
+                reply = {"ok": False, "error": "no page in front of you"}
         elif cmd == "home":
             # Only a chrome-less page can go home. A tabbed window in front is
             # the extension's host, not a page, and a terminal is nothing.
@@ -768,6 +774,18 @@ def main():
 
         elif kind == "saveStart":
             save_start(msg.get("hidden"))
+
+        elif kind == "toggleUrlBar":
+            # From the reveal bar's address. The shell is the only thing that
+            # can open the overlay; the extension cannot run a command.
+            try:
+                subprocess.Popen(
+                    ["omarchy-shell", "-q", "shell", "toggle", PLUGIN_ID, "{}"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                log("could not open the url bar:", exc)
 
         elif kind == "wantTheme":
             # The service worker restarts far more often than the host does.

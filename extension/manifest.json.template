@@ -14,11 +14,37 @@
     "favicon"
   ],
   "background": {
-    "service_worker": "background-27.js"
+    "service_worker": "background-28.js"
   },
   "host_permissions": [
     "http://*/*",
     "https://*/*",
     "file:///*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "bar.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "_favicon/*"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "extension_ids": [
+        "*"
+      ]
+    }
   ]
 }

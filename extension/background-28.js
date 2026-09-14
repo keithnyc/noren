@@ -236,6 +236,32 @@ async function handleCommand(msg) {
       return reply({ ok: true });
     }
 
+    case 'toggleBar': {
+      // `noren bar`: show or hide the reveal bar on the page in front of you.
+      // Same strict targeting as `home`.
+      if (!msg.matchTitle) return reply({ ok: false, error: 'no page in front of you' });
+      const tab = await focusedTab(msg.matchTitle);
+      const title = ((tab && tab.title) || '').trim();
+      const wanted = String(msg.matchTitle).trim();
+      if (!tab || !(title === wanted || title.startsWith(wanted) || wanted.startsWith(title))) {
+        return reply({ ok: false, error: 'page in front of you not found' });
+      }
+      try {
+        await chrome.tabs.sendMessage(tab.id, { norenBar: 'toggle' });
+      } catch (e) {
+        // No bar in that page: a chrome:// page, the Web Store, or a page
+        // loaded before the extension was.
+        return reply({ ok: false, error: 'no bar on this page (reload it once?)' });
+      }
+      return reply({ ok: true });
+    }
+
+    case 'setRevealBar':
+      await revealBarReady;
+      revealBar = Boolean(msg.value);
+      await chrome.storage.local.set({ revealBar });
+      return reply({ ok: true, revealBar });
+
     case 'state':
       return reply({ ok: true, state: describe(await focusedTab()) });
 
@@ -554,6 +580,79 @@ async function reviveStartPages() {
 
 reviveStartPages();
 setTimeout(reviveStartPages, 1500);
+
+// The reveal bar (bar.js) runs as a content script in every page, so it gets a
+// deliberately small vocabulary: every request acts on the tab it came from,
+// and none can open a window, read sets or touch another page.
+let revealBar = true;
+
+// Windows whose bar is pinned open. Session storage: it outlives the worker
+// being torn down, and forgets everything when the browser quits, along with
+// the window ids it was keyed by.
+async function pinnedBars() {
+  try {
+    const got = await chrome.storage.session.get({ pinnedBars: {} });
+    return got.pinnedBars && typeof got.pinnedBars === 'object' ? got.pinnedBars : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  pinnedBars()
+    .then((pins) => {
+      if (!pins[windowId]) return null;
+      delete pins[windowId];
+      return chrome.storage.session.set({ pinnedBars: pins });
+    })
+    .catch(() => {});
+});
+const revealBarReady = chrome.storage.local
+  .get({ revealBar: true })
+  .then((got) => {
+    revealBar = Boolean(got.revealBar);
+  })
+  .catch(() => {});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || !msg.norenBar || sender.id !== chrome.runtime.id || !sender.tab) return false;
+  const tab = sender.tab;
+  switch (msg.norenBar) {
+    case 'hello':
+      // Only Noren's chrome-less windows ('app'). A tabbed window has its own
+      // toolbar, and a popup is usually a login flow that wants none.
+      revealBarReady
+        .then(() => (revealBar ? chrome.windows.get(tab.windowId) : null))
+        .then(async (win) => {
+          const enabled = Boolean(win && win.type === 'app');
+          const pins = enabled ? await pinnedBars() : {};
+          sendResponse({ enabled, pinned: Boolean(pins[tab.windowId]) });
+        })
+        .catch(() => sendResponse({ enabled: false }));
+      return true;
+    case 'pin':
+      // Keyed by window, not tab: a chrome-less window holds one tab, and the
+      // window is what the user pinned the bar on.
+      pinnedBars()
+        .then((pins) => {
+          if (msg.value) pins[tab.windowId] = true;
+          else delete pins[tab.windowId];
+          return chrome.storage.session.set({ pinnedBars: pins });
+        })
+        .catch(() => {});
+      return false;
+    case 'home':
+      chrome.tabs.update(tab.id, { url: START_URL }).catch(() => {});
+      return false;
+    case 'urlbar':
+      // Clicking the bar already focused this window, so the url bar's
+      // Ctrl+Enter will target it.
+      send({ type: 'toggleUrlBar' });
+      return false;
+    default:
+      return false;
+  }
+});
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Only our own start page may ask. Content scripts are not ours to trust

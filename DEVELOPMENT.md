@@ -509,6 +509,25 @@ main loop; running the CLI synchronously there deadlocks until the timeout.
 `set save` also skips non-web windows now: the start page is a chrome-less
 window too, and saving open pages captured its extension url.
 
+**The reveal bar is a content script, not a shell surface.** The first attempt
+put the page's address and buttons in the Omarchy bar; with two pages tiled, the
+strip was nowhere near the window it described. Drawing a toolbar over each
+window from the shell means tracking every move, resize, animation, group switch
+and fullscreen — the same fragility that ruled out favicons on the group bar. A
+content script moves with its page for free.
+
+What keeps it from fighting pages: `position: fixed` over the page (no layout
+shift, sticky headers untouched), a **closed** shadow root (page CSS cannot reach
+it, its CSS cannot leak), inline SVG icons (no dependency on the page having a
+Nerd Font), a dwell at the top edge before it shows (so a site's own top menu
+stays reachable), and hiding on `fullscreenchange`. It asks the worker before
+starting and runs only when its window's type is `app`.
+
+Content scripts are the least trusted code the extension has — a compromised
+renderer can speak for one — so the worker gives the bar its own listener and
+vocabulary: `hello`, `home` and `urlbar`, each acting on `sender.tab` only. The
+start page's listener still refuses anything not sent from `start.html`.
+
 **A cold start blocks the start page.** Chromium creates the `--app` window
 before it has loaded the extension, refuses `chrome-extension://…` as
 `ERR_BLOCKED_BY_CLIENT`, and never retries — the window sits on an error page.
