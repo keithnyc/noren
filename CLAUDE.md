@@ -3,6 +3,9 @@
 Omarchy plugin that drives Chromium from the shell: url-bar overlay, tab search,
 and chrome-less Hyprland windows. Plugin id `io.github.keithnyc.noren`.
 
+**Installing Noren for a user? Follow [`INSTALL.md`](INSTALL.md) and stop
+reading here.** Everything below is for changing Noren's code.
+
 **Read `DEVELOPMENT.md` first.** It carries the architecture, the design
 decisions and why they were made, the environment facts that cost real debugging
 time, and the list of bugs already fixed. Most questions are answered there.
@@ -64,5 +67,5 @@ rather than debugging by hand.
 
 Verify against the real system rather than assuming — most of this project's
 bugs were invisible in the code and obvious in `hyprctl clients`,
-`/proc/<pid>/cmdline`, or the browser's `Preferences`. Let keith drive
+`/proc/<pid>/cmdline`, or the browser's `Preferences`. Let the user drive
 interactive testing; the overlay and window behaviour can't be judged from here.

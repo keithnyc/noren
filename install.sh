@@ -3,6 +3,7 @@
 #   ./install.sh                  install into the default browser
 #   ./install.sh --browser NAME   install into a specific one (chromium, brave-origin-beta, ...)
 #   ./install.sh --remove         undo, from every browser it knows about
+#   ./install.sh --print-binds    print suggested Hyprland bindings (changes nothing)
 
 set -euo pipefail
 
@@ -12,6 +13,8 @@ PLUGIN_LINK="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 HOST_NAME="com.noren.bridge"
 EXT_DIR="$NOREN_DIR/extension"
 CFG="${XDG_CONFIG_HOME:-$HOME/.config}"
+
+CLI_LINK="$HOME/.local/bin/noren"
 
 say()  { printf '\033[32m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33m==>\033[0m %s\n' "$1"; }
@@ -91,10 +94,39 @@ path.write_text(text + "\n" if text.strip() else "")
 PY
 }
 
+# --- suggested bindings ------------------------------------------------------
+#
+# Printed, never written: bindings.lua is the user's own file, and the keys are
+# theirs to choose. INSTALL.md walks an agent through asking first. These keys
+# are free on a stock Omarchy -- checked against default/hypr/bindings/*.lua.
+# SUPER + ALT + LEFT/RIGHT are NOT: Omarchy uses them to move a window into a
+# group, so back/forward live in the radial menu instead.
+
+print_binds() {
+  cat <<'LUA'
+-- >>> noren bindings (managed by Noren's INSTALL.md; safe to edit)
+-- Url bar: type a url, search tabs, bookmarks and history.
+o.bind("SUPER + B", "Noren url bar", [[omarchy-shell shell toggle io.github.keithnyc.noren '{}']])
+-- Radial menu: back, forward, reload, home, overview, gather, theme...
+o.bind("SUPER + M", "Noren radial menu", [[omarchy-shell shell toggle io.github.keithnyc.noren '{"mode":"radial"}']])
+-- Step through the pages in a group, like switching tabs.
+o.bind("SUPER + BRACKETRIGHT", "Next window in group", hl.dsp.group.next())
+o.bind("SUPER + BRACKETLEFT", "Previous window in group", hl.dsp.group.prev())
+-- <<< noren bindings
+LUA
+}
+
+if [[ ${1-} == "--print-binds" ]]; then
+  print_binds
+  exit 0
+fi
+
 # --- remove ------------------------------------------------------------------
 
 if [[ ${1-} == "--remove" ]]; then
   [[ -L $PLUGIN_LINK ]] && rm -f "$PLUGIN_LINK" && say "unlinked plugin"
+  [[ -L $CLI_LINK && $(readlink "$CLI_LINK") == "$NOREN_DIR/bin/noren" ]] \
+    && rm -f "$CLI_LINK" && say "removed $CLI_LINK"
   for d in "${KNOWN_NMH[@]}"; do
     [[ -f $d/$HOST_NAME.json ]] && rm -f "$d/$HOST_NAME.json" && say "removed host manifest from $d"
   done
@@ -174,7 +206,10 @@ PYKEY
 
 # 1. plugin -------------------------------------------------------------------
 mkdir -p "$HOME/.config/omarchy/plugins"
-if [[ -e $PLUGIN_LINK && ! -L $PLUGIN_LINK ]]; then
+if [[ $(realpath -m "$PLUGIN_LINK") == "$NOREN_DIR" ]]; then
+  # Installed with `omarchy plugin add`, which clones straight into place.
+  say "plugin already in place"
+elif [[ -e $PLUGIN_LINK && ! -L $PLUGIN_LINK ]]; then
   warn "$PLUGIN_LINK exists and is not a symlink — leaving it alone"
 else
   ln -sfn "$NOREN_DIR" "$PLUGIN_LINK"
@@ -240,15 +275,29 @@ fi
 
 chmod +x "$NOREN_DIR/host/noren-host" "$NOREN_DIR/bin/noren"
 
+# 4. the cli on PATH ------------------------------------------------------------
+# Every doc says `noren doctor`; that should work without knowing where the
+# plugin was cloned. Never replace a `noren` that is not ours.
+mkdir -p "$(dirname "$CLI_LINK")"
+if [[ -e $CLI_LINK && ! -L $CLI_LINK ]]; then
+  warn "$CLI_LINK exists and is not a symlink -- leaving it alone"
+else
+  ln -sfn "$NOREN_DIR/bin/noren" "$CLI_LINK"
+  say "linked the noren command into $(dirname "$CLI_LINK")"
+fi
+
 cat <<EOF
 
-Installed for $BROWSER. Two things left, both yours to run:
+Installed for $BROWSER. Left to do:
 
-  1. Quit $BROWSER completely, then start it again
-  2. omarchy-restart-shell
+  1. In $BROWSER, open chrome://extensions and turn on Developer mode
+     (Chromium silently disables Noren's extension without it)
+  2. Quit $BROWSER completely, then start it again
+  3. omarchy-restart-shell
+  4. Add key bindings -- see: $NOREN_DIR/install.sh --print-binds
 
-Then check the bridge:
+Then check everything:
 
-  $NOREN_DIR/bin/noren ping
+  noren doctor
 
 EOF

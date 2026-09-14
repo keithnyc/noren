@@ -6,8 +6,30 @@ An Omarchy plugin that drives Chromium from the shell. Every page can be its own
 chrome-less Hyprland window; navigation, tab search and browser state live in
 Omarchy rather than in browser furniture.
 
-This is a v1 skeleton — the bridge is real and working, the feature set is
-deliberately small.
+## Trying Noren
+
+**With an agent:** point Claude (or any coding agent) at this repository and ask
+it to install Noren. [`INSTALL.md`](INSTALL.md) is written for it — the agent
+runs the steps and asks you before touching your browser, your shell or your
+key bindings.
+
+**By hand**, on Omarchy with Chromium as the default browser:
+
+```bash
+omarchy plugin add https://github.com/keithnyc/noren.git --enable
+~/.config/omarchy/plugins/io.github.keithnyc.noren/install.sh
+```
+
+Then turn on **Developer mode** in `chrome://extensions`, quit and restart the
+browser, run `omarchy-restart-shell`, add the key bindings from
+`install.sh --print-binds` to `~/.config/hypr/bindings.lua`, and check with
+`noren doctor`. [`INSTALL.md`](INSTALL.md) has each step, and how to update and
+remove.
+
+First things to try: `SUPER + B` and a url · `SUPER + M` then `H` for the start
+page · `noren peel on` to make every new tab its own window.
+
+Noren is early. Expect rough edges, and `noren doctor` when something is off.
 
 ## What it does today
 
@@ -151,14 +173,20 @@ issue.
 Recent Omarchy configures Hyprland in **Lua**, not `.conf`. In
 `~/.config/hypr/bindings.lua`:
 
+`./install.sh --print-binds` prints the suggested block — url bar, radial
+menu, and next/previous page in a group:
+
 ```lua
 o.bind("SUPER + B", "Noren url bar", [[omarchy-shell shell toggle io.github.keithnyc.noren '{}']])
-o.bind("SUPER + ALT + Left",  "Noren back",    [[~/omarchy-help/noren/bin/noren back]])
-o.bind("SUPER + ALT + Right", "Noren forward", [[~/omarchy-help/noren/bin/noren forward]])
+o.bind("SUPER + M", "Noren radial menu", [[omarchy-shell shell toggle io.github.keithnyc.noren '{"mode":"radial"}']])
+o.bind("SUPER + BRACKETRIGHT", "Next window in group", hl.dsp.group.next())
+o.bind("SUPER + BRACKETLEFT", "Previous window in group", hl.dsp.group.prev())
 ```
 
-`SUPER + B` because `SUPER + L` is the tiling layout toggle. Check what's free
-with `omarchy menu keybindings --print`, then `hyprctl reload`.
+`SUPER + B` because `SUPER + L` is the tiling layout toggle. Back and forward are
+in the radial rather than on keys: `SUPER + ALT + LEFT/RIGHT`, the obvious pair,
+already move a window into a group in stock Omarchy. Check what's free with
+`omarchy menu keybindings --print`, then `hyprctl reload`.
 
 ## The experiment
 
