@@ -495,6 +495,20 @@ storage; the worker mirrors it to the host, which writes
 closed. The page also re-renders on every `chrome.bookmarks` event, except
 mid-rename, where a re-render would throw away what is being typed.
 
+**The set editor never writes `sets.json`.** Every edit is `noren set put`
+(JSON on stdin — urls carry `&` and `#`, names could start with `-`), `set rm`
+or `set save`, run by the host on behalf of the worker. The CLI owns the format
+and every rule — web urls only, a name, at least one page, no silent overwrite of
+another set — so the page and `@name` in the url bar cannot disagree. A rename is
+one write (`previous`), not a save and a delete that can half-happen.
+
+The host runs these off its native-messaging loop. `set save` asks the extension
+for its open windows through the host's socket, and that reply is read by the
+main loop; running the CLI synchronously there deadlocks until the timeout.
+
+`set save` also skips non-web windows now: the start page is a chrome-less
+window too, and saving open pages captured its extension url.
+
 **A cold start blocks the start page.** Chromium creates the `--app` window
 before it has loaded the extension, refuses `chrome-extension://…` as
 `ERR_BLOCKED_BY_CLIENT`, and never retries — the window sits on an error page.

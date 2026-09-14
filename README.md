@@ -276,6 +276,17 @@ group. The shape is part of what you saved.
 A set also turns up when you simply type its name, so you do not have to know
 the sigil exists.
 
+Or manage them on the **start page**: press `E` and each set becomes a card.
+Rename it in place, flip it between **Group** and **Tiled**, drag its pages into
+order, remove one with `×`, add one by typing it, or delete the set (two clicks).
+The **New set** card makes one from a name and a first page, or from the pages
+open right now. Every edit saves immediately, through `noren set put`:
+
+```bash
+echo '{"name":"reading","urls":["news.example.com"],"grouped":true}' | noren set put
+echo '{"name":"morning","previous":"reading","urls":["news.example.com"]}' | noren set put
+```
+
 ## Start page
 
 A tabbed browser shows you where you might go before you have decided — the
@@ -290,8 +301,9 @@ noren start --new   # a start page in a new window
 Or `H` in the radial, which works like a browser's Home button. With no page in
 front of you — a terminal, the desktop — it opens a start page instead, or raises
 the one already open. It shows a clock, your **bookmarks bar** in its own order,
-your **most visited** sites over the last month (one tile per site, ranked from
-history), and your **sets**. It repaints
+your **most visited** sites over the last month (one row of six, one tile per
+site, ranked from history), and your **sets**. Most visited starts **collapsed**
+on every load, for privacy — click its heading to open it. It repaints
 with the Omarchy theme, live.
 
 A **click opens the site in the same window**, the way a new-tab page does.

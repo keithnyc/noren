@@ -37,6 +37,7 @@ usage: noren <command> [args]
   set list          list your sets   (--json for the overlay)
   set open <name>   open a set, in the shape it was saved
   set rm <name>     forget a set
+  set put           create, edit or rename a set from JSON on stdin
   apps              report webapp launchers and their window identity
   apps adopt [name] give webapp windows their app identity in alt-tab
   apps revert [name] undo that
@@ -603,7 +604,9 @@ def open_page_urls():
         if win.get("type") != "app":
             continue
         tabs = win.get("tabs") or []
-        if tabs and tabs[0].get("url"):
+        # Web pages only. The start page is a chrome-less window too, and a set
+        # that reopens Noren's own extension page is not a set of pages.
+        if tabs and re.match(r"^https?://", tabs[0].get("url") or "", re.I):
             urls[tabs[0]["url"]] = True
 
     ordered = list(urls)
@@ -695,6 +698,57 @@ def set_open(name, force_group=None):
         sys.exit(f"noren set open: set '{name}' is empty")
     group = entry.get("grouped", False) if force_group is None else force_group
     return open_many(urls, group=group)
+
+
+SET_NAME_MAX = 40
+
+
+def set_put(payload):
+    """Create or replace a set from JSON, for the start page's editor.
+
+    {"name": ..., "urls": [...], "grouped": bool, "previous": old name or null}
+
+    `previous` makes a rename one atomic write rather than a save and a delete
+    that can half-happen. Read from stdin rather than argv: urls carry `&` and
+    `#`, and a name could start with `-`.
+    """
+    if not isinstance(payload, dict):
+        sys.exit("noren set put: expected a JSON object")
+    name = str(payload.get("name") or "").strip()
+    previous = payload.get("previous")
+    previous = str(previous).strip() if previous else None
+    if not name:
+        sys.exit("noren set put: a set needs a name")
+    if len(name) > SET_NAME_MAX or any(c in name for c in "\n\t,") or name.startswith("@"):
+        sys.exit(f"noren set put: names are up to {SET_NAME_MAX} characters, "
+                 "without commas or a leading @")
+
+    urls, seen = [], set()
+    for raw in payload.get("urls") or []:
+        url = normalize(raw)
+        if not url:
+            sys.exit(f"noren set put: not a web address: {raw!r}")
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+    if not urls:
+        sys.exit("noren set put: a set needs at least one page")
+
+    sets = load_sets()
+    if previous and previous not in sets:
+        sys.exit(f"noren set put: no set '{previous}' to rename")
+    if name in sets and name != previous:
+        sys.exit(f"noren set put: there is already a set called '{name}'")
+    if previous and previous != name:
+        del sets[previous]
+    sets[name] = {
+        "urls": urls,
+        "grouped": bool(payload.get("grouped")),
+        "saved": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    save_sets(sets)
+    print(f"noren: saved set '{name}' — {len(urls)} page(s)")
+    return 0
 
 
 def set_remove(name):
@@ -1467,6 +1521,12 @@ def main(argv):
             return set_open(arg, force_group=group)
         if sub in ("rm", "remove", "forget"):
             return set_remove(arg)
+        if sub == "put":
+            try:
+                payload = json.load(sys.stdin)
+            except ValueError:
+                sys.exit("noren set put: expected JSON on stdin")
+            return set_put(payload)
         sys.exit(f"noren set: unknown subcommand '{sub}'")
     elif cmd == "apps":
         if rest and rest[0] == "adopt":

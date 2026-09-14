@@ -484,7 +484,26 @@ Item {
       root.close()
       return
     }
+    // Honour the highlighted row exactly as Enter does. This used to read only
+    // the typed text, so picking a site with the arrows -- or from the list an
+    // empty url bar now shows -- and pressing Ctrl+Enter closed the bar and did
+    // nothing at all, since nothing had been typed.
+    var pick = root.currentRow()
+    var honourPick = pick && (root.selectionMoved || !root.looksLikeUrl)
+    if (honourPick && (pick.kind === "set" || pick.kind === "save" || pick.kind === "hint")) {
+      // "Replace this window" has no meaning for a set; do what Enter does.
+      root.activate()
+      return
+    }
+    if (honourPick && pick.kind === "tab") {
+      // Already open somewhere: go to it rather than loading it twice.
+      runNoren(["focus", String(pick.id)])
+      root.close()
+      return
+    }
+    if (honourPick && pick.url) text = pick.url
     if (text.length > 0 && root.canReplace) runNoren(["go", text])
+    else if (text.length > 0) runNoren(["open", text])
     root.close()
   }
 

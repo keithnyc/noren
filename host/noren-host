@@ -371,6 +371,39 @@ def save_start(hidden):
         log("could not save start.json:", exc)
 
 
+def set_op(msg):
+    """Edit sets for the start page, through the CLI, which owns the format.
+
+    Only three operations, each mapped to fixed CLI arguments: nothing from the
+    message is ever used as an argument except a set name, which is passed
+    after the subcommand where it cannot be read as a flag's value.
+    """
+    op = msg.get("op")
+    data = msg.get("data") if isinstance(msg.get("data"), dict) else {}
+    stdin = None
+    if op == "put":
+        argv = [NOREN_BIN, "set", "put"]
+        stdin = json.dumps(data)
+    elif op == "rm":
+        argv = [NOREN_BIN, "set", "rm", str(data.get("name") or "")]
+    elif op == "save":
+        argv = [NOREN_BIN, "set", "save", str(data.get("name") or "")]
+    else:
+        write_native({"type": "setOpResult", "id": msg.get("id"),
+                      "ok": False, "error": "unknown set operation"})
+        return
+    try:
+        out = subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=15)
+        ok = out.returncode == 0
+        error = "" if ok else (out.stderr.strip() or out.stdout.strip() or "failed")
+    except (OSError, subprocess.SubprocessError) as exc:
+        ok, error = False, str(exc)
+    # The CLI prefixes its messages for a terminal; the page shows them bare.
+    error = error.replace("noren set put: ", "").replace("noren set save: ", "") \
+        .replace("noren set rm: ", "").replace("noren: ", "")
+    write_native({"type": "setOpResult", "id": msg.get("id"), "ok": ok, "error": error})
+
+
 def open_set(name):
     """Open a set through the CLI, which owns grouping.
 
@@ -726,6 +759,12 @@ def main():
 
         elif kind == "openSet":
             open_set(msg.get("name"))
+
+        elif kind == "setOp":
+            # Off the main loop: `set save` asks the extension for the open
+            # windows through this host's socket, and that reply is read by
+            # this very loop. Blocking here on the CLI would deadlock it.
+            threading.Thread(target=set_op, args=(msg,), daemon=True).start()
 
         elif kind == "saveStart":
             save_start(msg.get("hidden"))

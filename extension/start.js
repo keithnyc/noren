@@ -100,6 +100,11 @@ const BAR_ID = '1';
 // Every tile in page order, so number keys match what the eye counts.
 const tiles = [];
 let editing = false;
+// Most visited starts collapsed on every load and is never remembered open.
+// It is a record of where you go, and the start page is the thing on screen
+// when someone is looking over your shoulder. Opening it is one click; leaving
+// it open by accident should not survive a reload.
+let topOpen = false;
 let hiddenCount = 0;
 
 function setEditing(on) {
@@ -368,6 +373,278 @@ document.addEventListener('keydown', (event) => {
   open(entry.url, !(event.ctrlKey || event.metaKey));
 });
 
+// --------------------------------------------------------------------- sets
+//
+// Every edit goes to the CLI through the worker and the host: `noren set put`
+// owns the file format and all validation, so the page never writes sets.json
+// and cannot disagree with `@name` in the url bar about what a set is. Each edit
+// saves at once -- there is no Save button to forget.
+
+// A re-render replaces every input, so one arriving mid-typing (a bookmark
+// synced, the tab refocused) would throw away what is being typed.
+function typing() {
+  const el = document.activeElement;
+  return Boolean(el && (el.isContentEditable || el.tagName === 'INPUT'));
+}
+
+async function setOp(op, data) {
+  try {
+    const reply = await chrome.runtime.sendMessage({ noren: 'setOp', op, data });
+    return reply || { ok: false, error: 'Noren did not answer' };
+  } catch (e) {
+    return { ok: false, error: 'Noren is not running' };
+  }
+}
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function showError(card, message) {
+  const line = card.querySelector('.set-error');
+  line.textContent = message || '';
+  line.hidden = !message;
+}
+
+// Save a changed copy of `set`. On failure the card stays as typed, with the
+// CLI's reason under it; on success the page re-reads what was written.
+async function putSet(card, set, changes) {
+  const next = {
+    name: set.name,
+    urls: set.urls.slice(),
+    grouped: Boolean(set.grouped),
+    previous: set.name,
+    ...changes,
+  };
+  const result = await setOp('put', next);
+  if (!result.ok) {
+    showError(card, result.error);
+    return false;
+  }
+  render();
+  return true;
+}
+
+function nameInput(value, placeholder) {
+  const input = el('input', 'set-name');
+  input.type = 'text';
+  input.value = value;
+  input.placeholder = placeholder;
+  input.spellcheck = false;
+  input.maxLength = 40;
+  return input;
+}
+
+function pageInput(placeholder, onAdd) {
+  const input = el('input', 'set-add');
+  input.type = 'text';
+  input.placeholder = placeholder;
+  input.spellcheck = false;
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      input.value = '';
+      input.blur();
+    } else if (event.key === 'Enter' && input.value.trim()) {
+      event.preventDefault();
+      onAdd(input.value.trim());
+    }
+  });
+  return input;
+}
+
+// Which page row is being dragged, within which set.
+let rowDrag = null;
+
+function setCard(set) {
+  const card = el('div', 'set-card');
+  set = { name: set.name, urls: (set.urls || []).slice(), grouped: Boolean(set.grouped) };
+
+  // --- header: name, shape, open, delete
+  const head = el('div', 'set-head');
+  const name = nameInput(set.name, 'name');
+  const commitName = () => {
+    const wanted = name.value.trim();
+    if (!wanted) {
+      name.value = set.name;
+      return;
+    }
+    if (wanted !== set.name) putSet(card, set, { name: wanted });
+  };
+  name.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      name.blur();
+    } else if (event.key === 'Escape') {
+      name.value = set.name;
+      name.blur();
+    }
+  });
+  name.addEventListener('blur', commitName);
+  head.appendChild(el('span', 'set-sigil', '@'));
+  head.appendChild(name);
+
+  const shape = el('button', 'tool shape', set.grouped ? 'Group' : 'Tiled');
+  shape.type = 'button';
+  shape.title = set.grouped
+    ? 'Opens as one Hyprland group -- click for tiled windows'
+    : 'Opens as tiled windows -- click to open as one group';
+  shape.addEventListener('click', () => putSet(card, set, { grouped: !set.grouped }));
+  head.appendChild(shape);
+
+  const openBtn = el('button', 'tool', 'Open');
+  openBtn.type = 'button';
+  openBtn.title = 'Open this set';
+  openBtn.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ noren: 'openSet', name: set.name }).catch(() => {});
+  });
+  head.appendChild(openBtn);
+
+  // Two presses, a few seconds apart at most. A set is quick to rebuild, but
+  // it sits next to Open, and a stray click should not cost one.
+  const del = el('button', 'tool danger', 'Delete');
+  del.type = 'button';
+  let armed = null;
+  del.addEventListener('click', async () => {
+    if (!armed) {
+      del.textContent = 'Sure?';
+      del.classList.add('armed');
+      armed = setTimeout(() => {
+        armed = null;
+        del.textContent = 'Delete';
+        del.classList.remove('armed');
+      }, 3000);
+      return;
+    }
+    clearTimeout(armed);
+    const result = await setOp('rm', { name: set.name });
+    if (result.ok) render();
+    else showError(card, result.error);
+  });
+  head.appendChild(del);
+  card.appendChild(head);
+
+  // --- pages, reorderable
+  const list = el('ol', 'set-pages');
+  set.urls.forEach((url, index) => {
+    const row = el('li', 'set-page');
+    row.draggable = true;
+    row.dataset.index = String(index);
+
+    const icon = el('img');
+    icon.src = favicon(url);
+    icon.alt = '';
+    icon.draggable = false;
+    row.appendChild(icon);
+
+    const label = el('span', 'set-url', url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''));
+    label.title = url;
+    row.appendChild(label);
+
+    const remove = el('button', 'tool', '×');
+    remove.type = 'button';
+    remove.title = 'Remove this page from the set';
+    remove.addEventListener('click', () => {
+      if (set.urls.length === 1) {
+        showError(card, 'A set needs at least one page -- delete the set instead.');
+        return;
+      }
+      putSet(card, set, { urls: set.urls.filter((_, i) => i !== index) });
+    });
+    row.appendChild(remove);
+
+    row.addEventListener('dragstart', (event) => {
+      rowDrag = { name: set.name, from: index };
+      event.dataTransfer.effectAllowed = 'move';
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => {
+      rowDrag = null;
+      row.classList.remove('dragging');
+    });
+    row.addEventListener('dragover', (event) => {
+      if (!rowDrag || rowDrag.name !== set.name) return;
+      event.preventDefault();
+    });
+    row.addEventListener('drop', (event) => {
+      if (!rowDrag || rowDrag.name !== set.name) return;
+      event.preventDefault();
+      const box = row.getBoundingClientRect();
+      let to = event.clientY > box.top + box.height / 2 ? index + 1 : index;
+      const from = rowDrag.from;
+      rowDrag = null;
+      // Positions are measured with the dragged row still in the list; take it
+      // out first, then the insertion point shifts left if it was before.
+      if (to > from) to -= 1;
+      if (to === from) return;
+      const urls = set.urls.slice();
+      const [moved] = urls.splice(from, 1);
+      urls.splice(to, 0, moved);
+      putSet(card, set, { urls });
+    });
+    list.appendChild(row);
+  });
+  card.appendChild(list);
+
+  card.appendChild(
+    pageInput('+ add a page', (value) => putSet(card, set, { urls: set.urls.concat(value) })),
+  );
+
+  const error = el('div', 'set-error');
+  error.hidden = true;
+  card.appendChild(error);
+  return card;
+}
+
+// Two ways to make one: name it and add a first page, or name what is open.
+function newSetCard() {
+  const card = el('div', 'set-card new');
+  card.appendChild(el('div', 'set-title', 'New set'));
+
+  const name = nameInput('', 'name');
+  const nameRow = el('div', 'set-head');
+  nameRow.appendChild(el('span', 'set-sigil', '@'));
+  nameRow.appendChild(name);
+  card.appendChild(nameRow);
+
+  const create = async (url) => {
+    const wanted = name.value.trim();
+    if (!wanted) {
+      showError(card, 'Give it a name first.');
+      name.focus();
+      return;
+    }
+    const result = await setOp('put', { name: wanted, urls: [url], grouped: false });
+    if (result.ok) render();
+    else showError(card, result.error);
+  };
+  card.appendChild(pageInput('first page, then Enter', create));
+
+  const save = el('button', 'link', 'or save the pages open right now');
+  save.type = 'button';
+  save.addEventListener('click', async () => {
+    const wanted = name.value.trim();
+    if (!wanted) {
+      showError(card, 'Give it a name first.');
+      name.focus();
+      return;
+    }
+    save.disabled = true;
+    const result = await setOp('save', { name: wanted });
+    save.disabled = false;
+    if (result.ok) render();
+    else showError(card, result.error);
+  });
+  card.appendChild(save);
+
+  const error = el('div', 'set-error');
+  error.hidden = true;
+  card.appendChild(error);
+  return card;
+}
+
 // --------------------------------------------------------------------- data
 
 async function placeEntries() {
@@ -414,35 +691,55 @@ async function render() {
   document.getElementById('bar-section').hidden = bar.length === 0 && !editing;
   document.getElementById('bar-hint').hidden = !(editing && bar.length === 0);
 
-  document.getElementById('top').replaceChildren(...top.map((entry) => tile(entry, 'top')));
+  // Collapsed means not rendered at all, not merely invisible: the tiles stay
+  // out of the DOM and out of the number keys.
+  const topGrid = document.getElementById('top');
+  // One row: the worker ranks more than that for the url bar's longer list.
+  const row = top.slice(0, 6);
+  topGrid.replaceChildren(...(topOpen ? row.map((entry) => tile(entry, 'top')) : []));
+  topGrid.hidden = !topOpen;
+  const toggle = document.getElementById('top-toggle');
+  toggle.setAttribute('aria-expanded', String(topOpen));
+  toggle.classList.toggle('open', topOpen);
   document.getElementById('top-section').hidden = top.length === 0;
 
   const reset = document.getElementById('unhide');
   reset.hidden = !(editing && hiddenCount > 0);
   reset.textContent = 'Show ' + hiddenCount + ' hidden';
 
-  const chips = document.getElementById('sets');
-  chips.replaceChildren(
-    ...sets.map((set) => {
-      const b = document.createElement('button');
-      b.className = 'chip';
-      b.textContent = '@' + set.name;
-      const count = document.createElement('span');
-      count.className = 'count';
-      count.textContent = String((set.urls || []).length);
-      b.appendChild(count);
-      b.title = (set.urls || []).map(hostOf).join('  ');
-      b.addEventListener('click', () => {
-        chrome.runtime.sendMessage({ noren: 'openSet', name: set.name }).catch(() => {});
-      });
-      return b;
-    }),
-  );
-  document.getElementById('sets-section').hidden = sets.length === 0;
+  const setsBox = document.getElementById('sets');
+  setsBox.classList.toggle('chips', !editing);
+  setsBox.classList.toggle('set-editor', editing);
+  if (editing) {
+    setsBox.replaceChildren(...sets.map(setCard), newSetCard());
+  } else {
+    setsBox.replaceChildren(
+      ...sets.map((set) => {
+        const b = document.createElement('button');
+        b.className = 'chip';
+        b.textContent = '@' + set.name;
+        const count = document.createElement('span');
+        count.className = 'count';
+        count.textContent = String((set.urls || []).length);
+        b.appendChild(count);
+        b.title = (set.urls || []).map(hostOf).join('  ');
+        b.addEventListener('click', () => {
+          chrome.runtime.sendMessage({ noren: 'openSet', name: set.name }).catch(() => {});
+        });
+        return b;
+      }),
+    );
+  }
+  // In edit mode Sets always shows: it is where a new one gets made.
+  document.getElementById('sets-section').hidden = sets.length === 0 && !editing;
   document.getElementById('empty').hidden = editing || bar.length + top.length + sets.length > 0;
 }
 
 document.getElementById('edit').addEventListener('click', () => setEditing(!editing));
+document.getElementById('top-toggle').addEventListener('click', () => {
+  topOpen = !topOpen;
+  render();
+});
 document.getElementById('unhide').addEventListener('click', async () => {
   await chrome.runtime.sendMessage({ noren: 'unhideAll' }).catch(() => {});
   render();
@@ -456,8 +753,7 @@ else render();
 // sync. Follow it rather than going stale until the next visit.
 for (const event of ['onCreated', 'onRemoved', 'onChanged', 'onMoved']) {
   chrome.bookmarks[event].addListener(() => {
-    // Mid-rename, a re-render would throw away what is being typed.
-    if (document.activeElement && document.activeElement.isContentEditable) return;
+    if (typing()) return;
     render();
   });
 }

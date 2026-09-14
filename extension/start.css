@@ -60,6 +60,35 @@ h2 {
 
 /* Wrapped and centred rather than a grid: grid tracks fill the row even when
    empty, so a morning with three sites got three tiles hugging the left edge. */
+/* Most visited is one row, always: six equal columns that shrink with the
+   window rather than wrapping a sixth tile onto a line of its own. */
+.grid.row {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 150px));
+  justify-content: center;
+}
+.grid.row .tile { width: auto; min-width: 0; }
+.grid.row[hidden] { display: none; }
+
+.toggle {
+  background: none;
+  border: none;
+  padding: 2px 6px;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.toggle::after {
+  content: ' \25B8';
+  display: inline-block;
+  margin-left: 4px;
+  transition: transform 120ms ease;
+}
+.toggle.open::after { transform: rotate(90deg); }
+.toggle:hover, .toggle:focus-visible { color: var(--noren-fg); outline: none; }
+
 .grid {
   display: flex;
   flex-wrap: wrap;
@@ -276,3 +305,103 @@ body.editing .tile .title[contenteditable]:focus {
 
 .link:focus { outline: none; }
 .link:focus-visible { color: var(--noren-fg); }
+
+/* -------------------------------------------------------------- set editor */
+
+.set-editor {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.set-card {
+  width: 340px;
+  max-width: 100%;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--noren-surface);
+  border: 1px solid var(--noren-border);
+  text-align: left;
+}
+.set-card.new { border-style: dashed; }
+
+.set-title {
+  font-size: 12px;
+  color: var(--noren-muted);
+  margin-bottom: 8px;
+}
+
+.set-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.set-sigil { color: var(--noren-muted); }
+
+.set-name, .set-add {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  color: var(--noren-fg);
+  font: inherit;
+  font-size: 14px;
+  padding: 4px 2px;
+  outline: none;
+}
+.set-name:hover { border-bottom-color: var(--noren-border); }
+.set-name:focus, .set-add:focus { border-bottom-color: var(--noren-accent); }
+
+.set-add {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  font-size: 12px;
+  border-bottom-color: var(--noren-border);
+}
+
+.tool.danger.armed {
+  color: var(--noren-bg);
+  background: var(--noren-danger, #f7768e);
+  border-color: var(--noren-danger, #f7768e);
+}
+
+.set-pages {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.set-page {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 4px;
+  border-radius: 6px;
+  cursor: grab;
+}
+.set-page:hover { background: var(--noren-surface-2); }
+.set-page.dragging { opacity: 0.35; }
+.set-page img { width: 16px; height: 16px; border-radius: 3px; }
+
+.set-url {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.set-card .link { margin-top: 8px; padding-left: 2px; }
+.set-card .link:disabled { opacity: 0.5; cursor: progress; }
+
+.set-error {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--noren-danger, #f7768e);
+}

@@ -22,8 +22,9 @@
     </section>
 
     <section id="top-section" hidden>
-      <h2>Most visited</h2>
-      <div id="top" class="grid"></div>
+      <h2><button id="top-toggle" class="toggle" type="button" aria-expanded="false"
+        aria-controls="top">Most visited</button></h2>
+      <div id="top" class="grid row" hidden></div>
     </section>
 
     <section id="sets-section" hidden>
@@ -40,7 +41,7 @@
       <p class="normal-only">Click opens it here &middot; Ctrl+click opens a new window &middot;
         <kbd>1</kbd>&ndash;<kbd>9</kbd> by number &middot; <kbd>E</kbd> edit</p>
       <p class="editing-only">Drag to reorder &middot; click a pinned title to rename &middot;
-        <kbd>Esc</kbd> done</p>
+        sets save as you edit &middot; <kbd>Esc</kbd> done</p>
       <p>
         <button id="edit" class="link" type="button">Edit</button>
         <button id="unhide" class="link" type="button" hidden></button>

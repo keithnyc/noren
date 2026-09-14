@@ -20,10 +20,10 @@ function connect() {
       applyTheme(msg.theme);
       return;
     }
-    if (msg && msg.type === 'sets') {
-      const settle = pendingSets.get(msg.id);
-      pendingSets.delete(msg.id);
-      if (settle) settle(Array.isArray(msg.sets) ? msg.sets : []);
+    if (msg && (msg.type === 'sets' || msg.type === 'setOpResult')) {
+      const settle = pendingHost.get(msg.id);
+      pendingHost.delete(msg.id);
+      if (settle) settle(msg);
       return;
     }
     handleCommand(msg).catch((err) => {
@@ -500,21 +500,29 @@ async function startSuggestions(limit) {
 
 const START_URL = chrome.runtime.getURL('start.html');
 
-// id -> resolve, for the host's answer to `getSets`.
-const pendingSets = new Map();
-let setsSeq = 0;
+// id -> resolve, for requests the host answers asynchronously.
+const pendingHost = new Map();
+let hostSeq = 0;
 
-function askSets() {
+// Resolves with the host's reply message, or `fallback` if none arrives: a
+// host that never answers must not leave the page waiting forever.
+function askHost(payload, fallback, timeoutMs) {
   return new Promise((resolve) => {
-    const id = 'sets-' + ++setsSeq;
-    pendingSets.set(id, resolve);
-    send({ type: 'getSets', id });
-    // A host that never answers must not leave the page's sets row pending.
+    const id = 'host-' + ++hostSeq;
+    pendingHost.set(id, resolve);
+    send({ ...payload, id });
     setTimeout(() => {
-      if (pendingSets.delete(id)) resolve([]);
-    }, 3000);
+      if (pendingHost.delete(id)) resolve(fallback);
+    }, timeoutMs);
   });
 }
+
+async function askSets() {
+  const reply = await askHost({ type: 'getSets' }, null, 3000);
+  return reply && Array.isArray(reply.sets) ? reply.sets : [];
+}
+
+const SET_OPS = ['put', 'rm', 'save'];
 
 // A start page opened from a cold start loses a race it cannot see: Chromium
 // creates the `--app` window before it has loaded this extension, refuses the
@@ -565,6 +573,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'sets':
       askSets().then((sets) => sendResponse({ ok: true, sets }));
       return true;
+    case 'setOp': {
+      // The CLI validates everything; this only refuses what is not an edit.
+      if (!SET_OPS.includes(msg.op)) {
+        sendResponse({ ok: false, error: 'unknown set operation' });
+        return false;
+      }
+      // `save` asks the browser for its open windows before writing, so it
+      // gets longer than a plain file edit.
+      askHost({ type: 'setOp', op: msg.op, data: msg.data || {} },
+        { ok: false, error: 'Noren did not answer' }, msg.op === 'save' ? 20000 : 15000)
+        .then((reply) => sendResponse({ ok: Boolean(reply.ok), error: reply.error || '' }));
+      return true;
+    }
     case 'places':
       places(12).then((got) => sendResponse({ ok: true, ...got }));
       return true;
