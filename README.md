@@ -352,7 +352,9 @@ A **click opens the site in the same window**, the way a new-tab page does.
 page where it is. `1`–`9` open tiles by number, with Ctrl for a new window.
 
 The url bar does the same before you type anything: `SUPER + B` on an empty
-query lists the bookmarks bar, then most visited, then sets, then everything
+query leads with **Start page** — so `SUPER + B`, Enter is always the way home,
+even with no page open (Enter raises or opens it; Ctrl+Enter turns the page in
+front into it) — then the bookmarks bar, most visited, sets, and everything
 else open. A place that is already open shows as its tab, so Enter jumps to it
 rather than opening a second copy. With the browser closed the list comes from
 Chromium's profile on disk.

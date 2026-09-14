@@ -168,6 +168,14 @@ Item {
     // leads with -- then your sets, then whatever else is open. A place that is
     // already open becomes its tab, so Enter jumps rather than opening a twin.
     if (root.scope === "" && needle.length === 0) {
+      // The start page first, always, so SUPER+B then Enter is always "home"
+      // -- from a terminal, from an empty workspace, from anywhere.
+      out.push({
+        kind: "home",
+        id: -1,
+        title: "Start page",
+        url: "pinned sites, most visited and sets"
+      })
       var openByHost = {}
       for (var t = 0; t < root.tabs.length; t++) {
         var tabHost = root.hostOf(root.tabs[t].url).toLowerCase()
@@ -449,6 +457,13 @@ Item {
 
     var honourPick = pick && (root.selectionMoved || !root.looksLikeUrl)
 
+    if (honourPick && pick.kind === "home") {
+      // Raise an open start page or open one; never replace the page behind.
+      runNoren(["start", "--keep"])
+      root.close()
+      return
+    }
+
     if (honourPick && pick.kind === "save") {
       runNoren(["set", "save", pick.name])
       root.close()
@@ -490,6 +505,12 @@ Item {
     // nothing at all, since nothing had been typed.
     var pick = root.currentRow()
     var honourPick = pick && (root.selectionMoved || !root.looksLikeUrl)
+    if (honourPick && pick.kind === "home") {
+      // The page in front goes home -- or, with none, the start page opens.
+      runNoren(["start"])
+      root.close()
+      return
+    }
     if (honourPick && pick.kind === "set") {
       // Ctrl+Enter's meaning, for a set: in place of the page in front, which
       // becomes the set's first page (and its group). Enter opens alongside.
@@ -860,6 +881,7 @@ Item {
                 : modelData.kind === "tab" ? "tab"
                 : modelData.kind === "save" ? "save"
                 : modelData.kind === "set" ? "set"
+                : modelData.kind === "home" ? "home"
                 : modelData.kind === "bookmark" ? "saved" : "visited"
               color: index === root.selectedIndex ? root.selectedText : root.foreground
               opacity: 0.45
@@ -919,6 +941,9 @@ Item {
               var row = root.currentRow()
               if (row && row.kind === "hint") return "type a name to save a set"
               if (row && row.kind === "set") return "\u21B5 open set  \u00B7  Shift+Del delete"
+              if (row && row.kind === "home") return root.canReplace
+                ? "\u21B5 start page  \u00B7  Ctrl+\u21B5 this page goes home"
+                : "\u21B5 start page"
               if (row && row.kind === "save") return "\u21B5 save set"
               if (root.multiUrl) return "\u21B5 open " + root.destinations.length + " windows"
               return (root.matches.length > 0 && !root.looksLikeUrl)

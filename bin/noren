@@ -20,6 +20,7 @@ usage: noren <command> [args]
   goto <url>        navigate if you're looking at a page, else open a window
   start             send the page in front of you to the start page, or open one
   start --new       always open the start page in a new window
+  start --keep      go to the start page without replacing the page in front
   bar               show or hide the reveal bar on the page in front of you
   bar on|off        whether pages get a reveal bar at all (persists)
   open <url>...     open each url as its own chrome-less window
@@ -1372,13 +1373,17 @@ def extension_id():
     return ext_id if ext_id.isalpha() else None
 
 
-def start_page(new=False):
+def start_page(new=False, keep=False):
     """Go home: the page in front of you becomes the start page.
 
     Like a browser's Home button, and like a tile click, which also navigates
     in place. Only when there is no page in front of you -- a terminal, the
     desktop, a tabbed window -- does this open one, and then an open start page
     is raised rather than a second stacked. `--new` skips straight to that.
+
+    `--keep` never touches the page in front: raise an open start page, or
+    open one. The url bar's Enter uses it, because Enter must not change the
+    window behind the overlay; its Ctrl+Enter uses plain `start`.
 
     Five start pages is clutter nobody asked for, and the obvious way to get
     five is pressing the bind every morning without closing yesterday's.
@@ -1399,7 +1404,7 @@ def start_page(new=False):
     # land on the page you are looking at or nowhere.
     active = hypr_json("activewindow") or {}
     front = (active.get("class") or "").lower()
-    if not new and front.startswith("chrome-") and bridge_up():
+    if not new and not keep and front.startswith("chrome-") and bridge_up():
         res = call({"cmd": "home"})
         if res.get("ok"):
             return 0
@@ -1488,7 +1493,7 @@ def main(argv):
         return doctor()
 
     if cmd == "start":
-        return start_page(new="--new" in rest)
+        return start_page(new="--new" in rest, keep="--keep" in rest)
 
     if cmd == "bar":
         if rest and rest[0] in ("on", "off"):
