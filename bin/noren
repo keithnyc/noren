@@ -18,6 +18,7 @@ USAGE = """\
 usage: noren <command> [args]
 
   goto <url>        navigate if you're looking at a page, else open a window
+  start             open the start page, or bring it forward
   open <url>...     open each url as its own chrome-less window
   open --group ...  open them and fold them into one Hyprland group
   go <url>          navigate the focused window (force)
@@ -46,6 +47,7 @@ usage: noren <command> [args]
   save              bookmark the page in front of you
   suggest [text]    bookmark/history completions as json
                     --kind bookmark|history narrows the sources
+                    --kind start: bookmarks bar, then most visited
   focus <tab-id>    focus a tab by id
   target            which browser window is on this workspace
   status            what the focused window is showing
@@ -449,6 +451,64 @@ def _offline_score(entry, needle):
         days = (time.time() - last) / 86400.0
         score += max(0, 40 - days * 2)
     return score
+
+
+# Link shorteners: every click on a social feed site goes through t.co, which makes it rank as a
+# site you visit. Kept in step with PASS_THROUGH in the extension.
+PASS_THROUGH = {"t.co", "bit.ly", "lnkd.in", "l.facebook.com", "out.reddit.com"}
+
+
+def offline_start(limit=12):
+    """The empty url bar with the browser closed: the bar, then most visited.
+
+    Mirrors the extension's `places()`: one entry per site, its visits summed
+    across pages, over the last 30 days, local dev servers excluded.
+    """
+    bar, bar_hosts = [], set()
+    try:
+        with open(os.path.join(profile_dir(), "Bookmarks"), "r") as fh:
+            root = ((json.load(fh).get("roots") or {}).get("bookmark_bar") or {})
+        for node in root.get("children") or []:
+            url = node.get("url") or ""
+            if node.get("type") == "url" and re.match(r"^https?://", url, re.I):
+                bar.append({"url": url, "title": node.get("name") or "",
+                            "kind": "bookmark", "visits": 0})
+                bar_hosts.add(host_of(url).lower().removeprefix("www."))
+    except (OSError, ValueError, AttributeError):
+        pass
+
+    # Hidden on the start page. The extension owns the list; the host mirrors it
+    # here because this path runs with the browser, and its storage, closed.
+    hidden = set()
+    try:
+        with open(os.path.join(os.path.dirname(SETS_FILE), "start.json"), "r") as fh:
+            hidden = {str(h).lower() for h in (json.load(fh).get("hidden") or [])}
+    except (OSError, ValueError, AttributeError):
+        pass
+
+    cutoff = time.time() - 30 * 86400
+    sites = {}
+    for visit in offline_history(limit=2000):
+        url = visit["url"]
+        if not re.match(r"^https?://", url, re.I) or visit["lastVisit"] < cutoff:
+            continue
+        host = host_of(url).lower().removeprefix("www.")
+        if (not host or host == "localhost" or host.startswith("127.")
+                or host in PASS_THROUGH or host in bar_hosts or host in hidden):
+            continue
+        site = sites.get(host)
+        visits = visit["visitCount"]
+        if site is None:
+            sites[host] = {"url": url, "title": visit["title"], "best": visits, "visits": visits}
+            continue
+        site["visits"] += visits
+        if visits > site["best"]:
+            site.update(url=url, title=visit["title"] or site["title"], best=visits)
+
+    top = sorted(sites.values(), key=lambda s: s["visits"], reverse=True)
+    out = bar + [{"url": s["url"], "title": s["title"], "kind": "top", "visits": s["visits"]}
+                 for s in top]
+    return out[:limit]
 
 
 def suggest_offline(query, kind=None, limit=8):
@@ -1206,6 +1266,55 @@ def open_many(urls, group=False):
     return gather(only=fresh)
 
 
+START_TITLE = "Noren Start"
+
+
+def extension_id():
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        with open(os.path.join(here, "host", ".extid"), "r") as fh:
+            ext_id = fh.read().strip()
+    except OSError:
+        return None
+    return ext_id if ext_id.isalpha() else None
+
+
+def start_page():
+    """Open the start page -- or, if one is already open, go to it.
+
+    One start page is a home base; five is clutter nobody asked for, and the
+    obvious way to get five is pressing the bind every morning without closing
+    yesterday's. Found by the page's title, or by the extension id Chromium
+    folds into an extension page's app_id.
+    """
+    ext_id = extension_id()
+    if not ext_id:
+        sys.exit("noren start: no extension id -- run install.sh")
+
+    for win in noren_windows():
+        cls = (win.get("class") or "").lower()
+        if ext_id in cls or (win.get("title") or "") == START_TITLE:
+            return raise_window(win.get("address"))
+
+    if bridge_up():
+        res = call({"cmd": "start"})
+        if res.get("ok") is False:
+            sys.exit(f"noren: {res.get('error', 'failed')}")
+        return 0
+
+    # Browser closed: Omarchy's launcher starts it with the page as its window.
+    try:
+        subprocess.Popen(
+            ["omarchy-launch-webapp", f"chrome-extension://{ext_id}/start.html"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        sys.exit("noren: omarchy-launch-webapp not found")
+    return 0
+
+
 def spawn_direct(url):
     """Open a chrome-less window without the bridge.
 
@@ -1265,6 +1374,9 @@ def main(argv):
     if cmd == "doctor":
         return doctor()
 
+    if cmd == "start":
+        return start_page()
+
     if cmd == "open":
         group = "--group" in rest
         urls = split_urls([a for a in rest if a != "--group"])
@@ -1302,11 +1414,15 @@ def main(argv):
             kind = rest[at + 1] if at + 1 < len(rest) else None
             rest = rest[:at] + rest[at + 2:]
         query = " ".join(rest)
+        # The start list is a page of places, not a handful of completions.
+        limit = 12 if kind == "start" else 8
         if bridge_up():
-            req = {"cmd": "suggest", "query": query, "limit": 8}
+            req = {"cmd": "suggest", "query": query, "limit": limit}
             if kind:
                 req["kind"] = kind
             res = call(req)
+        elif kind == "start":
+            res = {"ok": True, "offline": True, "suggestions": offline_start(limit)}
         else:
             # No browser, no extension. Read Chromium's profile instead, so the
             # first summon of the day still completes.

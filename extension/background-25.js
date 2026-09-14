@@ -20,6 +20,12 @@ function connect() {
       applyTheme(msg.theme);
       return;
     }
+    if (msg && msg.type === 'sets') {
+      const settle = pendingSets.get(msg.id);
+      pendingSets.delete(msg.id);
+      if (settle) settle(Array.isArray(msg.sets) ? msg.sets : []);
+      return;
+    }
     handleCommand(msg).catch((err) => {
       send({ type: 'error', id: msg && msg.id, message: String(err) });
     });
@@ -161,6 +167,9 @@ async function handleCommand(msg) {
       // bookmarks-only search returns a full page of bookmarks instead of
       // whatever survived a mixed ranking.
       const kind = msg.kind === 'bookmark' || msg.kind === 'history' ? msg.kind : null;
+      if (msg.kind === 'start') {
+        return reply({ ok: true, suggestions: await startSuggestions(limit) });
+      }
       return reply({ ok: true, suggestions: await suggest(query, limit, kind) });
     }
 
@@ -349,6 +358,209 @@ async function suggest(query, limit, kind) {
       visits: entry.visitCount,
     }));
 }
+
+// What the url bar and the start page show before anything is typed: the
+// bookmarks bar in its own order -- someone arranged it -- then the sites
+// actually visited most. One source, so the two can never disagree.
+//
+// Most visited is ranked from history, not `chrome.topSites`. topSites is a
+// cache Chromium refreshes on its own schedule and seeds with defaults: on a
+// profile used daily it answered the Web Store, a benchmark and a localhost
+// login page, none of which were the sites actually visited most.
+const PLACES_WINDOW_DAYS = 30;
+
+function placeHost(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+  } catch (e) {
+    return '';
+  }
+}
+
+// Link shorteners and redirectors: every click on a social feed site goes through t.co, so it
+// ranks as a site you visit when it is only a hop on the way to one.
+const PASS_THROUGH = new Set(['t.co', 'bit.ly', 'lnkd.in', 'l.facebook.com', 'out.reddit.com']);
+
+// Somewhere you went, not something that happened to you: a local dev server's
+// login callback visits itself a dozen times without anyone choosing it.
+function destination(url) {
+  if (!/^https?:/i.test(url || '')) return false;
+  const host = placeHost(url);
+  return Boolean(host) && host !== 'localhost' && !/^127\.|^\[?::1\]?$/.test(host)
+    && !PASS_THROUGH.has(host);
+}
+
+async function mostVisited(limit) {
+  let items = [];
+  try {
+    items = await chrome.history.search({
+      text: '',
+      startTime: Date.now() - PLACES_WINDOW_DAYS * 86400000,
+      maxResults: 5000,
+    });
+  } catch (e) {
+    return [];
+  }
+
+  // One entry per site: social.example and social.example/home are the same stop. The site's
+  // count is the sum of its pages; its link is the page visited most.
+  const sites = new Map();
+  for (const item of items) {
+    if (!destination(item.url)) continue;
+    const host = placeHost(item.url);
+    const visits = item.visitCount || 0;
+    const site = sites.get(host);
+    if (!site) {
+      sites.set(host, { url: item.url, title: item.title || '', best: visits, visits });
+      continue;
+    }
+    site.visits += visits;
+    if (visits > site.best) {
+      site.best = visits;
+      site.url = item.url;
+      site.title = item.title || site.title;
+    }
+  }
+  return Array.from(sites.values())
+    .sort((x, y) => y.visits - x.visits)
+    .slice(0, limit)
+    .map((site) => ({ url: site.url, title: site.title }));
+}
+
+// Sites hidden from most visited on the start page, by host. History cannot
+// forget a site without deleting what you did there, so hiding is a filter.
+// Mirrored to the host, which writes it where `noren suggest --kind start` can
+// read it with the browser closed.
+async function hiddenSites() {
+  try {
+    const got = await chrome.storage.local.get({ hiddenSites: [] });
+    return Array.isArray(got.hiddenSites) ? got.hiddenSites : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function setHiddenSites(hosts) {
+  const unique = Array.from(new Set(hosts.map((h) => String(h).toLowerCase()).filter(Boolean)));
+  await chrome.storage.local.set({ hiddenSites: unique });
+  send({ type: 'saveStart', hidden: unique });
+}
+
+async function places(limit) {
+  const bar = [];
+  try {
+    const [root] = await chrome.bookmarks.getSubTree('1');
+    for (const node of root.children || []) {
+      if (/^https?:/i.test(node.url || '')) {
+        bar.push({ id: node.id, url: node.url, title: node.title || '' });
+      }
+    }
+  } catch (e) {
+    // No bar is fine; most visited still answers.
+  }
+  const hidden = await hiddenSites();
+  // A site already on the bar is on screen; do not spend a second slot on it.
+  const skip = new Set(bar.map((e) => placeHost(e.url)).concat(hidden));
+  const top = (await mostVisited(limit + skip.size)).filter((e) => !skip.has(placeHost(e.url)));
+  return { bar, top: top.slice(0, limit), hidden: hidden.length };
+}
+
+async function startSuggestions(limit) {
+  const { bar, top } = await places(limit);
+  return bar
+    .map((e) => ({ url: e.url, title: e.title, kind: 'bookmark' }))
+    .concat(top.map((e) => ({ url: e.url, title: e.title, kind: 'top' })))
+    .slice(0, limit);
+}
+
+// ---------------------------------------------------------------- start page
+//
+// The start page is an extension page, so it can read bookmarks and top sites
+// itself. What it cannot do is open a chrome-less window or see the sets file:
+// both belong to the host, which only this worker can talk to.
+
+const START_URL = chrome.runtime.getURL('start.html');
+
+// id -> resolve, for the host's answer to `getSets`.
+const pendingSets = new Map();
+let setsSeq = 0;
+
+function askSets() {
+  return new Promise((resolve) => {
+    const id = 'sets-' + ++setsSeq;
+    pendingSets.set(id, resolve);
+    send({ type: 'getSets', id });
+    // A host that never answers must not leave the page's sets row pending.
+    setTimeout(() => {
+      if (pendingSets.delete(id)) resolve([]);
+    }, 3000);
+  });
+}
+
+// A start page opened from a cold start loses a race it cannot see: Chromium
+// creates the `--app` window before it has loaded this extension, refuses the
+// chrome-extension:// url as ERR_BLOCKED_BY_CLIENT, and nothing ever retries.
+// The window just sits on an error page.
+//
+// So when the worker comes up, reload any start-page tab that is not actually
+// running. `getContexts` lists the extension pages that are alive; a blocked
+// tab has the url but no context. Checked twice, because at a cold start the
+// page may still be loading on the first look -- and reloading a healthy page is
+// never done, since a live one always has a context.
+async function reviveStartPages() {
+  if (!chrome.runtime.getContexts) return;
+  try {
+    const tabs = await chrome.tabs.query({});
+    const candidates = tabs.filter(
+      (t) => (t.url || t.pendingUrl || '').startsWith(START_URL) && t.status === 'complete',
+    );
+    if (candidates.length === 0) return;
+    const live = await chrome.runtime.getContexts({ contextTypes: ['TAB'] });
+    const running = new Set(live.map((c) => c.tabId));
+    for (const tab of candidates) {
+      if (!running.has(tab.id)) chrome.tabs.reload(tab.id).catch(() => {});
+    }
+  } catch (e) {
+    // Nothing to revive, or the browser is shutting down.
+  }
+}
+
+reviveStartPages();
+setTimeout(reviveStartPages, 1500);
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Only our own start page may ask. Content scripts are not ours to trust
+  // with spawning windows, and there are none today -- keep it that way.
+  if (!msg || !msg.noren || sender.id !== chrome.runtime.id) return false;
+  if (!sender.url || !sender.url.startsWith(START_URL)) return false;
+
+  switch (msg.noren) {
+    case 'open':
+      if (/^https?:/i.test(msg.url || '')) send({ type: 'spawn', url: msg.url });
+      sendResponse({ ok: true });
+      return false;
+    case 'openSet':
+      send({ type: 'openSet', name: String(msg.name || '') });
+      sendResponse({ ok: true });
+      return false;
+    case 'sets':
+      askSets().then((sets) => sendResponse({ ok: true, sets }));
+      return true;
+    case 'places':
+      places(12).then((got) => sendResponse({ ok: true, ...got }));
+      return true;
+    case 'hide':
+      hiddenSites()
+        .then((hosts) => setHiddenSites(hosts.concat(placeHost('https://' + String(msg.host || '')))))
+        .then(() => sendResponse({ ok: true }));
+      return true;
+    case 'unhideAll':
+      setHiddenSites([]).then(() => sendResponse({ ok: true }));
+      return true;
+    default:
+      return false;
+  }
+});
 
 // ----------------------------------------------------------------- auto-peel
 //
@@ -578,6 +790,11 @@ function applyTheme(theme) {
   if (!theme) return;
   themeCss = theme;
   themeReady.then(restyleAllTabs);
+  // For the start page, which themes itself from these rather than being
+  // injected into: it is an extension page, and injection refuses those.
+  chrome.storage.local
+    .set({ themeRoles: theme.roles || null, themePalette: theme.mode || null })
+    .catch(() => {});
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => {

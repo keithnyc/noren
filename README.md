@@ -276,6 +276,44 @@ group. The shape is part of what you saved.
 A set also turns up when you simply type its name, so you do not have to know
 the sigil exists.
 
+## Start page
+
+A tabbed browser shows you where you might go before you have decided — the
+bookmarks bar is just there. A chrome-less window has no bar, so Noren gives the
+guide back as a page:
+
+```bash
+noren start     # open the start page, or go to it if it is already open
+```
+
+Or `H` in the radial. It shows a clock, your **bookmarks bar** in its own order,
+your **most visited** sites over the last month (one tile per site, ranked from
+history), and your **sets**. It repaints
+with the Omarchy theme, live.
+
+It follows the url bar's rule: a **click opens a new window** and leaves the
+start page where it is, so it stays a home base you work outward from.
+**Ctrl+click** goes there in place instead. `1`–`9` open tiles by number.
+
+The url bar does the same before you type anything: `SUPER + B` on an empty
+query lists the bookmarks bar, then most visited, then sets, then everything
+else open. A place that is already open shows as its tab, so Enter jumps to it
+rather than opening a second copy. With the browser closed the list comes from
+Chromium's profile on disk.
+
+**Editing** — `E`, or Edit at the bottom. Pinned tiles are your bookmarks bar:
+drag to reorder, click a title to rename, `×` to unpin, and the `+ add a site`
+tile pins something new. A most-visited tile gets **Pin**, or `×` to hide it;
+you can also drag it straight into Pinned at the spot you want. Hidden sites
+come back with "Show N hidden". Esc when you are done.
+
+Because pinned *is* the bookmarks bar, what you arrange here is what a tabbed
+window's bar shows, and it syncs like any bookmark.
+
+Your bookmarks bar is Chromium's. If it lives in another browser today, export
+it there and import it through `chrome://settings/importData` in a tabbed
+window.
+
 ## Window identity
 
 Omarchy's webapp launchers carry an icon but no `StartupWMClass`, so the window

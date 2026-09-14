@@ -10,10 +10,11 @@
     "scripting",
     "bookmarks",
     "history",
-    "webNavigation"
+    "webNavigation",
+    "favicon"
   ],
   "background": {
-    "service_worker": "background-22.js"
+    "service_worker": "background-25.js"
   },
   "host_permissions": [
     "http://*/*",

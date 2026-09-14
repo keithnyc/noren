@@ -1,0 +1,278 @@
+/* Noren start page. Every colour is a variable the page script fills from the
+   Omarchy palette the host already solved for contrast; these defaults only
+   show for the moment before storage answers, and on a machine with no theme. */
+:root {
+  --noren-bg: #1a1b26;
+  --noren-fg: #c0caf5;
+  --noren-surface: #222433;
+  --noren-surface-2: #2a2c3d;
+  --noren-border: #3b3d52;
+  --noren-muted: #9aa0c0;
+  --noren-accent: #7aa2f7;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--noren-bg);
+  color: var(--noren-fg);
+  font-family: monospace;
+}
+
+main {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 8vh 24px 48px;
+}
+
+header {
+  text-align: center;
+  margin-bottom: 6vh;
+}
+
+.clock {
+  font-size: clamp(56px, 11vw, 120px);
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.date {
+  margin-top: 12px;
+  color: var(--noren-muted);
+  font-size: 15px;
+}
+
+section + section { margin-top: 36px; }
+
+h2 {
+  text-align: center;
+  font-size: 12px;
+  font-weight: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--noren-muted);
+  margin: 0 0 14px;
+}
+
+/* Wrapped and centred rather than a grid: grid tracks fill the row even when
+   empty, so a morning with three sites got three tiles hugging the left edge. */
+.grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
+
+.tile {
+  width: 150px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 12px 14px;
+  border-radius: 10px;
+  background: var(--noren-surface);
+  border: 1px solid var(--noren-border);
+  color: inherit;
+  text-decoration: none;
+  outline: none;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.tile:hover, .tile:focus-visible {
+  background: var(--noren-surface-2);
+  border-color: var(--noren-accent);
+  transform: translateY(-2px);
+}
+
+.tile img {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+}
+
+.tile .title {
+  width: 100%;
+  text-align: center;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tile .host {
+  width: 100%;
+  text-align: center;
+  font-size: 11px;
+  color: var(--noren-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The number key that opens this tile. Only the first nine get one. */
+.tile .key {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  border: 1px solid var(--noren-border);
+  color: var(--noren-muted);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+.chip {
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--noren-surface);
+  border: 1px solid var(--noren-border);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.chip:hover, .chip:focus-visible {
+  border-color: var(--noren-accent);
+  outline: none;
+}
+
+.chip .count { color: var(--noren-muted); margin-left: 6px; }
+
+#empty p {
+  text-align: center;
+  color: var(--noren-muted);
+}
+
+footer {
+  margin-top: 48px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--noren-muted);
+}
+
+kbd {
+  font: inherit;
+  padding: 0 5px;
+  border: 1px solid var(--noren-border);
+  border-radius: 4px;
+}
+
+/* ----------------------------------------------------------------- editing */
+
+.hint {
+  text-align: center;
+  color: var(--noren-muted);
+  font-size: 13px;
+  margin: 0 0 14px;
+}
+
+.editing-only { display: none; }
+body.editing .editing-only { display: block; }
+body.editing .normal-only { display: none; }
+
+footer p { margin: 6px 0; }
+
+.link {
+  background: none;
+  border: none;
+  color: var(--noren-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.link:hover { color: var(--noren-fg); }
+
+body.editing .tile {
+  cursor: grab;
+  border-style: dashed;
+}
+body.editing .tile:hover { transform: none; }
+
+.tile.dragging { opacity: 0.35; }
+
+#bar.over {
+  outline: 1px dashed var(--noren-accent);
+  outline-offset: 8px;
+  border-radius: 12px;
+}
+
+.tile .tools {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+}
+
+.tool {
+  height: 22px;
+  min-width: 22px;
+  padding: 0 7px;
+  border-radius: 11px;
+  border: 1px solid var(--noren-border);
+  background: var(--noren-bg);
+  color: var(--noren-muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.tool:hover {
+  color: var(--noren-bg);
+  background: var(--noren-accent);
+  border-color: var(--noren-accent);
+}
+
+body.editing .tile .title[contenteditable] {
+  cursor: text;
+  border-bottom: 1px dashed var(--noren-border);
+  outline: none;
+  text-overflow: clip;
+}
+body.editing .tile .title[contenteditable]:focus {
+  border-bottom-color: var(--noren-accent);
+  white-space: normal;
+}
+
+.tile.add {
+  justify-content: center;
+  cursor: default;
+}
+.tile.add input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--noren-border);
+  color: var(--noren-fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: center;
+  padding: 6px 2px;
+  outline: none;
+}
+.tile.add input:focus { border-bottom-color: var(--noren-accent); }
+.tile.add input.bad { border-bottom-color: var(--noren-danger, #f7768e); }
+
+.link:focus { outline: none; }
+.link:focus-visible { color: var(--noren-fg); }

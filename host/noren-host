@@ -30,6 +30,14 @@ SOCKET_PATH = os.path.join(
 )
 PLUGIN_ID = "io.github.keithnyc.noren"
 
+HOST_DIR = os.path.dirname(os.path.abspath(__file__))
+NOREN_BIN = os.path.join(os.path.dirname(HOST_DIR), "bin", "noren")
+SETS_FILE = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+    "noren", "sets.json",
+)
+START_FILE = os.path.join(os.path.dirname(SETS_FILE), "start.json")
+
 _write_lock = threading.Lock()
 _ids = itertools.count(1)
 _pending = {}
@@ -253,7 +261,36 @@ def spawn_window(url):
     if not url:
         log("refusing to open:", url)
         return
+    _spawn_app(url)
 
+
+def start_url():
+    """The start page, or None before install.sh has pinned the extension id.
+
+    Built here from the id rather than accepted from a caller: normalize_url
+    refuses every non-web scheme on purpose, and this is the one exception, so
+    it must not become a way to open arbitrary extension pages.
+    """
+    try:
+        with open(os.path.join(HOST_DIR, ".extid"), "r") as fh:
+            ext_id = fh.read().strip()
+    except OSError:
+        return None
+    if not ext_id.isalpha():
+        return None
+    return "chrome-extension://%s/start.html" % ext_id
+
+
+def spawn_start():
+    url = start_url()
+    if not url:
+        log("no extension id; cannot open the start page")
+        return False
+    _spawn_app(url)
+    return True
+
+
+def _spawn_app(url):
     binary, data_dir = resolve_browser()
     if not binary:
         # Better a normal window than none at all.
@@ -289,6 +326,70 @@ def spawn_window(url):
         )
     except OSError as exc:
         log("spawn failed:", exc)
+
+
+# ----------------------------------------------------------------------- sets
+
+
+def read_sets():
+    """Sets as a list, in saved order. The CLI owns the format; this only reads."""
+    try:
+        with open(SETS_FILE, "r") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    out = []
+    for name, entry in data.items():
+        if isinstance(entry, dict) and isinstance(entry.get("urls"), list):
+            out.append({
+                "name": name,
+                "urls": [u for u in entry["urls"] if isinstance(u, str)],
+                "grouped": bool(entry.get("grouped")),
+            })
+    return out
+
+
+def save_start(hidden):
+    """Mirror the start page's hidden sites for the CLI's offline list.
+
+    The extension's storage is the source; this copy exists only because the
+    CLI cannot read Chromium's LevelDB, and with the browser closed a site you
+    hid would otherwise come straight back in the url bar.
+    """
+    if not isinstance(hidden, list):
+        return
+    hosts = sorted({str(h).lower() for h in hidden if isinstance(h, str) and h})
+    try:
+        os.makedirs(os.path.dirname(START_FILE), exist_ok=True)
+        tmp = START_FILE + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"hidden": hosts}, fh, indent=2)
+        os.replace(tmp, START_FILE)
+    except OSError as exc:
+        log("could not save start.json:", exc)
+
+
+def open_set(name):
+    """Open a set through the CLI, which owns grouping.
+
+    Grouping means waiting for windows to appear and then driving Hyprland,
+    all of which `noren set open` already does carefully. Only a name that is
+    actually a saved set is passed on, so a message cannot smuggle a flag in.
+    """
+    name = str(name or "")
+    if name not in {s["name"] for s in read_sets()}:
+        log("no such set:", name)
+        return
+    try:
+        subprocess.Popen(
+            [NOREN_BIN, "set", "open", name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        log("set open failed:", exc)
 
 
 # ------------------------------------------------------------- window targeting
@@ -495,6 +596,11 @@ def handle_client(conn):
         elif cmd == "open":
             spawn_window(req.get("url"))
             reply = {"ok": True}
+        elif cmd == "start":
+            if spawn_start():
+                reply = {"ok": True}
+            else:
+                reply = {"ok": False, "error": "no extension id -- run install.sh"}
         elif cmd == "goto":
             # What the url bar does on Enter. Navigate only when the thing in
             # front of you is actually a page; otherwise open a new chrome-less
@@ -604,6 +710,17 @@ def main():
 
         elif kind == "spawn":
             spawn_window(msg.get("url"))
+
+        elif kind == "getSets":
+            # The start page lists sets but cannot read files; the worker asks
+            # on its behalf.
+            write_native({"type": "sets", "id": msg.get("id"), "sets": read_sets()})
+
+        elif kind == "openSet":
+            open_set(msg.get("name"))
+
+        elif kind == "saveStart":
+            save_start(msg.get("hidden"))
 
         elif kind == "wantTheme":
             # The service worker restarts far more often than the host does.

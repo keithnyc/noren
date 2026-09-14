@@ -163,6 +163,35 @@ Item {
     var out = []
     var seen = {}
 
+    // Nothing typed yet: the guide, not a search. The bookmarks bar in its own
+    // order, then the sites visited most -- the same places the start page
+    // leads with -- then your sets, then whatever else is open. A place that is
+    // already open becomes its tab, so Enter jumps rather than opening a twin.
+    if (root.scope === "" && needle.length === 0) {
+      var openByHost = {}
+      for (var t = 0; t < root.tabs.length; t++) {
+        var tabHost = root.hostOf(root.tabs[t].url).toLowerCase()
+        if (!openByHost[tabHost]) openByHost[tabHost] = root.tabs[t]
+      }
+      var used = {}
+      for (var p = 0; p < root.suggestions.length; p++) {
+        var place = root.suggestions[p]
+        var already = openByHost[root.hostOf(place.url).toLowerCase()]
+        if (already && !used[already.id]) {
+          used[already.id] = true
+          out.push({ kind: "tab", id: already.id, title: already.title, url: already.url })
+        } else if (!already) {
+          out.push({ kind: place.kind || "history", id: -1, title: place.title, url: place.url })
+        }
+      }
+      out = out.concat(root.setRows(""))
+      for (var r = 0; r < root.tabs.length; r++) {
+        if (used[root.tabs[r].id]) continue
+        out.push({ kind: "tab", id: root.tabs[r].id, title: root.tabs[r].title, url: root.tabs[r].url })
+      }
+      return out.slice(0, root.maxRows)
+    }
+
     // Sets first, and also when no sigil was typed: a set named `news` should
     // turn up for someone who typed `news` and has never heard of `@`.
     if (root.scope === "set" || root.scope === "") {
@@ -257,6 +286,10 @@ Item {
       run: function () { root.runNoren(["save"]) } },
     { icon: "\udb80\udd9f", key: "U", label: "Url bar", hint: "Type a url, search tabs and history",
       run: function () { root.showUrlBar() } },
+    // U+F02DC: a house. Rendered and looked at; its neighbour U+F07D1 is a
+    // house with a wifi signal in it.
+    { icon: "\udb80\udedc", key: "H", label: "Home", hint: "Your start page",
+      run: function () { root.runNoren(["start"]) } },
     { icon: "\udb81\udd6f", key: "P", label: "Peel", hint: "This tab into its own window",
       run: function () { root.runNoren(["peel"]) } },
     // U+F1400: a window with content panels. U+F00C5 was the first pick and is
@@ -569,8 +602,9 @@ Item {
       if (!root.opened) return
       if (root.scope === "tab") { root.suggestions = []; return }
       var args = [root.binPath, "suggest"]
-      if (root.scope.length > 0) args = args.concat(["--kind", root.scope])
       var q = root.query.trim()
+      if (root.scope.length > 0) args = args.concat(["--kind", root.scope])
+      else if (q.length === 0) args = args.concat(["--kind", "start"])
       if (q.length > 0) args.push(q)
       suggestLoader.running = false
       suggestLoader.command = args

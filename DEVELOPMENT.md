@@ -461,6 +461,61 @@ drill-tested by deleting the key and reinstalling. Only if *both* copies are
 gone is a new key generated, which is recoverable but costs a browser restart.
 It is a private key and must never be committed.
 
+**The start page is an extension page, not a web page.** It needs the
+bookmarks bar and top sites, which only an extension can read, and a
+`chrome-extension://` url needs no server and works with the network down. What
+it cannot do is spawn a chrome-less window or read `sets.json`; both belong to
+the host, so the page asks the worker (`chrome.runtime.sendMessage`, accepted
+only from `start.html` itself) and the worker asks the host over the native
+port. Sets open through `noren set open`, because grouping is Hyprland work the
+CLI already does carefully, and the host passes on only a name that is actually
+a saved set.
+
+**Most visited is ranked from history, not `chrome.topSites`.** topSites is a
+cache Chromium refreshes on its own schedule and seeds with defaults; on a
+profile used daily it answered the Web Store, a benchmark and a localhost login
+page, none of which were the sites actually visited most. `places()` in the worker sums visits per
+site over 30 days and drops local dev servers and link shorteners (`t.co` ranks
+high for anyone on a social feed site, because every link click there passes through it). The start page and the empty
+url bar both read `places()`, and `offline_start` in the CLI mirrors it from the
+History file, so all three show the same list.
+
+**Editing writes to the bookmarks bar, not to a Noren list.** The bar is
+already an ordered, renameable, synced list, so pin / reorder / rename / unpin
+are single `chrome.bookmarks` calls and there is nothing of Noren's to migrate
+or lose. `bookmarks.move` within the same parent takes the index as a position
+*before* the node is removed and corrects for it itself; `dropIndex` measures
+exactly that (dragged tile included), so no off-by-one adjustment is applied —
+adding one is the classic bug here.
+
+Hiding a most-visited site is the one piece Noren owns, since history cannot
+forget a site without deleting it. It lives in `hiddenSites` in extension
+storage; the worker mirrors it to the host, which writes
+`~/.config/noren/start.json` so `offline_start` can honour it with the browser
+closed. The page also re-renders on every `chrome.bookmarks` event, except
+mid-rename, where a re-render would throw away what is being typed.
+
+**A cold start blocks the start page.** Chromium creates the `--app` window
+before it has loaded the extension, refuses `chrome-extension://…` as
+`ERR_BLOCKED_BY_CLIENT`, and never retries — the window sits on an error page.
+The worker's `reviveStartPages()` runs when it starts and again 1.5s later:
+any tab on the start url with no live context in `runtime.getContexts` is
+reloaded. A healthy page always has a context, so it is never reloaded.
+
+It themes itself from `themeRoles` in `chrome.storage.local`, which the worker
+writes whenever the host pushes a palette: injection refuses extension pages, and
+`storage.onChanged` repaints it live on a theme switch.
+
+`normalize_url` still refuses every non-web scheme. The start url is built from
+`host/.extid` by `start_url()` rather than accepted from a caller, so the one
+exception cannot be used to open arbitrary extension pages. `noren start` finds
+an open start page by its exact title, `Noren Start`, or by the extension id in
+its app_id, and raises it rather than stacking another.
+
+A click opens a new window and Ctrl+click navigates in place, the url bar's
+Enter / Ctrl+Enter rule. A start page that turns into the first site you click is
+a home base you lose on the first click.
+
 ## Environment facts that cost real time
 
 **Developer Mode is required.** Since Chromium M137 an unpacked extension loaded

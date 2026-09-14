@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- Kept exact: `noren start` finds an open start page by this title, so a
+       second summon raises it instead of stacking another. -->
+  <title>Noren Start</title>
+  <link rel="stylesheet" href="start.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div id="clock" class="clock"></div>
+      <div id="date" class="date"></div>
+    </header>
+
+    <section id="bar-section" hidden>
+      <h2>Pinned</h2>
+      <p id="bar-hint" class="hint" hidden>Drag a site up here, or press Pin on it.
+        Pinned sites are your bookmarks bar.</p>
+      <div id="bar" class="grid"></div>
+    </section>
+
+    <section id="top-section" hidden>
+      <h2>Most visited</h2>
+      <div id="top" class="grid"></div>
+    </section>
+
+    <section id="sets-section" hidden>
+      <h2>Sets</h2>
+      <div id="sets" class="chips"></div>
+    </section>
+
+    <section id="empty" hidden>
+      <p>Nothing here yet. Browse a little and your most visited sites turn up
+        here, or put some bookmarks on Chromium's bookmarks bar.</p>
+    </section>
+
+    <footer>
+      <p class="normal-only">Click opens a window &middot; Ctrl+click opens it here &middot;
+        <kbd>1</kbd>&ndash;<kbd>9</kbd> by number &middot; <kbd>E</kbd> edit</p>
+      <p class="editing-only">Drag to reorder &middot; click a pinned title to rename &middot;
+        <kbd>Esc</kbd> done</p>
+      <p>
+        <button id="edit" class="link" type="button">Edit</button>
+        <button id="unhide" class="link" type="button" hidden></button>
+      </p>
+    </footer>
+  </main>
+  <script src="start.js"></script>
+</body>
+</html>
