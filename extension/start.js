@@ -38,7 +38,10 @@ function hostOf(url) {
 
 // ------------------------------------------------------------------ theming
 
-const ROLE_VARS = ['bg', 'fg', 'surface', 'surface-2', 'border', 'muted', 'accent', 'danger'];
+const ROLE_VARS = [
+  'bg', 'fg', 'surface', 'surface-2', 'border', 'muted',
+  'accent', 'link', 'success', 'warning', 'danger',
+];
 
 function applyRoles(roles, mode) {
   if (!roles) return;
@@ -62,16 +65,175 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 // -------------------------------------------------------------------- clock
 
+function greetingFor(hour) {
+  if (hour < 5) return 'Late night';
+  if (hour < 12) return 'Good morning';
+  if (hour < 17) return 'Good afternoon';
+  if (hour < 22) return 'Good evening';
+  return 'Good night';
+}
+
+// ------------------------------------------------------------- time of day
+//
+// A faint light over the page that moves through the day: warm at dawn, clear
+// by day, embered at dusk, cool at night. Every colour is one of the theme's own
+// roles, so the light always belongs to the palette -- this table only says
+// which two roles, and how strongly, at each point in the day. Between points
+// the colours are mixed, so the change is continuous rather than stepped.
+const DAYLIGHT = [
+  // hour, top light, bottom light, strength
+  [0, 'link', 'accent', 10],
+  [5.5, 'warning', 'danger', 17],
+  [8, 'accent', 'warning', 12],
+  [13, 'accent', 'link', 9],
+  [17.5, 'danger', 'warning', 17],
+  [20.5, 'accent', 'link', 12],
+  [24, 'link', 'accent', 10],
+];
+
+function setDaylight(hour) {
+  let i = 0;
+  while (i < DAYLIGHT.length - 2 && hour >= DAYLIGHT[i + 1][0]) i++;
+  const [h0, top0, bottom0, s0] = DAYLIGHT[i];
+  const [h1, top1, bottom1, s1] = DAYLIGHT[i + 1];
+  const t = Math.min(1, Math.max(0, (hour - h0) / (h1 - h0)));
+  const mix = (a, b) =>
+    `color-mix(in oklab, var(--noren-${a}) ${Math.round((1 - t) * 100)}%, var(--noren-${b}))`;
+  const style = document.documentElement.style;
+  style.setProperty('--tod-top', mix(top0, top1));
+  style.setProperty('--tod-bottom', mix(bottom0, bottom1));
+  style.setProperty('--tod-strength', Math.round(s0 + (s1 - s0) * t) + '%');
+}
+
 function tick() {
   const now = new Date();
+  const hour = now.getHours() + now.getMinutes() / 60;
   document.getElementById('clock').textContent = now.toLocaleTimeString([], {
     hour: 'numeric',
     minute: '2-digit',
   });
-  document.getElementById('date').textContent = now.toLocaleDateString([], {
+  document.getElementById('greeting').textContent = greetingFor(now.getHours());
+  document.getElementById('day').textContent = now.toLocaleDateString([], {
     weekday: 'long',
     month: 'long',
     day: 'numeric',
+  });
+  setDaylight(hour);
+}
+
+// ---------------------------------------------------------------- wallpaper
+//
+// The desktop's own background, sent by the host whenever it changes. Without
+// one the page is simply the theme's ground, as before.
+function applyWallpaper(data) {
+  const backdrop = document.getElementById('backdrop');
+  if (!data) {
+    document.body.classList.remove('has-wallpaper');
+    backdrop.style.backgroundImage = '';
+    return;
+  }
+  // Decode before showing, so it fades in whole instead of painting in strips.
+  const probe = new Image();
+  probe.onload = () => {
+    backdrop.style.backgroundImage = `url("${data}")`;
+    document.body.classList.add('has-wallpaper');
+  };
+  probe.src = data;
+}
+
+chrome.storage.local.get({ wallpaper: null }).then((got) => applyWallpaper(got.wallpaper));
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.wallpaper) applyWallpaper(changes.wallpaper.newValue);
+});
+
+// ------------------------------------------------------------ tile glow/tilt
+//
+// Each tile lights in its site's own colour, read off the favicon. Chromium's
+// favicon endpoint is same-origin to this page, so the canvas is not tainted and
+// the pixels can be read. Greys, near-black and near-white are skipped -- a
+// monochrome logo has no colour to lend, and gets the theme's accent instead.
+const glowCache = new Map();
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+function dominantColor(img) {
+  const size = 24;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  try {
+    ctx.drawImage(img, 0, 0, size, size);
+    const { data } = ctx.getImageData(0, 0, size, size);
+    const buckets = new Map();
+    for (let i = 0; i < data.length; i += 4) {
+      const [r, g, b, a] = [data[i], data[i + 1], data[i + 2], data[i + 3]];
+      if (a < 128) continue;
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const sat = max === 0 ? 0 : (max - min) / max;
+      const light = (max + min) / 510;
+      if (sat < 0.3 || max < 48 || light > 0.9) continue;
+      let hue;
+      if (max === r) hue = ((g - b) / (max - min) + 6) % 6;
+      else if (max === g) hue = (b - r) / (max - min) + 2;
+      else hue = (r - g) / (max - min) + 4;
+      const key = Math.floor(hue * 2); // twelve hue buckets
+      const bucket = buckets.get(key) || { w: 0, r: 0, g: 0, b: 0, n: 0 };
+      const w = sat * sat;
+      bucket.w += w;
+      bucket.r += r * w;
+      bucket.g += g * w;
+      bucket.b += b * w;
+      bucket.n += 1;
+      buckets.set(key, bucket);
+    }
+    let best = null;
+    for (const bucket of buckets.values()) {
+      if (bucket.n >= 6 && (!best || bucket.w > best.w)) best = bucket;
+    }
+    if (!best) return null;
+    return `rgb(${Math.round(best.r / best.w)}, ${Math.round(best.g / best.w)}, ${Math.round(best.b / best.w)})`;
+  } catch (e) {
+    return null;
+  }
+}
+
+function lightUp(tileEl, img, url) {
+  const key = hostOf(url);
+  const apply = (color) => {
+    if (color) tileEl.style.setProperty('--glow', color);
+  };
+  if (glowCache.has(key)) {
+    apply(glowCache.get(key));
+    return;
+  }
+  const read = () => {
+    const color = dominantColor(img);
+    glowCache.set(key, color);
+    apply(color);
+  };
+  if (img.complete && img.naturalWidth) read();
+  else img.addEventListener('load', read, { once: true });
+}
+
+// A slight lean toward the pointer, and a light that follows it -- the same
+// language as the overview's cover flow. Off in edit mode, where tiles are
+// dragged, and for anyone who has asked their system for less motion.
+function tilt(tileEl) {
+  tileEl.addEventListener('pointermove', (event) => {
+    if (editing || reduceMotion.matches) return;
+    const box = tileEl.getBoundingClientRect();
+    const x = (event.clientX - box.left) / box.width;
+    const y = (event.clientY - box.top) / box.height;
+    tileEl.style.setProperty('--rx', ((0.5 - y) * 9).toFixed(2) + 'deg');
+    tileEl.style.setProperty('--ry', ((x - 0.5) * 11).toFixed(2) + 'deg');
+    tileEl.style.setProperty('--mx', (x * 100).toFixed(1) + '%');
+    tileEl.style.setProperty('--my', (y * 100).toFixed(1) + '%');
+    tileEl.classList.add('tilting');
+  });
+  tileEl.addEventListener('pointerleave', () => {
+    tileEl.classList.remove('tilting');
+    tileEl.style.setProperty('--rx', '0deg');
+    tileEl.style.setProperty('--ry', '0deg');
   });
 }
 
@@ -211,6 +373,8 @@ function tile(entry, where, index) {
   img.alt = '';
   img.draggable = false;
   a.appendChild(img);
+  lightUp(a, img, entry.url);
+  tilt(a);
 
   const title = document.createElement('span');
   title.className = 'title';

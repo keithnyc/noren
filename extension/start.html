@@ -8,10 +8,15 @@
   <link rel="stylesheet" href="start.css">
 </head>
 <body>
+  <!-- The desktop background, blurred, and a veil in the theme's own ground so
+       text keeps the contrast the palette was solved for. The veil also carries
+       the time-of-day light. -->
+  <div id="backdrop" aria-hidden="true"></div>
+  <div id="veil" aria-hidden="true"></div>
   <main>
     <header>
       <div id="clock" class="clock"></div>
-      <div id="date" class="date"></div>
+      <div id="date" class="date"><span id="greeting"></span><span id="day"></span></div>
     </header>
 
     <section id="bar-section" hidden>

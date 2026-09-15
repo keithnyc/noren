@@ -565,6 +565,75 @@ def push_theme():
         write_native({"type": "theme", "theme": theme})
 
 
+# -------------------------------------------------------------------- wallpaper
+#
+# The start page sits on the desktop's own background, blurred behind glass. The
+# extension cannot read files, so the host sends the image -- shrunk first: it is
+# blurred on the page anyway, 1600px is plenty, and a native message may not
+# exceed 1MB. Omarchy allows video backgrounds; for those, one frame stands in.
+
+WALLPAPER_LINK = os.path.expanduser("~/.local/state/omarchy/current/background")
+VIDEO_EXTENSIONS = (".mp4", ".webm", ".mkv", ".mov", ".avi", ".m4v")
+_wallpaper_stamp = None
+_wallpaper_lock = threading.Lock()
+
+
+def _wallpaper_stamp_now():
+    try:
+        target = os.path.realpath(WALLPAPER_LINK)
+        return (target, os.path.getmtime(target))
+    except OSError:
+        return None
+
+
+def build_wallpaper(path):
+    """A small JPEG of the background as a data: url, or None."""
+    import base64
+    import tempfile
+
+    source = path
+    frame = None
+    try:
+        if path.lower().endswith(VIDEO_EXTENSIONS):
+            fd, frame = tempfile.mkstemp(suffix=".png", dir=os.environ.get("XDG_RUNTIME_DIR") or None)
+            os.close(fd)
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-y", "-ss", "1", "-i", path, "-frames:v", "1", frame],
+                check=True, timeout=20,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            source = frame
+        # Shrink until it fits in a native message with room to spare.
+        for size, quality in ((1600, 80), (1280, 72), (960, 65)):
+            out = subprocess.run(
+                ["magick", source + "[0]", "-resize", f"{size}x{size}>", "-strip",
+                 "-quality", str(quality), "jpeg:-"],
+                capture_output=True, timeout=20, check=True,
+            ).stdout
+            data = "data:image/jpeg;base64," + base64.b64encode(out).decode()
+            if len(data) < 700_000:
+                return data
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("wallpaper build failed:", exc)
+    finally:
+        if frame and os.path.exists(frame):
+            os.unlink(frame)
+    return None
+
+
+def push_wallpaper(force=False):
+    """Send the background to the extension if it changed. Safe to call from any thread."""
+    global _wallpaper_stamp
+    with _wallpaper_lock:
+        stamp = _wallpaper_stamp_now()
+        if not force and stamp == _wallpaper_stamp:
+            return
+        _wallpaper_stamp = stamp
+        data = build_wallpaper(stamp[0]) if stamp else None
+    write_native({"type": "wallpaper", "data": data})
+    log("wallpaper pushed" if data else "no wallpaper to push")
+
+
 def watch_theme():
     """Re-push the stylesheets when the Omarchy theme changes.
 
@@ -578,6 +647,10 @@ def watch_theme():
             log("omarchy theme changed")
             load_theme(force=True)
             push_theme()
+        # A theme switch usually changes the background too, but cycling
+        # backgrounds within a theme does not touch colors.toml at all.
+        if _wallpaper_stamp_now() != _wallpaper_stamp:
+            push_wallpaper()
 
 
 # ---------------------------------------------------------------- socket server
@@ -732,8 +805,10 @@ def main():
 
     # Build before the extension asks, so the first page load is already themed.
     load_theme(force=True)
-    threading.Thread(target=watch_theme, daemon=True).start()
     push_theme()
+    # Before the watcher starts, so it does not race this first push.
+    threading.Thread(target=lambda: (push_wallpaper(force=True),
+                                     watch_theme()), daemon=True).start()
 
     while True:
         msg = read_native()

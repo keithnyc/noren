@@ -561,6 +561,21 @@ means replace on the start page and in the reveal bar menu, as tiles and pins
 already did; in the url bar Enter still opens alongside and Ctrl+Enter replaces,
 because Enter must never mutate the window behind the overlay.
 
+**The start page's backdrop comes from the host.** `push_wallpaper()` follows
+`~/.local/state/omarchy/current/background`, shrinks it with `magick` (one ffmpeg
+frame for a video background) until the data url is under 700KB — a native
+message may not exceed 1MB — and the worker stores it as `wallpaper`. The page
+blurs it and covers it with a veil of the theme's own `bg` at 74%, so text keeps
+roughly the contrast its colours were solved against; body is transparent so the
+fixed backdrop and veil, behind it, show at all. Checked in the watcher loop,
+because cycling backgrounds within a theme never touches `colors.toml`.
+
+Tile glow reads the favicon's pixels on a canvas — possible because the favicon
+endpoint is same-origin to an extension page — and takes the heaviest saturated
+hue bucket; greys, near-black and near-white are skipped, so a monochrome logo
+glows in the theme accent. The time-of-day light is a table of theme *roles* per
+hour, mixed in CSS between neighbours, so it always belongs to the palette.
+
 **A cold start blocks the start page.** Chromium creates the `--app` window
 before it has loaded the extension, refuses `chrome-extension://…` as
 `ERR_BLOCKED_BY_CLIENT`, and never retries — the window sits on an error page.

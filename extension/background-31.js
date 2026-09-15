@@ -20,6 +20,12 @@ function connect() {
       applyTheme(msg.theme);
       return;
     }
+    if (msg && msg.type === 'wallpaper') {
+      // The desktop background, for the start page to sit on. Stored rather
+      // than held: the page may open long after the host last pushed it.
+      chrome.storage.local.set({ wallpaper: msg.data || null }).catch(() => {});
+      return;
+    }
     if (msg && (msg.type === 'sets' || msg.type === 'setOpResult')) {
       const settle = pendingHost.get(msg.id);
       pendingHost.delete(msg.id);

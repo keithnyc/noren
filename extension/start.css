@@ -9,6 +9,17 @@
   --noren-border: #3b3d52;
   --noren-muted: #9aa0c0;
   --noren-accent: #7aa2f7;
+  --noren-link: #7aa2f7;
+  --noren-success: #9ece6a;
+  --noren-warning: #e0af68;
+  --noren-danger: #f7768e;
+  --tod-top: var(--noren-accent);
+  --tod-bottom: var(--noren-link);
+  --tod-strength: 10%;
+  /* How much of the theme's ground covers the wallpaper. High enough that text
+     keeps the contrast its colours were solved against, low enough to see the
+     picture. */
+  --veil: 100%;
   color-scheme: dark;
 }
 
@@ -17,9 +28,45 @@
 html, body {
   margin: 0;
   min-height: 100%;
-  background: var(--noren-bg);
   color: var(--noren-fg);
   font-family: monospace;
+}
+
+/* The canvas carries the ground; body stays transparent so the backdrop and
+   veil, which sit behind it, can show. */
+html { background: var(--noren-bg); }
+body { background: transparent; }
+
+/* ------------------------------------------------------ backdrop and light */
+
+#backdrop, #veil {
+  position: fixed;
+  z-index: -1;
+  pointer-events: none;
+}
+
+#backdrop {
+  /* Past the edges: a blur pulls transparency in from outside the box. */
+  inset: -48px;
+  background-size: cover;
+  background-position: center;
+  filter: blur(28px) saturate(1.15);
+  transform: scale(1.04);
+  opacity: 0;
+  transition: opacity 500ms ease;
+}
+body.has-wallpaper { --veil: 74%; }
+body.has-wallpaper #backdrop { opacity: 1; }
+
+#veil {
+  inset: 0;
+  background:
+    radial-gradient(120% 75% at 50% -12%,
+      color-mix(in oklab, var(--tod-top) var(--tod-strength), transparent), transparent 72%),
+    radial-gradient(90% 65% at 100% 112%,
+      color-mix(in oklab, var(--tod-bottom) var(--tod-strength), transparent), transparent 70%),
+    color-mix(in srgb, var(--noren-bg) var(--veil), transparent);
+  transition: background 2s ease;
 }
 
 main {
@@ -38,6 +85,14 @@ header {
   font-weight: 300;
   letter-spacing: -0.02em;
   line-height: 1;
+}
+
+.date #greeting { color: var(--noren-fg); }
+/* The escape swallows the space after it, so the gap comes from margin. */
+.date #greeting:not(:empty)::after { content: '\00B7'; margin: 0 0.6em; color: var(--noren-muted); }
+
+body.has-wallpaper .clock {
+  text-shadow: 0 2px 30px color-mix(in srgb, var(--noren-bg) 70%, transparent);
 }
 
 .date {
@@ -110,19 +165,77 @@ h2 {
   color: inherit;
   text-decoration: none;
   outline: none;
-  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+  --glow: var(--noren-accent);
+  --rx: 0deg;
+  --ry: 0deg;
+  --lift: 0px;
+  transform: perspective(700px) rotateX(var(--rx)) rotateY(var(--ry)) translateY(var(--lift));
+  transition: transform 220ms cubic-bezier(.2, .8, .2, 1), border-color 160ms ease,
+    background 160ms ease, box-shadow 220ms ease;
+}
+/* While the pointer moves, follow it closely; the long ease is for settling. */
+.tile.tilting { transition: transform 70ms linear, border-color 160ms ease,
+  background 160ms ease, box-shadow 220ms ease; }
+
+/* The site's colour: a glow under the tile, a tinted edge, and a soft light
+   that tracks the pointer across the face. */
+.tile::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(160px circle at var(--mx, 50%) var(--my, 30%),
+    color-mix(in srgb, var(--glow) 22%, transparent), transparent 70%);
+  opacity: 0;
+  transition: opacity 200ms ease;
 }
 
 .tile:hover, .tile:focus-visible {
+  --lift: -3px;
   background: var(--noren-surface-2);
-  border-color: var(--noren-accent);
-  transform: translateY(-2px);
+  border-color: color-mix(in oklab, var(--glow) 65%, var(--noren-border));
+  box-shadow:
+    0 14px 34px -10px color-mix(in srgb, var(--glow) 55%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--glow) 22%, transparent);
+}
+.tile:hover::before, .tile:focus-visible::before { opacity: 1; }
+/* The favicon's own glow builds rather than switching on. It needs a real
+   starting shadow: from `filter: none` Chromium does not interpolate, and the
+   glow popped in at full strength. The transition on :hover is the run-up,
+   slow and slightly delayed so it trails the tile's lift; the base rule's
+   transition is the quicker fade on the way out. */
+.tile img { filter: drop-shadow(0 0 0 transparent); }
+.tile:hover img, .tile:focus-visible img {
+  filter: drop-shadow(0 4px 12px color-mix(in srgb, var(--glow) 55%, transparent));
+  transition: filter 650ms cubic-bezier(.3, 0, .2, 1) 90ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tile, .tile.tilting { transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease; }
+  .tile::before { transition: none; }
+  #veil { transition: none; }
+}
+
+/* ------------------------------------------------------------ glass tiles */
+
+body.has-wallpaper .tile,
+body.has-wallpaper .chip,
+body.has-wallpaper .set-card {
+  background: color-mix(in srgb, var(--noren-surface) 58%, transparent);
+  border-color: color-mix(in srgb, var(--noren-border) 75%, transparent);
+  backdrop-filter: blur(16px) saturate(1.35);
+}
+body.has-wallpaper .tile:hover,
+body.has-wallpaper .tile:focus-visible {
+  background: color-mix(in srgb, var(--noren-surface-2) 70%, transparent);
 }
 
 .tile img {
   width: 40px;
   height: 40px;
   border-radius: 8px;
+  transition: filter 240ms ease;
 }
 
 .tile .title {

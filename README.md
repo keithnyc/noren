@@ -344,7 +344,14 @@ front of you — a terminal, the desktop — it opens a start page instead, or r
 the one already open. It shows a clock, your **bookmarks bar** in its own order,
 your **most visited** sites over the last month (one row of six, one tile per
 site, ranked from history), and your **sets**. Most visited starts **collapsed**
-on every load, for privacy — click its heading to open it. It repaints
+on every load, for privacy — click its heading to open it.
+
+It sits on your **desktop background**, blurred behind frosted tiles, and
+follows it when you change backgrounds or themes. Each tile lights up in its
+own site's colour when you hover it, leaning slightly toward the pointer. A
+greeting and a faint light move through the day — warm at dawn and dusk, cool
+at night — in your theme's colours. Motion is off if your system asks for
+reduced motion. It repaints
 with the Omarchy theme, live.
 
 A **click opens the site in the same window**, the way a new-tab page does.
