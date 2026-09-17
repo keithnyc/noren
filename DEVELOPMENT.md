@@ -609,6 +609,21 @@ workspace (capped, ordered as they sit on screen) and says `grouped: false`, so
 scattering does not take the switcher away with the group; the strip draws those
 dashed and unfilled rather than as tabs.
 
+Making room only works where the page pins nothing to the viewport.
+`translateY` on `<body>` is what carries a site's fixed header down with the
+page — and it also makes the page, not the window, the containing block for
+everything else fixed, which put a video site's sidebar and a feed's columns off
+screen or mis-sized. `pinsToViewport()` samples the sides and the bottom (not
+the top: a header riding down is the point) and skips the shift when anything
+fixed is there. Sampled at seven points rather than walked: `getComputedStyle`
+over every node of a page that size costs far more than the answer is worth.
+A page script cannot inset the viewport, which is how a browser's own toolbar
+avoids all of this.
+
+The bar and its pins menu sit in a layer above the strip. The strip's
+`backdrop-filter` makes it a composited layer, so it painted over a menu hanging
+down out of the bar and cut the top off the list.
+
 Keeping it current needs Hyprland, not the browser: a window joining a group is
 a compositor event Chromium cannot see, so the host watches the event socket
 (`watch_hyprland()`, debounced 150ms — `gather` folding four windows is one

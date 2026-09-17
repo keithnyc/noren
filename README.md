@@ -413,7 +413,18 @@ that is exactly when they are spread out and worth switching between. It follows
 Hyprland live: gathering, scattering, opening or closing a page redraws it.
 
 Pinning the bar pins it in **every** window, including ones opened later, and it
-survives a browser restart. Hyprland's own group bar is 22px of translucent grey that Omarchy does
+survives a browser restart. Pinned, the page moves down by the bar's height so
+nothing of the site sits under it — except on pages that pin a sidebar or a
+bottom bar to the viewport (a video site's rail, a feed's columns), which the
+shift would misplace: those keep the overlay. A fixed header is fine, it rides
+down with the page.
+
+Switching pages — from the strip, `SUPER + ]`, or anywhere else — moves the
+pointer to the middle of the window that takes focus. That is Hyprland warping
+the cursor on focus, not Noren; `hl.config({ cursor = { no_warps = true } })` in
+your `~/.config/hypr/looknfeel.lua` turns it off for every focus change. Noren
+does not write it: it is a compositor-wide preference, and plenty of people want
+the warp. Hyprland's own group bar is 22px of translucent grey that Omarchy does
 not use by default, so a new user has no reason to look at it; this says what is
 in the group on the page itself, in your theme's colours.
 

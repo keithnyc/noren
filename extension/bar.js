@@ -62,6 +62,11 @@
   const CSS = `
     :host { all: initial; }
     .bar {
+      /* Above the strip: the strip's backdrop-filter makes it a composited
+         layer that otherwise paints over the pins menu hanging out of the bar,
+         cutting the top off the list. */
+      position: relative;
+      z-index: 2;
       height: 36px;
       display: flex;
       align-items: center;
@@ -127,6 +132,8 @@
 
     /* The group's pages, as a strip under the bar. */
     .tabs {
+      position: relative;
+      z-index: 1;
       display: flex;
       gap: 6px;
       align-items: center;
@@ -444,8 +451,43 @@
     body.style.transition = 'transform 140ms ease';
   }
 
+  // Whether this page can be moved down safely.
+  //
+  // The shift works by moving the page, which makes the page -- not the window
+  // -- what "fixed to the viewport" means for anything the site pins there. A
+  // site with a fixed header alone survives that (the header rides down with
+  // the page, which is the point). A site that also pins a sidebar or a column
+  // does not: a video site's guide, or a feed's columns, resolve against the
+  // whole document instead and end up mis-sized or off screen.
+  //
+  // So: pages that pin nothing get the room, pages that do keep the overlay.
+  // Sampled at a few points rather than walked -- `getComputedStyle` over every
+  // node of a page that size costs far more than this is worth, and anything
+  // large enough to matter sits under one of these.
+  function pinsToViewport() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    // Sides and bottom only. A fixed header is fine -- it rides down with the
+    // page, which is exactly what should happen. It is the side rails and
+    // bottom bars that break, so those are what disqualify a page. Several x
+    // offsets, because a sidebar does not always start at the edge.
+    const points = [
+      [8, h / 2], [40, h / 2], [120, h / 2],
+      [w - 8, h / 2], [w - 40, h / 2], [w - 120, h / 2],
+      [w / 2, h - 8],
+    ];
+    for (const [x, y] of points) {
+      for (const node of document.elementsFromPoint(x, y)) {
+        if (node.getRootNode() !== document) continue; // our own bar
+        const position = getComputedStyle(node).position;
+        if (position === 'fixed') return true;
+      }
+    }
+    return false;
+  }
+
   function updatePush() {
-    if (!pinned || !bar || !shown) {
+    if (!pinned || !bar || !shown || pinsToViewport()) {
       setPush(0);
       return;
     }
