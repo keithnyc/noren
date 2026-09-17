@@ -25,9 +25,14 @@ Item {
   property string pageUrl: ""
   property string pageTitle: ""
   property string themeMode: "tint"
+  // Whether new pages join the group in front, from `noren status`.
+  property bool tabbedMode: false
   // The window the overview asked for, kept across the close so it can be
   // raised again afterwards -- see onChosen.
   property string pendingRaise: ""
+  // Set while handing the screen over to a window the overview picked. The
+  // overlay drops its exclusive keyboard focus first -- see the PanelWindow.
+  property bool handingOff: false
   property string filterText: ""
   property int selectedIndex: 0
   property var tabs: []
@@ -306,6 +311,14 @@ Item {
       run: function () { root.showOverview() } },
     { icon: "\udb81\udd70", key: "G", label: "Gather", hint: "Fold windows into one group",
       run: function () { root.runNoren(["gather"]) } },
+    // U+F1401: a window with a bar across its top. Rendered and looked at --
+    // its neighbour U+F1400 is the panelled window Overview uses.
+    { icon: "\udb85\udc01", key: "J", label: "Tabs",
+      state: root.tabbedMode ? "on" : "off",
+      hint: root.tabbedMode
+        ? "New pages join this group \u2014 on"
+        : "New pages open as their own window \u2014 off",
+      run: function () { root.setTabbed(!root.tabbedMode) } },
     // U+F0207: an arrow leaving a box. Rendered and looked at, not guessed --
     // its neighbour U+F0342 is the same arrow pointing *into* the box.
     { icon: "\udb80\ude07", key: "O", label: "Pop out", hint: "Lift this window out of the group",
@@ -315,7 +328,8 @@ Item {
     // a filled square.
     { icon: "\udb81\ude16", key: "S", label: "Scatter", hint: "Break the group into tiled windows",
       run: function () { root.runNoren(["scatter"]) } },
-    { icon: "\udb80\udd0e", key: "T", label: "Theme", hint: "Page theming: " + root.themeMode,
+    { icon: "\udb80\udd0e", key: "T", label: "Theme", state: root.themeMode,
+      hint: "Page theming: " + root.themeMode,
       run: function () { root.cycleTheme() } }
   ]
 
@@ -323,10 +337,24 @@ Item {
     if (root.pageUrl.length > 0) Quickshell.execDetached(["wl-copy", "--", root.pageUrl])
   }
 
+  // Both settings on the ring are set to a value, never "toggled", and the ring
+  // shows the new value at once rather than waiting to be told. Asking for the
+  // state back after writing it means a round trip through a CLI process, a
+  // socket and the host -- and if any part of that is late or does not re-run,
+  // the ring silently keeps showing the old value, which reads as a toggle that
+  // does nothing. `noren status` still reconciles on the next summon, so a
+  // setting changed elsewhere is not missed.
+  function setTabbed(on) {
+    root.tabbedMode = on
+    root.runNoren(["tabbed", on ? "on" : "off"])
+  }
+
   function cycleTheme() {
     var order = ["respect", "tint", "immerse"]
     var at = order.indexOf(root.themeMode)
-    root.runNoren(["theme", order[(at + 1) % order.length]])
+    var next = order[(at + 1) % order.length]
+    root.themeMode = next
+    root.runNoren(["theme", next])
   }
 
   // Like the url bar, the overview swaps face rather than closing -- the ring
@@ -359,6 +387,10 @@ Item {
     }
     root.mode = wanted
     root.opened = true
+    // Reset here rather than on close: flipping the surface back to exclusive
+    // as it disappears would take the keyboard back for a frame, which is the
+    // very thing the hand-off avoids.
+    root.handingOff = false
     root.filterText = ""
     root.selectedIndex = 0
     root.selectionMoved = false
@@ -539,6 +571,15 @@ Item {
   }
 
   Timer {
+    id: handOff
+    interval: 16
+    repeat: false
+    onTriggered: {
+      if (root.pendingRaise.length > 0) root.runNoren(["raise", root.pendingRaise])
+    }
+  }
+
+  Timer {
     id: reRaise
     interval: 90
     repeat: false
@@ -604,6 +645,21 @@ Item {
     }
   }
 
+  // A setting toggled from the ring is written by the CLI or the extension, so
+  // the new value is only readable a moment later.
+  Timer {
+    id: statusRefresh
+    interval: 220
+    repeat: false
+    // false first: a Process that has already run ignores `running = true`,
+    // so the ring kept showing the state it opened with and a toggle looked
+    // like it had done nothing.
+    onTriggered: {
+      statusLoader.running = false
+      statusLoader.running = true
+    }
+  }
+
   Process {
     id: statusLoader
     command: [root.binPath, "status"]
@@ -616,6 +672,7 @@ Item {
           root.pageUrl = st.url || ""
           root.pageTitle = st.title || ""
           if (res && res.themeMode) root.themeMode = res.themeMode
+          root.tabbedMode = Boolean(res && res.tabbed)
         } catch (e) {
           root.pageUrl = ""
           root.pageTitle = ""
@@ -697,7 +754,15 @@ Item {
     color: "transparent"
     WlrLayershell.namespace: "noren-urlbar"
     WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+    // Exclusive while the overlay is being used, None while it is handing the
+    // screen to a window. Hyprland restores focus to whatever held it before an
+    // exclusive surface appeared, so closing *undid* the raise: the old page
+    // came back for a frame or two before the second raise pulled the new one
+    // in again. Letting the focus go before raising means there is nothing left
+    // to restore, and the switch happens once, behind the flying card.
+    WlrLayershell.keyboardFocus: root.handingOff
+      ? WlrKeyboardFocus.None
+      : WlrKeyboardFocus.Exclusive
     exclusionMode: ExclusionMode.Ignore
 
     Rectangle {
@@ -732,10 +797,15 @@ Item {
 
       onChose: function (index) {
         var chosen = root.radialActions[index]
-        // These two swap face rather than dismissing, so they must not close.
+        // Url bar and Overview swap face rather than dismissing. A setting --
+        // anything carrying a `state` -- also stays, so the ring can show what
+        // it just became; flipping a toggle and being thrown out to check it is
+        // how you end up toggling it twice.
         var staysOpen = chosen
-          && (chosen.label === "Url bar" || chosen.label === "Overview")
+          && (chosen.label === "Url bar" || chosen.label === "Overview"
+              || chosen.state !== undefined)
         if (chosen && chosen.run) chosen.run()
+        if (staysOpen && chosen.state !== undefined) statusRefresh.restart()
         if (!staysOpen) root.close()
       }
       onDismissed: root.close()
@@ -753,21 +823,21 @@ Item {
       accent: root.selectedText
       fontFamily: root.fontFamily
 
-      // Raised twice, on purpose.
+      // The switch happens as the card starts flying, so the card lands on a
+      // window that is already live. Before raising, the overlay gives up its
+      // exclusive keyboard focus, or closing would hand focus back to the page
+      // that had it and the raise would be undone.
       //
-      // The first is as the card starts flying, so the switch happens behind it
-      // and the card lands on a live window. That alone does not stick: this
-      // overlay holds WlrKeyboardFocus.Exclusive, and when it closes Hyprland
-      // restores focus to whatever was focused before it opened -- undoing the
-      // raise. The animation looked perfect and the page never changed.
-      //
-      // So the same window is raised again once the overlay is gone. `noren
-      // raise` verifies the focus landed, and raising an already-focused window
-      // is a no-op, so the second call costs nothing when the first survives.
+      // The second raise after the close stays as a safety net: `noren raise`
+      // verifies the focus landed, and raising a window that already has it is
+      // a no-op, so it costs nothing when the first one holds.
       onRaiseRequested: function (address) {
         if (!address || address.length === 0) return
         root.pendingRaise = address
-        root.runNoren(["raise", address])
+        root.handingOff = true
+        // One frame for the compositor to see the surface let go of the
+        // keyboard before the window is raised.
+        handOff.restart()
       }
       onChosen: {
         root.close()

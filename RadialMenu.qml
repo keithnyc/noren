@@ -16,7 +16,13 @@ import qs.Ui
 Item {
   id: root
 
-  // Each entry: { key, icon, label, hint, run }
+  // Each entry: { key, icon, label, hint, run, state }
+  //
+  // `state` is for the items that are settings rather than actions -- "on",
+  // "off", "tint". It is drawn on the item itself: the hint in the middle only
+  // shows for whatever is highlighted, so a ring you summon and dismiss in one
+  // keystroke never shows it, and a toggle you cannot read is a toggle you have
+  // to try twice.
   property var actions: []
   property bool active: false
   property string contextLabel: ""
@@ -254,6 +260,22 @@ Item {
               horizontalAlignment: Text.AlignHCenter
               text: modelData.label || ""
               color: spoke.isHovered ? root.accent : root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
+
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              text: String(modelData.state || "")
+              visible: text.length > 0
+              // An "off" is information, not an alarm: it recedes. Anything
+              // else is a live setting and takes the accent.
+              color: text === "off"
+                ? root.foreground
+                : (spoke.isHovered ? root.accent : root.accent)
+              opacity: text === "off" ? 0.5 : 0.95
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               elide: Text.ElideRight
