@@ -1,8 +1,10 @@
 // Noren — Chromium side of the bridge.
 //
-// Keep this filename versioned. Chromium caches service workers for extensions
-// loaded via --load-extension, so a new URL forces registration of new code.
-// Bump the number when you change this file, and update manifest.json.
+// The filename is versioned for history's sake, not out of necessity:
+// `noren reload-extension` reloads the extension from disk and re-registers
+// this worker, changed code and all. Bumping it is no longer part of the loop
+// (see CLAUDE.md); the number only says how many times this file has been
+// rewritten in anger.
 
 const HOST = 'com.noren.bridge';
 
@@ -275,6 +277,15 @@ async function handleCommand(msg) {
       await chrome.storage.local.set({ revealBar });
       return reply({ ok: true, revealBar });
 
+    case 'reloadSelf': {
+      // What the Reload button in chrome://extensions does. For an unpacked
+      // extension this re-reads every file from disk, so an edit needs no
+      // clicking -- `noren reload`.
+      reply({ ok: true });
+      setTimeout(() => chrome.runtime.reload(), 50);
+      return;
+    }
+
     case 'state':
       return reply({ ok: true, state: describe(await focusedTab()) });
 
@@ -538,6 +549,30 @@ async function startSuggestions(limit) {
 // both belong to the host, which only this worker can talk to.
 
 const START_URL = chrome.runtime.getURL('start.html');
+
+// Put the bar into pages that are already open.
+//
+// A content script is injected when a page loads, so every page open before the
+// extension started -- a fresh install, or a reload from `noren
+// reload-extension` -- had no bar until it was reloaded by hand. Re-injecting
+// is safe: bar.js does nothing if it is already there.
+async function injectBars() {
+  try {
+    const windows = await chrome.windows.getAll({ populate: true });
+    for (const win of windows) {
+      if (win.type !== 'app') continue;
+      const tab = (win.tabs || [])[0];
+      if (!tab || !/^https?:/i.test(tab.url || '')) continue;
+      chrome.scripting
+        .executeScript({ target: { tabId: tab.id }, files: ['bar.js'] })
+        .catch(() => {});
+    }
+  } catch (e) {
+    // Nothing open yet, or the browser is starting.
+  }
+}
+
+injectBars();
 
 async function refreshBars() {
   try {

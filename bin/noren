@@ -61,6 +61,8 @@ usage: noren <command> [args]
   target            which browser window is on this workspace
   status            what the focused window is showing
   ping              check the bridge is up
+  reload-extension  reload the extension from disk (no clicking in chrome://)
+  watch             reload on every save: extension, host, and *.qml
   doctor            diagnose the whole chain end to end
 
 The bridge runs only while your default browser is running with the Noren
@@ -1620,6 +1622,92 @@ def extension_id():
     return ext_id if ext_id.isalpha() else None
 
 
+# ----------------------------------------------------------------- dev watch
+#
+# The three reload paths, run for you. Which one a file needs is a property of
+# the file, not a decision worth making on every save -- and forgetting one
+# looks exactly like the change not working, which is the oldest way to lose an
+# hour on this project.
+
+WATCH_SHELL = (".qml",)
+WATCH_BROWSER = (".js", ".html", ".css", ".json")
+
+
+def watch_files(root):
+    """Every file worth watching, with its mtime."""
+    seen = {}
+    for folder in (root, os.path.join(root, "extension"), os.path.join(root, "host")):
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_file():
+                continue
+            name = entry.name
+            watched = (
+                name.endswith(WATCH_SHELL)
+                or (folder.endswith("extension") and name.endswith(WATCH_BROWSER))
+                or name in ("noren-host", "noren_theme.py")
+                or (folder == root and name == "manifest.json")
+            )
+            if not watched:
+                continue
+            try:
+                seen[entry.path] = entry.stat().st_mtime
+            except OSError:
+                pass
+    return seen
+
+
+def needs_shell(path):
+    return path.endswith(WATCH_SHELL) or os.path.basename(path) == "manifest.json"
+
+
+def watch():
+    """Reload whatever changed, on save, until Ctrl+C."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    state = watch_files(root)
+    print(f"noren watch: {len(state)} files under {root}", flush=True)
+    print("             *.qml and manifest.json -> omarchy-restart-shell", flush=True)
+    print("             extension/ and host/    -> reload-extension", flush=True)
+    print("             Ctrl+C to stop.", flush=True)
+
+    while True:
+        time.sleep(0.4)
+        now = watch_files(root)
+        changed = [p for p, m in now.items() if state.get(p) != m]
+        changed += [p for p in state if p not in now]
+        if not changed:
+            continue
+
+        # Let the flurry end first: an editor writing three files, or writing
+        # one of them twice, is one change to react to.
+        while True:
+            time.sleep(0.25)
+            settled = watch_files(root)
+            if settled == now:
+                break
+            now = settled
+        state = now
+
+        names = sorted({os.path.basename(p) for p in changed})
+        print(f"[{time.strftime('%H:%M:%S')}] {', '.join(names)}", flush=True)
+
+        if any(needs_shell(p) for p in changed):
+            print("           omarchy-restart-shell", flush=True)
+            subprocess.run(["omarchy-restart-shell"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if any(not needs_shell(p) for p in changed):
+            if not bridge_up():
+                print("           browser is closed; nothing to reload", flush=True)
+            else:
+                res = call({"cmd": "reloadExtension"})
+                message = ("extension reloaded" if res.get("ok")
+                           else res.get("error", "failed"))
+                print("           " + message, flush=True)
+
+
 def start_page(new=False, keep=False):
     """Go home: the page in front of you becomes the start page.
 
@@ -1744,6 +1832,13 @@ def main(argv):
     if cmd == "doctor":
         return doctor()
 
+    if cmd == "watch":
+        try:
+            return watch()
+        except KeyboardInterrupt:
+            print("\nnoren watch: stopped")
+            return 0
+
     if cmd == "start":
         return start_page(new="--new" in rest, keep="--keep" in rest)
 
@@ -1811,6 +1906,12 @@ def main(argv):
                    fallback=lambda: spawn_direct(url))
     elif cmd == "target":
         print(json.dumps(hypr_target() or {}, indent=2))
+        return 0
+    elif cmd == "reload-extension":
+        # Not `reload`: that is the page in front of you, and the radial's R.
+        res = call({"cmd": "reloadExtension"})
+        if res.get("ok"):
+            print("noren: reloading the extension from disk")
         return 0
     elif cmd in ("back", "forward", "reload", "tabs", "windows", "ping", "status"):
         res = call({"cmd": cmd})
@@ -1920,7 +2021,9 @@ def main(argv):
     elif cmd == "ping":
         b = res.get("browser") or {}
         if b.get("name"):
-            print(f"noren: bridge up — {b['name']} (pid {b['pid']})")
+            age = res.get("sinceLoad")
+            loaded = f", extension loaded {age}s ago" if age is not None else ""
+            print(f"noren: bridge up — {b['name']} (pid {b['pid']}){loaded}")
         else:
             print("noren: bridge up")
     return 0

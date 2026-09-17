@@ -17,8 +17,18 @@ time, and the list of bugs already fixed. Most questions are answered there.
 | changed | needs |
 |---|---|
 | `*.qml` | `omarchy-restart-shell` |
-| `host/noren-host` | cycle the host — kill it by PID; the extension reconnects |
-| `extension/*.js` | bump the filename (`background-N.js` + `manifest.json`), restart the browser, **and** Reload in `chrome://extensions` |
+| `host/noren-host` | `noren reload-extension` (it restarts the host too), or kill the host by PID |
+| `extension/*.js` | `noren reload-extension` |
+
+`noren reload-extension` is `chrome.runtime.reload()` over the bridge: for an
+unpacked extension that re-reads every file from disk, and the worker re-injects
+`bar.js` into pages that are already open. Verified 2026-09-17 by changing a
+constant and watching `noren ping` report the new value **without** bumping the
+service-worker filename — the old ritual (bump `background-N.js` + manifest,
+restart the browser, click Reload) is no longer needed. `noren ping` prints how
+long ago the extension loaded, which is the honest answer to "did my reload
+take?". Only if the worker is too broken to receive the command does it need the
+Reload button in `chrome://extensions`.
 
 Before diagnosing anything, run `./bin/noren doctor`. It checks the whole chain
 without needing the bridge and decodes Chromium's `disable_reasons` by name. It

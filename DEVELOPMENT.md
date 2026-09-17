@@ -509,6 +509,21 @@ main loop; running the CLI synchronously there deadlocks until the timeout.
 `set save` also skips non-web windows now: the start page is a chrome-less
 window too, and saving open pages captured its extension url.
 
+**Reloading the extension is one command.** `noren reload-extension` asks the
+worker to call `chrome.runtime.reload()`, which for an unpacked extension
+re-reads every file from disk. Two things make it complete: the worker
+re-injects `bar.js` into pages that are already open (`injectBars()`), and
+`bar.js` *replaces* a previous copy of itself rather than refusing to load
+(`window.__norenBar.destroy()`, every page-level listener hung off one
+`AbortController`) -- refusing left a bar whose extension context was dead. That
+re-injection is also a real fix: a fresh install used to leave every open page
+without a bar until it was reloaded by hand.
+
+`noren ping` reports how long ago the extension loaded. The host dies with the
+extension's native port and a new one starts with it, so the host's own age *is*
+the time since the last load -- a number that cannot go stale, unlike a
+hand-edited build marker.
+
 **The reveal bar is a content script, not a shell surface.** The first attempt
 put the page's address and buttons in the Omarchy bar; with two pages tiled, the
 strip was nowhere near the window it described. Drawing a toolbar over each
