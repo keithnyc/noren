@@ -25,6 +25,9 @@ usage: noren <command> [args]
   bar on|off        whether pages get a reveal bar at all (persists)
   open <url>...     open each url as its own chrome-less window
   open --group ...  open them and fold them into one Hyprland group
+  open --tiled ...  one window, even in tabbed mode
+  tabbed on|off     new pages join the group in front, like tabs (persists)
+  tabbed toggle     flip it; `tabbed` alone reports
   go <url>          navigate the focused window (force)
   back              history back
   forward           history forward
@@ -282,6 +285,11 @@ def doctor():
     else:
         _row(MEH, "offline completion", "profile not readable - no completions "
              "while the browser is closed")
+
+    # Settings that change how a window is spawned, since "why did that open
+    # tiled?" is otherwise invisible.
+    _row(OK, "tabbed mode", "on - new pages join the group in front"
+         if tabbed_mode() else "off - new pages open as their own window")
 
     # And finally the live bridge.
     if os.path.exists(SOCKET_PATH):
@@ -570,6 +578,42 @@ def suggest_offline(query, kind=None, limit=8):
 # typing urls: you already have the windows arranged, so `noren set save news`
 # takes what is open and names it. A set also remembers whether it was a group
 # when saved, and comes back that way -- the shape is part of what you saved.
+
+# ---------------------------------------------------------------- preferences
+#
+# One small file for settings that are neither the browser's (auto-peel, page
+# theming -- those live in the extension, which owns them) nor a list of their
+# own (sets.json, start.json). It is read by the CLI and by the host, so a
+# setting that changes how a window is *spawned* applies wherever the spawn came
+# from: the url bar, a peeled link, or a tile on the start page.
+
+CONFIG_FILE = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+    "noren", "config.json",
+)
+
+
+def load_config():
+    try:
+        with open(CONFIG_FILE, "r") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(config):
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+    tmp = CONFIG_FILE + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(config, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.replace(tmp, CONFIG_FILE)
+
+
+def tabbed_mode():
+    return bool(load_config().get("tabbed"))
+
 
 SETS_FILE = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
@@ -998,6 +1042,97 @@ def hypr_focus(address):
     hypr_do(f'hl.dsp.focus({{ window = "address:{address}" }})')
 
 
+def hypr_event_socket():
+    """Hyprland's event stream, or None.
+
+    Waiting for a window to appear used to be a 0.2s poll of `hyprctl clients`;
+    this says so the moment it happens. The socket is hidden (`.socket2.sock`),
+    which is easy to miss when looking for it.
+    """
+    sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not sig or not runtime:
+        return None
+    path = os.path.join(runtime, "hypr", sig, ".socket2.sock")
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(path)
+        return sock
+    except OSError:
+        return None
+
+
+def wait_for_chromeless(before, count=1, timeout=8.0, events=None):
+    """Addresses of `count` chrome-less windows that were not there before.
+
+    Prefers the event stream -- `openwindow` carries the address and class -- and
+    falls back to polling where there is no socket. `events` is a socket opened
+    *before* whatever spawns the window, so nothing can be missed in between.
+    """
+    before = set(before)
+    fresh = chromeless_addresses() - before
+    own_socket = events is None
+    if len(fresh) >= count:
+        return fresh
+    if own_socket:
+        events = hypr_event_socket()
+    if events is None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            time.sleep(0.05)
+            fresh = chromeless_addresses() - before
+            if len(fresh) >= count:
+                break
+        return fresh
+
+    deadline = time.monotonic() + timeout
+    buffer = b""
+    try:
+        while time.monotonic() < deadline:
+            events.settimeout(max(0.05, deadline - time.monotonic()))
+            try:
+                chunk = events.recv(4096)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            buffer += chunk
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                text = line.decode("utf-8", "replace")
+                if not text.startswith("openwindow>>"):
+                    continue
+                parts = text[len("openwindow>>"):].split(",", 3)
+                if len(parts) < 3 or not parts[2].lower().startswith("chrome-"):
+                    continue
+                address = "0x" + parts[0]
+                if address not in before:
+                    fresh.add(address)
+            if len(fresh) >= count:
+                break
+    finally:
+        if own_socket:
+            events.close()
+    return fresh
+
+
+def wait_mapped(address, timeout=0.6):
+    """Block until a window has a real size, so Hyprland can be asked to move it.
+
+    Replaces a flat settle. A window that is still being mapped reports a zero
+    size, and moving it then is what left windows outside the group.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for client in hypr_json("clients") or []:
+            if client.get("address") == address:
+                size = client.get("size") or [0, 0]
+                if size and size[0] > 0 and size[1] > 0:
+                    return True
+        time.sleep(0.02)
+    return False
+
+
 def noren_windows(pattern=None):
     """Chrome-less windows Noren made, newest last.
 
@@ -1063,18 +1198,20 @@ def gather(pattern=None, only=None, anchor_address=None):
             hypr_focus(addr)
 
         # into_group takes a direction, not a target, so which way the group
-        # lies depends on how the layout tiled these windows. Try each and
-        # check: `grouped` in `hyprctl clients` is the only honest confirmation.
-        for direction in ("l", "r", "u", "d"):
+        # lies depends on how the layout tiled these windows. Head toward where
+        # the group actually is rather than trying all four blindly: a wrong
+        # direction is not free, it moves the window somewhere else first, and
+        # the next attempt then starts from a worse position.
+        rect = _rect(hypr_json("activewindow") or {}) or _rect(win)
+        for direction in _fold_order(rect, _rect(anchor)):
             hypr_do(f'hl.dsp.window.move({{ into_group = "{direction}" }})')
-            # Give the compositor a moment before believing it failed. Checking
-            # immediately read a successful fold as a failure, and the loop then
-            # tried the remaining three directions -- each of which can move the
-            # window somewhere else. That is why a window would end up outside
-            # the group *and* somewhere unexpected.
-            time.sleep(0.12)
-            if _is_grouped(addr):
+            # Confirmation as it happens, rather than a flat wait: `grouped` is
+            # the only honest answer, and checking immediately once read a
+            # successful fold as a failure -- which sent the window off in three
+            # more directions.
+            if _wait_grouped(addr):
                 return True
+            rect = _rect(hypr_json("activewindow") or {}) or rect
         return False
 
     # Several passes, because one is not enough. With four or five windows the
@@ -1120,6 +1257,44 @@ def _is_grouped(address):
         if c.get("address") == address:
             return bool(c.get("grouped"))
     return False
+
+
+def _rect(client):
+    """(centre x, centre y) of a client, or None."""
+    at = (client or {}).get("at") or None
+    size = (client or {}).get("size") or None
+    if not at or not size or len(at) < 2 or len(size) < 2:
+        return None
+    return (at[0] + size[0] / 2.0, at[1] + size[1] / 2.0)
+
+
+def _fold_order(window_centre, anchor_centre):
+    """Directions to try, likeliest first: toward where the group is."""
+    everything = ("l", "r", "u", "d")
+    if not window_centre or not anchor_centre:
+        return everything
+    dx = anchor_centre[0] - window_centre[0]
+    dy = anchor_centre[1] - window_centre[1]
+    first = ("l" if dx < 0 else "r") if abs(dx) >= abs(dy) else ("u" if dy < 0 else "d")
+    return (first,) + tuple(d for d in everything if d != first)
+
+
+def _wait_grouped(address, budget=0.25):
+    """Whether a just-moved window landed in a group, checked as it happens.
+
+    This used to be a flat 0.12s sleep before a single look, which every
+    successful fold paid in full and every failed direction paid again. The
+    window was focused to move it, so `activewindow` answers -- a smaller
+    payload than the whole client list, for the same cost per call.
+    """
+    deadline = time.monotonic() + budget
+    while True:
+        active = hypr_json("activewindow") or {}
+        if active.get("address") == address and len(active.get("grouped") or []) > 1:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.02)
 
 
 def front_window():
@@ -1295,6 +1470,83 @@ def chromeless_addresses():
     return {w.get("address") for w in noren_windows()}
 
 
+def front_chromeless():
+    """The chrome-less window a new page should join, or None.
+
+    The focused window only. "Some page on this workspace" would pull a new
+    window into a group the user is not looking at, which is worse than leaving
+    it tiled.
+    """
+    active = hypr_json("activewindow") or {}
+    cls = (active.get("class") or "").lower()
+    return active if cls.startswith("chrome-") and active.get("address") else None
+
+
+def join_new(anchor_address, before, timeout=8.0):
+    """Wait for a chrome-less window that is not in `before`, and tab it.
+
+    Split out because the two spawn paths cannot share one: the url bar's
+    `open` waits for its own window, while a peeled link is spawned by the host
+    as fast as it can (the flash a peel leaves on screen lasts exactly as long
+    as that spawn), and the fold has to happen afterwards, out of the way.
+    """
+    fresh = wait_for_chromeless(before, count=1, timeout=timeout)
+    if not fresh:
+        print("noren: nothing new appeared to tab")
+        return 0
+    if anchor_address not in chromeless_addresses():
+        print("noren: the page to tab it with is gone; leaving it tiled")
+        return 0
+    for address in fresh:
+        wait_mapped(address)
+    return gather(only=fresh | {anchor_address}, anchor_address=anchor_address)
+
+
+def spawn_and_join(spawn, tabbed=None):
+    """Run `spawn`, and in tabbed mode fold the window it makes into the group.
+
+    Every way of making a page window goes through here -- a url, a tile, the
+    start page -- so "new pages are tabs" means all of them and not just the
+    one it was written for. The fold is the same `gather` the G key uses: one
+    code path touches groups.
+    """
+    if tabbed is None:
+        tabbed = tabbed_mode()
+    anchor = front_chromeless() if tabbed else None
+    before = chromeless_addresses() if anchor else set()
+    # Listening before the spawn, so the window cannot appear in the gap
+    # between opening it and starting to watch for it.
+    events = hypr_event_socket() if anchor else None
+
+    try:
+        result = spawn()
+        if not anchor:
+            return result
+        fresh = wait_for_chromeless(before, count=1, events=events)
+    finally:
+        if events:
+            events.close()
+
+    if not fresh:
+        print("noren: opened it, but the window did not appear in time to tab it")
+        return result
+    for address in fresh:
+        wait_mapped(address)
+    gather(only=fresh | {anchor["address"]}, anchor_address=anchor["address"])
+    return result
+
+
+def open_one(url, tabbed=None):
+    """Open one url, as a tab of the page in front when tabbed mode is on."""
+    def spawn():
+        res = call({"cmd": "open", "url": url}, fallback=lambda: spawn_direct(url))
+        if res.get("ok") is False:
+            sys.exit(f"noren: {res.get('error', 'failed')}")
+        return 0
+
+    return spawn_and_join(spawn, tabbed=tabbed)
+
+
 def open_many(urls, group=False, join=None):
     """Open each url as its own chrome-less window, optionally as one group.
 
@@ -1342,21 +1594,16 @@ def open_many(urls, group=False, join=None):
         print(f"noren: opening {total} window(s)")
         return 0
 
-    deadline = time.monotonic() + 8.0
-    fresh = set()
-    while time.monotonic() < deadline:
-        time.sleep(0.25)
-        fresh = chromeless_addresses() - before
-        if len(fresh) >= total:
-            break
+    fresh = wait_for_chromeless(before, count=total, timeout=8.0)
 
     members = fresh | ({join} if join else set())
     if len(members) < 2:
         print(f"noren: opened {total} window(s); too few appeared to group")
         return 0
 
-    # Let the last window settle before Hyprland is asked to move it.
-    time.sleep(0.3)
+    # Each window must have a real size before Hyprland is asked to move it.
+    for address in fresh:
+        wait_mapped(address)
     return gather(only=members, anchor_address=join)
 
 
@@ -1415,10 +1662,15 @@ def start_page(new=False, keep=False):
             return raise_window(win.get("address"))
 
     if bridge_up():
-        res = call({"cmd": "start"})
-        if res.get("ok") is False:
-            sys.exit(f"noren: {res.get('error', 'failed')}")
-        return 0
+        def spawn():
+            res = call({"cmd": "start"})
+            if res.get("ok") is False:
+                sys.exit(f"noren: {res.get('error', 'failed')}")
+            return 0
+
+        # In tabbed mode the start page is a page like any other: it joins the
+        # group in front rather than landing beside it as a stray window.
+        return spawn_and_join(spawn)
 
     # Browser closed: Omarchy's launcher starts it with the page as its window.
     try:
@@ -1495,6 +1747,33 @@ def main(argv):
     if cmd == "start":
         return start_page(new="--new" in rest, keep="--keep" in rest)
 
+    if cmd == "join":
+        # Internal: the host calls this after spawning a window in tabbed mode.
+        anchor, exclude = None, set()
+        if "--anchor" in rest:
+            at = rest.index("--anchor")
+            anchor = rest[at + 1] if at + 1 < len(rest) else None
+        if "--exclude" in rest:
+            at = rest.index("--exclude")
+            raw = rest[at + 1] if at + 1 < len(rest) else ""
+            exclude = {a for a in raw.split(",") if a}
+        if not anchor:
+            sys.exit("noren join: needs --anchor <address>")
+        return join_new(anchor, exclude)
+
+    if cmd == "tabbed":
+        config = load_config()
+        if rest and rest[0] in ("on", "off"):
+            config["tabbed"] = rest[0] == "on"
+            save_config(config)
+        elif rest and rest[0] == "toggle":
+            config["tabbed"] = not config.get("tabbed")
+            save_config(config)
+        elif rest and rest[0] not in ("status",):
+            sys.exit(f"noren tabbed: unknown argument '{rest[0]}' (on | off | toggle)")
+        print("tabbed", "on" if config.get("tabbed") else "off")
+        return 0
+
     if cmd == "bar":
         if rest and rest[0] in ("on", "off"):
             res = call({"cmd": "setRevealBar", "value": rest[0] == "on"})
@@ -1510,13 +1789,16 @@ def main(argv):
 
     if cmd == "open":
         group = "--group" in rest
-        urls = split_urls([a for a in rest if a != "--group"])
+        tiled = "--tiled" in rest
+        flags = {"--group", "--tiled", "--tabbed"}
+        urls = split_urls([a for a in rest if a not in flags])
         if not urls:
             sys.exit("noren open: needs a url")
         if len(urls) > 1 or group:
             return open_many(urls, group=group)
-        res = call({"cmd": "open", "url": urls[0]},
-                   fallback=lambda: spawn_direct(urls[0]))
+        # --tiled opts one window out of tabbed mode; --tabbed opts one in.
+        want = True if "--tabbed" in rest else (False if tiled else None)
+        return open_one(urls[0], tabbed=want)
     elif cmd == "go":
         if not rest:
             sys.exit("noren go: needs a url")

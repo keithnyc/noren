@@ -37,6 +37,17 @@ SETS_FILE = os.path.join(
     "noren", "sets.json",
 )
 START_FILE = os.path.join(os.path.dirname(SETS_FILE), "start.json")
+CONFIG_FILE = os.path.join(os.path.dirname(SETS_FILE), "config.json")
+
+
+def read_config():
+    """Noren's own settings. The CLI owns the file; this only reads it."""
+    try:
+        with open(CONFIG_FILE, "r") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 _write_lock = threading.Lock()
 _ids = itertools.count(1)
@@ -371,6 +382,173 @@ def save_start(hidden):
         log("could not save start.json:", exc)
 
 
+def tabbed_anchor():
+    """The focused chrome-less window and every chrome-less address right now.
+
+    Read before the spawn: afterwards the new window may already be focused,
+    and it cannot be its own anchor.
+    """
+    clients = _hypr_json("clients") or []
+    addresses = {
+        c.get("address") for c in clients
+        if (c.get("class") or "").lower().startswith("chrome-") and c.get("address")
+    }
+    active = _hypr_json("activewindow") or {}
+    cls = (active.get("class") or "").lower()
+    anchor = active.get("address") if cls.startswith("chrome-") else None
+    return anchor, addresses
+
+
+def join_spawned(anchor, before):
+    """Fold the window that just appeared into the anchor's group, via the CLI.
+
+    The CLI owns every group dispatch -- `gather` is careful about targeting in
+    ways this host has no business duplicating.
+    """
+    try:
+        subprocess.run(
+            [NOREN_BIN, "join", "--anchor", anchor, "--exclude", ",".join(sorted(before))],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("join failed:", exc)
+
+
+# Hyprland events that can change what a tab strip should show: a window
+# opening or closing, moving, joining or leaving a group, or simply becoming
+# the active one (the strip marks which page you are on).
+GROUP_EVENTS = (
+    "openwindow", "closewindow", "movewindow", "movewindowv2",
+    "togglegroup", "moveintogroup", "moveoutofgroup",
+    "activewindow", "activewindowv2", "changefloatingmode",
+)
+
+
+def watch_hyprland():
+    """Tell the extension when the grouping changed.
+
+    The browser cannot see any of this: a window joining a group is a
+    compositor event, so without this the bar's tab strip stayed as it was drawn
+    and only caught up when the page was reloaded. Events are debounced --
+    `gather` folding four windows is a burst, and the strip only needs the end
+    state.
+    """
+    sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not sig or not runtime:
+        return
+    path = os.path.join(runtime, "hypr", sig, ".socket2.sock")
+
+    while True:
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(path)
+        except OSError:
+            time.sleep(5)
+            continue
+
+        buffer = b""
+        pending_since = None
+        try:
+            while True:
+                sock.settimeout(0.1)
+                try:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    buffer += chunk
+                    while b"\n" in buffer:
+                        line, buffer = buffer.split(b"\n", 1)
+                        name = line.decode("utf-8", "replace").split(">>", 1)[0]
+                        if name in GROUP_EVENTS:
+                            pending_since = pending_since or time.monotonic()
+                except socket.timeout:
+                    pass
+                if pending_since and time.monotonic() - pending_since >= 0.15:
+                    pending_since = None
+                    write_native({"type": "groupChanged"})
+        except OSError:
+            pass
+        finally:
+            sock.close()
+        time.sleep(1)
+
+
+# A scattered workspace can hold a lot of pages; a strip is a strip.
+LOOSE_STRIP_MAX = 10
+
+
+def group_members():
+    """(grouped, pages) for the reveal bar's strip.
+
+    Grouped, that is the group's own tabs, in group order. Not grouped, it is
+    the other chrome-less pages on this workspace -- so scattering a group does
+    not take the switcher away with it, which is exactly when the pages are
+    spread out and worth switching between. The bar draws those more quietly:
+    they are pages, not tabs, and the strip should not claim otherwise.
+
+    Hyprland knows the grouping and the titles; the worker matches those titles
+    to its own tabs for urls and favicons. The bar is only ever shown on the
+    window the pointer is over, which is the focused one, so "the window in
+    front" is the right window to ask about.
+    """
+    client = browser_client()
+    if not client or not (client.get("class") or "").lower().startswith("chrome-"):
+        return False, []
+
+    clients = _hypr_json("clients") or []
+    by_address = {c.get("address"): c for c in clients if c.get("address")}
+
+    def describe(member, address):
+        title = member.get("title") or ""
+        return {
+            "address": address,
+            # The browser's suffix is noise in a chip this small.
+            "title": title.rsplit(" - ", 1)[0] if " - " in title else title,
+            "appId": member.get("class") or "",
+            "active": address == client.get("address"),
+        }
+
+    grouped = client.get("grouped") or []
+    if len(grouped) >= 2:
+        pages = [describe(by_address[a], a) for a in grouped if a in by_address]
+        return True, pages
+
+    workspace = (client.get("workspace") or {}).get("id")
+    loose = [
+        c for c in clients
+        if (c.get("class") or "").lower().startswith("chrome-")
+        and (c.get("workspace") or {}).get("id") == workspace
+        and not c.get("hidden")
+    ]
+    # Left to right, top to bottom: the order they are on screen, which is the
+    # order the eye expects in a strip.
+    loose.sort(key=lambda c: ((c.get("at") or [0, 0])[1], (c.get("at") or [0, 0])[0]))
+    pages = [describe(c, c.get("address")) for c in loose[:LOOSE_STRIP_MAX]]
+    return False, pages
+
+
+def raise_member(address):
+    """Focus a window, but only one in the group the bar belongs to.
+
+    The request comes from a content script, which speaks for a page: it may
+    name a window in its own group and nothing else.
+    """
+    address = str(address or "")
+    _, members = group_members()
+    if address not in {m["address"] for m in members}:
+        log("refusing to raise a window outside the group:", address)
+        return
+    try:
+        subprocess.Popen(
+            [NOREN_BIN, "raise", address],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        log("raise failed:", exc)
+
+
 def set_op(msg):
     """Edit sets for the start page, through the CLI, which owns the format.
 
@@ -697,6 +875,7 @@ def handle_client(conn):
                 "state": _last_state,
                 "autoPeel": _auto_peel,
                 "themeMode": _theme_mode,
+                "tabbed": bool(read_config().get("tabbed")),
                 "browser": owning_browser(),
             }
         elif cmd == "open":
@@ -809,6 +988,7 @@ def main():
     # Before the watcher starts, so it does not race this first push.
     threading.Thread(target=lambda: (push_wallpaper(force=True),
                                      watch_theme()), daemon=True).start()
+    threading.Thread(target=watch_hyprland, daemon=True).start()
 
     while True:
         msg = read_native()
@@ -831,7 +1011,22 @@ def main():
             notify_shell(_last_state)
 
         elif kind == "spawn":
+            # Tabbed mode: the new window joins the group of the page it came
+            # from. Spawned first and folded after, never the other way round --
+            # a peeled link leaves a full-chrome window on screen until its
+            # replacement exists, so nothing may sit in front of the spawn.
+            anchor, before = (tabbed_anchor() if read_config().get("tabbed") else (None, set()))
             spawn_window(msg.get("url"))
+            if anchor:
+                threading.Thread(target=join_spawned, args=(anchor, before), daemon=True).start()
+
+        elif kind == "getGroup":
+            grouped, members = group_members()
+            write_native({"type": "group", "id": msg.get("id"),
+                          "grouped": grouped, "members": members})
+
+        elif kind == "raiseWindow":
+            raise_member(msg.get("address"))
 
         elif kind == "getSets":
             # The start page lists sets but cannot read files; the worker asks
