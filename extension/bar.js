@@ -20,14 +20,28 @@
 // the worker to act on its own tab.
 
 (() => {
-  if (window.top !== window || window.__norenBar) return;
-  window.__norenBar = true;
+  if (window.top !== window) return;
+  // An earlier copy of this script is replaced rather than refused. `noren
+  // reload-extension` re-injects into pages that are already open, and the old
+  // copy's extension context is dead by then: refusing left a bar that no
+  // longer answered anything. Every page-level listener hangs off `stop`, so
+  // one abort takes them all with it.
+  if (window.__norenBar && typeof window.__norenBar.destroy === 'function') {
+    try {
+      window.__norenBar.destroy();
+    } catch (e) {
+      // A half-dead instance is still better replaced than kept.
+    }
+  }
+  const stop = new AbortController();
+  const signal = stop.signal;
 
   const EDGE_PX = 6; // how close to the top edge counts as "at the edge"
   const DWELL_MS = 180; // how long the pointer must rest there
   const HIDE_MS = 450; // grace after the pointer leaves, so a wobble is forgiven
 
   let root = null; // shadow root
+  let barHost = null; // the <noren-bar> element in the page
   let bar = null;
   let shown = false;
   // Pinned: stays down until unpinned. Per window, remembered by the worker,
@@ -146,8 +160,54 @@
       box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
     }
     .tabs[hidden] { display: none; }
+    .tabs-inner {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* The mark for the page you are on, as one thing that moves rather than a
+       fill that jumps from chip to chip. --switch is the compositor's own
+       window-fade duration, so the two read as a single movement. */
+    .marker {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 0;
+      border-radius: 7px;
+      border: 1px solid var(--accent);
+      background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+      opacity: 0;
+      pointer-events: none;
+      transition:
+        transform var(--switch, 220ms) cubic-bezier(.2, .8, .2, 1),
+        width var(--switch, 220ms) cubic-bezier(.2, .8, .2, 1),
+        opacity 160ms ease;
+    }
+    /* First paint, a rebuilt strip, or reduced motion: be where you belong
+       without travelling there. */
+    .marker.still { transition: opacity 160ms ease; }
+
+    /* The chip's own fill and edge are gone -- the marker carries them now. */
+    .tab.active { background: transparent; border-color: transparent; }
+    .tab.landed img { animation: noren-pop var(--switch, 220ms) cubic-bezier(.2, .8, .2, 1); }
+    @keyframes noren-pop {
+      0% { transform: scale(1); }
+      45% { transform: scale(1.22); }
+      100% { transform: scale(1); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .marker { transition: opacity 160ms ease; }
+      .tab.landed img { animation: none; }
+    }
     .tab {
       all: unset;
+      /* Above the marker: the marker is absolutely positioned, so without this
+         it paints over the chip and the active one looks empty. */
+      position: relative;
+      z-index: 1;
       display: flex;
       align-items: center;
       gap: 7px;
@@ -198,6 +258,9 @@
       background: var(--surface);
       border-color: var(--border);
     }
+    /* Not a group: no marker. These are windows side by side, and the chip
+       itself says which one you are in. */
+    .tabs.loose .marker { display: none; }
 
     .menu-anchor { position: relative; }
     .menu {
@@ -275,6 +338,7 @@
 
   function build() {
     const host = document.createElement('noren-bar');
+    barHost = host;
     root = host.attachShadow({ mode: 'closed' });
     root.innerHTML = `
       <style>${CSS}</style>
@@ -307,7 +371,7 @@
     // shadow root, so a click inside it arrives retargeted to the host element.
     document.addEventListener('mousedown', (event) => {
       if (menuOpen && event.target !== host) closeMenu();
-    }, true);
+    }, { capture: true, signal });
     bar.addEventListener('mouseenter', () => clearTimeout(hideTimer));
     bar.addEventListener('mouseleave', scheduleHide);
 
@@ -325,52 +389,121 @@
   // not use groups by default, so a new user has no reason to look at the
   // compositor's group bar, and that bar is small and easy to miss. This says
   // what is in the group on the page itself, in the theme's own colours.
+  // What the strip is showing, so a switch can be animated rather than
+  // redrawn. Rebuilding the chips made the marker jump the instant the key was
+  // pressed, while the compositor was still fading between the windows -- two
+  // movements where there should be one.
+  let stripTabs = [];
+
+  function chipFor(tab) {
+    const chip = document.createElement('button');
+    chip.className = 'tab';
+    chip.dataset.address = tab.address;
+    if (tab.icon) {
+      const img = document.createElement('img');
+      img.alt = '';
+      img.src = tab.icon;
+      chip.appendChild(img);
+    }
+    const label = document.createElement('span');
+    chip.appendChild(label);
+    chip.addEventListener('click', () => {
+      if (chip.classList.contains('active')) return;
+      chrome.runtime
+        .sendMessage({ norenBar: 'raiseWindow', address: chip.dataset.address })
+        .catch(() => {});
+    });
+    return chip;
+  }
+
+  // The marker rides to the active chip. Absolute inside the row, not the
+  // scroll box, so it travels with the chips when the strip scrolls.
+  function moveMarker(inner, animate) {
+    const marker = inner.querySelector('.marker');
+    const active = inner.querySelector('.tab.active');
+    if (!marker) return;
+    if (!active) {
+      marker.style.opacity = '0';
+      return;
+    }
+    marker.classList.toggle('still', !animate);
+    marker.style.opacity = '1';
+    marker.style.width = active.offsetWidth + 'px';
+    marker.style.transform = `translateX(${active.offsetLeft}px)`;
+  }
+
   async function refreshTabs() {
     const strip = root.querySelector('.tabs');
     let tabs = [];
     let grouped = false;
+    let switchMs = 0;
     try {
       const reply = await chrome.runtime.sendMessage({ norenBar: 'group' });
       tabs = (reply && reply.tabs) || [];
       grouped = Boolean(reply && reply.grouped);
+      switchMs = Number(reply && reply.switchMs) || 0;
     } catch (e) {
       tabs = [];
     }
     // Grouped, these are tabs. Scattered, they are the other pages on this
     // workspace -- still worth a click, so the strip stays, more quietly.
     strip.classList.toggle('loose', !grouped);
+    // A shade quicker than the compositor's own window fade, which the host
+    // reads from Hyprland. The marker should arrive first and the page settle
+    // into it: the other way round reads as the strip lagging behind.
+    if (switchMs) {
+      strip.style.setProperty('--switch', Math.max(110, Math.round(switchMs * 0.75)) + 'ms');
+    }
     // One page is just a window; nothing to switch between.
     if (tabs.length < 2) {
       strip.hidden = true;
       strip.replaceChildren();
+      stripTabs = [];
       updatePush();
       return;
     }
 
-    strip.replaceChildren(
-      ...tabs.map((tab) => {
-        const chip = document.createElement('button');
-        chip.className = 'tab' + (tab.active ? ' active' : '');
-        chip.title = tab.url || tab.title;
-        if (tab.icon) {
-          const img = document.createElement('img');
-          img.alt = '';
-          img.src = tab.icon;
-          chip.appendChild(img);
-        }
-        const label = document.createElement('span');
-        label.textContent = tab.title || hostOf(tab.url);
-        chip.appendChild(label);
-        chip.addEventListener('click', () => {
-          if (tab.active) return;
-          chrome.runtime
-            .sendMessage({ norenBar: 'raiseWindow', address: tab.address })
-            .catch(() => {});
-        });
-        return chip;
-      }),
-    );
+    const sameSet =
+      stripTabs.length === tabs.length &&
+      stripTabs.every((tab, i) => tab.address === tabs[i].address);
+
+    let inner = strip.querySelector('.tabs-inner');
+    if (!sameSet || !inner) {
+      inner = document.createElement('div');
+      inner.className = 'tabs-inner';
+      const marker = document.createElement('span');
+      marker.className = 'marker still';
+      inner.appendChild(marker);
+      for (const tab of tabs) inner.appendChild(chipFor(tab));
+      strip.replaceChildren(inner);
+    }
+
+    // Update in place: the chips stay, so CSS can animate what changed.
+    const chips = Array.from(inner.querySelectorAll('.tab'));
+    tabs.forEach((tab, i) => {
+      const chip = chips[i];
+      if (!chip) return;
+      chip.dataset.address = tab.address;
+      chip.title = tab.url || tab.title;
+      const label = chip.querySelector('span');
+      const text = tab.title || hostOf(tab.url);
+      if (label.textContent !== text) label.textContent = text;
+      const img = chip.querySelector('img');
+      if (img && tab.icon && img.src !== tab.icon) img.src = tab.icon;
+      const wasActive = chip.classList.contains('active');
+      chip.classList.toggle('active', tab.active);
+      // A little life on arrival, and only on arrival.
+      if (tab.active && !wasActive && !reduceMotion.matches) {
+        chip.classList.remove('landed');
+        void chip.offsetWidth; // restart the animation
+        chip.classList.add('landed');
+      }
+    });
+
     strip.hidden = false;
+    stripTabs = tabs;
+    // Layout has to settle before the marker can be measured against it.
+    requestAnimationFrame(() => moveMarker(inner, sameSet));
     // The strip changes the bar's height, so a pinned page moves with it.
     updatePush();
   }
@@ -431,6 +564,7 @@
   // covered), and our own bar hangs off <html>, so it stays put rather than
   // riding down with everything else.
   let pushedBody = null;
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
   function setPush(pixels) {
     const body = document.body;
@@ -710,7 +844,7 @@
   }
 
   function start() {
-    document.addEventListener('mousemove', onMove, { passive: true, capture: true });
+    document.addEventListener('mousemove', onMove, { passive: true, capture: true, signal });
     document.addEventListener('fullscreenchange', () => {
       if (document.fullscreenElement) {
         // Fullscreen wins even over a pin; the pin comes back afterwards. The
@@ -721,11 +855,11 @@
       } else if (pinned) {
         show();
       }
-    });
+    }, { signal });
     document.addEventListener('keydown', (event) => {
       if (menuKeys(event)) return;
       if (event.key === 'Escape' && shown) hide();
-    }, true);
+    }, { capture: true, signal });
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === 'local' && changes.themeRoles) applyRoles(changes.themeRoles.newValue);
     });
@@ -750,6 +884,22 @@
       if (msg && msg.norenBar === 'refresh' && shown) refreshTabs();
     });
   }
+
+  // Leaving no trace: listeners, the element, and the page's own shift.
+  window.__norenBar = {
+    destroy() {
+      stop.abort();
+      clearTimeout(dwellTimer);
+      clearTimeout(hideTimer);
+      clearInterval(follow);
+      setPush(0);
+      if (barHost && barHost.isConnected) barHost.remove();
+      barHost = null;
+      bar = null;
+      root = null;
+      shown = false;
+    },
+  };
 
   // Ask before doing anything: only Noren's own chrome-less windows get a bar.
   chrome.runtime

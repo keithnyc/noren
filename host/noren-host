@@ -62,6 +62,10 @@ _auto_peel = False
 # know where it currently stands without a round trip to the extension.
 _theme_mode = "tint"
 _socket_inode = None
+# When this host started, which is when the extension last connected: the host
+# dies with the extension's port and a new one starts with it. `noren ping`
+# reports it, so "did my reload take?" has an answer that cannot go stale.
+_started = time.monotonic()
 
 # The generated page stylesheets for the active Omarchy theme, and the mtime of
 # the colors.toml they came from. The extension cannot read the filesystem, so
@@ -423,6 +427,15 @@ GROUP_EVENTS = (
     "activewindow", "activewindowv2", "changefloatingmode",
 )
 
+# Which page is active changes on a keystroke and the strip's marker should be
+# moving with the compositor's own fade, so these are passed on at once -- only
+# enough delay to coalesce the pair Hyprland sends together. The rest are
+# structural (a window opened, a group folded) and worth waiting out: `gather`
+# folding four windows is one burst, and only the end state matters.
+FOCUS_EVENTS = ("activewindow", "activewindowv2")
+FOCUS_DEBOUNCE = 0.02
+STRUCTURE_DEBOUNCE = 0.15
+
 
 def watch_hyprland():
     """Tell the extension when the grouping changed.
@@ -449,9 +462,10 @@ def watch_hyprland():
 
         buffer = b""
         pending_since = None
+        pending_wait = STRUCTURE_DEBOUNCE
         try:
             while True:
-                sock.settimeout(0.1)
+                sock.settimeout(0.01)
                 try:
                     chunk = sock.recv(4096)
                     if not chunk:
@@ -460,12 +474,21 @@ def watch_hyprland():
                     while b"\n" in buffer:
                         line, buffer = buffer.split(b"\n", 1)
                         name = line.decode("utf-8", "replace").split(">>", 1)[0]
-                        if name in GROUP_EVENTS:
-                            pending_since = pending_since or time.monotonic()
+                        if name not in GROUP_EVENTS:
+                            continue
+                        wait = FOCUS_DEBOUNCE if name in FOCUS_EVENTS else STRUCTURE_DEBOUNCE
+                        if pending_since is None:
+                            pending_since = time.monotonic()
+                            pending_wait = wait
+                        else:
+                            # A burst that mixes both waits for the shorter one:
+                            # a focus change inside it is the part being watched.
+                            pending_wait = min(pending_wait, wait)
                 except socket.timeout:
                     pass
-                if pending_since and time.monotonic() - pending_since >= 0.15:
+                if pending_since and time.monotonic() - pending_since >= pending_wait:
                     pending_since = None
+                    pending_wait = STRUCTURE_DEBOUNCE
                     write_native({"type": "groupChanged"})
         except OSError:
             pass
@@ -476,6 +499,36 @@ def watch_hyprland():
 
 # A scattered workspace can hold a lot of pages; a strip is a strip.
 LOOSE_STRIP_MAX = 10
+
+
+_switch_ms = None
+
+
+def window_switch_ms():
+    """How long Hyprland takes to fade between windows, in milliseconds.
+
+    The bar's tab strip marks the page you are on; moving that marker in step
+    with the compositor's own switch is the difference between one movement and
+    two. Read from Hyprland rather than guessed, because it is the user's
+    setting -- `speed` is in deciseconds -- and cached, because it changes only
+    when they reload their config.
+    """
+    global _switch_ms
+    if _switch_ms is not None:
+        return _switch_ms
+    _switch_ms = 220
+    try:
+        for animation in _hypr_json("animations") or []:
+            if not isinstance(animation, list):
+                continue
+            for entry in animation:
+                if isinstance(entry, dict) and entry.get("name") == "fadeSwitch":
+                    speed = float(entry.get("speed") or 0)
+                    if speed > 0:
+                        _switch_ms = max(80, min(600, int(speed * 100)))
+    except (TypeError, ValueError):
+        pass
+    return _switch_ms
 
 
 def group_members():
@@ -881,6 +934,10 @@ def handle_client(conn):
         elif cmd == "open":
             spawn_window(req.get("url"))
             reply = {"ok": True}
+        elif cmd == "reloadExtension":
+            # Fire and forget: the extension dies mid-answer by design.
+            write_native({"type": "command", "id": next(_ids), "cmd": "reloadSelf"})
+            reply = {"ok": True}
         elif cmd == "bar":
             win = hypr_browser_window()
             if win and win.get("chromeless") and win.get("title"):
@@ -922,6 +979,7 @@ def handle_client(conn):
             # up, attached to the browser you stopped using an hour ago".
             if cmd == "ping" and isinstance(reply, dict):
                 reply["browser"] = owning_browser()
+                reply["sinceLoad"] = int(time.monotonic() - _started)
 
         try:
             conn.sendall(json.dumps(reply).encode() + b"\n")
@@ -1023,7 +1081,8 @@ def main():
         elif kind == "getGroup":
             grouped, members = group_members()
             write_native({"type": "group", "id": msg.get("id"),
-                          "grouped": grouped, "members": members})
+                          "grouped": grouped, "members": members,
+                          "switchMs": window_switch_ms()})
 
         elif kind == "raiseWindow":
             raise_member(msg.get("address"))
