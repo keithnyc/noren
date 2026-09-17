@@ -62,9 +62,6 @@
   const CSS = `
     :host { all: initial; }
     .bar {
-      position: fixed;
-      top: 0; left: 0; right: 0;
-      z-index: 2147483647;
       height: 36px;
       display: flex;
       align-items: center;
@@ -77,11 +74,20 @@
       box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
       color: var(--fg);
       font: 13px/1 ui-monospace, "JetBrainsMono Nerd Font", "MesloLGL Nerd Font", monospace;
+    }
+    .wrap {
+      /* Font and colour live here, not on .bar: the tab strip is a sibling,
+         and would otherwise inherit the page's own typography. */
+      color: var(--fg);
+      font: 13px/1 ui-monospace, "JetBrainsMono Nerd Font", "MesloLGL Nerd Font", monospace;
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 2147483647;
       transform: translateY(-110%);
       transition: transform 140ms ease;
       pointer-events: none;
     }
-    .bar.shown { transform: translateY(0); pointer-events: auto; }
+    .wrap.shown { transform: translateY(0); pointer-events: auto; }
     button {
       all: unset;
       display: grid;
@@ -118,6 +124,73 @@
     }
     .host { color: var(--fg); }
     .path { color: var(--muted); }
+
+    /* The group's pages, as a strip under the bar. */
+    .tabs {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      padding: 6px 10px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      background: color-mix(in srgb, var(--bg) 82%, transparent);
+      backdrop-filter: blur(12px) saturate(1.2);
+      border-bottom: 1px solid var(--border);
+      box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
+    }
+    .tabs[hidden] { display: none; }
+    .tab {
+      all: unset;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      max-width: 220px;
+      padding: 5px 10px;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 12px;
+      cursor: pointer;
+      flex: 0 1 auto;
+      min-width: 0;
+    }
+    .tab:hover { color: var(--fg); border-color: var(--accent); }
+    .tab img { width: 14px; height: 14px; flex: none; }
+    .tab span {
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    /* The page you are on: it is the one you are looking at, so it reads as
+       selected rather than as another place to go. */
+    .tab.active {
+      color: var(--fg);
+      border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+      cursor: default;
+    }
+    /* Not a group: the same pages, said as quietly as possible. Favicons only
+       -- enough to see what is open and click it, without a second row of
+       titles arguing with the page. A chip with no favicon keeps its text
+       rather than becoming a blank square. */
+    .tabs.loose {
+      background: color-mix(in srgb, var(--bg) 66%, transparent);
+      padding: 4px 10px;
+    }
+    .tabs.loose .tab {
+      padding: 4px 6px;
+      opacity: 0.75;
+      border-color: transparent;
+      background: transparent;
+    }
+    .tabs.loose .tab img + span { display: none; }
+    .tabs.loose .tab:hover { opacity: 1; background: var(--surface); }
+    .tabs.loose .tab.active {
+      opacity: 1;
+      background: var(--surface);
+      border-color: var(--border);
+    }
 
     .menu-anchor { position: relative; }
     .menu {
@@ -198,6 +271,7 @@
     root = host.attachShadow({ mode: 'closed' });
     root.innerHTML = `
       <style>${CSS}</style>
+      <div class="wrap">
       <div class="bar" part="bar">
         <button data-act="back" title="Back">${svg('back')}</button>
         <button data-act="forward" title="Forward">${svg('forward')}</button>
@@ -212,8 +286,10 @@
         </span>
         <button data-act="home" title="Start page">${svg('home')}</button>
         <button data-act="pin" title="Keep this bar visible">${svg('pin')}</button>
+      </div>
+      <div class="tabs" hidden></div>
       </div>`;
-    bar = root.querySelector('.bar');
+    bar = root.querySelector('.wrap');
 
     bar.addEventListener('click', (event) => {
       const button = event.target.closest('button');
@@ -228,10 +304,68 @@
     bar.addEventListener('mouseenter', () => clearTimeout(hideTimer));
     bar.addEventListener('mouseleave', scheduleHide);
 
+    // The shift must track the bar's real height, not a height measured once:
+    // the tab strip appears after the bar does, and it makes the bar taller.
+    if (window.ResizeObserver) new ResizeObserver(() => updatePush()).observe(bar);
+
     // On <html>, not <body>: frameworks replace body wholesale, and the bar
     // should survive that without being re-added.
     document.documentElement.appendChild(host);
     chrome.storage.local.get({ themeRoles: null }).then((got) => applyRoles(got.themeRoles));
+  }
+
+  // The pages sharing this window's Hyprland group -- its tabs. Omarchy does
+  // not use groups by default, so a new user has no reason to look at the
+  // compositor's group bar, and that bar is small and easy to miss. This says
+  // what is in the group on the page itself, in the theme's own colours.
+  async function refreshTabs() {
+    const strip = root.querySelector('.tabs');
+    let tabs = [];
+    let grouped = false;
+    try {
+      const reply = await chrome.runtime.sendMessage({ norenBar: 'group' });
+      tabs = (reply && reply.tabs) || [];
+      grouped = Boolean(reply && reply.grouped);
+    } catch (e) {
+      tabs = [];
+    }
+    // Grouped, these are tabs. Scattered, they are the other pages on this
+    // workspace -- still worth a click, so the strip stays, more quietly.
+    strip.classList.toggle('loose', !grouped);
+    // One page is just a window; nothing to switch between.
+    if (tabs.length < 2) {
+      strip.hidden = true;
+      strip.replaceChildren();
+      updatePush();
+      return;
+    }
+
+    strip.replaceChildren(
+      ...tabs.map((tab) => {
+        const chip = document.createElement('button');
+        chip.className = 'tab' + (tab.active ? ' active' : '');
+        chip.title = tab.url || tab.title;
+        if (tab.icon) {
+          const img = document.createElement('img');
+          img.alt = '';
+          img.src = tab.icon;
+          chip.appendChild(img);
+        }
+        const label = document.createElement('span');
+        label.textContent = tab.title || hostOf(tab.url);
+        chip.appendChild(label);
+        chip.addEventListener('click', () => {
+          if (tab.active) return;
+          chrome.runtime
+            .sendMessage({ norenBar: 'raiseWindow', address: tab.address })
+            .catch(() => {});
+        });
+        return chip;
+      }),
+    );
+    strip.hidden = false;
+    // The strip changes the bar's height, so a pinned page moves with it.
+    updatePush();
   }
 
   // The address as it is right now. Single-page apps change it without a load,
@@ -248,6 +382,7 @@
     root.querySelector('.host').textContent = location.host.replace(/^www\./, '');
     const rest = (location.pathname === '/' ? '' : location.pathname) + location.search;
     root.querySelector('.path').textContent = rest;
+    refreshTabs();
   }
 
   // While the bar is down, follow the address. Single-page apps change it with
@@ -263,6 +398,7 @@
     lastHref = location.href;
     shown = true;
     bar.classList.add('shown');
+    updatePush();
     clearInterval(follow);
     follow = setInterval(() => {
       if (!shown) {
@@ -276,6 +412,46 @@
     }, 500);
   }
 
+  // --------------------------------------------------------------- making room
+  //
+  // Pinned, the bar is meant to stay, and a bar that permanently covers a site's
+  // own menu is worse than no bar. So the page moves down by exactly the bar's
+  // height while it is pinned.
+  //
+  // The shift goes on <body>, not <html>, for two reasons: a site's menu pinned
+  // to the top of the viewport is positioned against the page, so shifting the
+  // page carries it along (a margin would leave it exactly where it was, still
+  // covered), and our own bar hangs off <html>, so it stays put rather than
+  // riding down with everything else.
+  let pushedBody = null;
+
+  function setPush(pixels) {
+    const body = document.body;
+    if (!body) return;
+    if (!pixels) {
+      if (pushedBody !== null) {
+        body.style.transform = pushedBody.transform;
+        body.style.transition = pushedBody.transition;
+        pushedBody = null;
+      }
+      return;
+    }
+    if (pushedBody === null) {
+      // Remember whatever the site had, so unpinning gives it back exactly.
+      pushedBody = { transform: body.style.transform, transition: body.style.transition };
+    }
+    body.style.transform = `translateY(${Math.round(pixels)}px)`;
+    body.style.transition = 'transform 140ms ease';
+  }
+
+  function updatePush() {
+    if (!pinned || !bar || !shown) {
+      setPush(0);
+      return;
+    }
+    setPush(bar.getBoundingClientRect().height);
+  }
+
   function setPinned(on, remember) {
     pinned = on;
     if (bar) {
@@ -283,7 +459,19 @@
       button.classList.toggle('on', on);
       button.title = on ? 'Unpin -- hide this bar again' : 'Keep this bar visible';
     }
-    if (on) show();
+    if (on) {
+      show();
+    } else if (remember) {
+      // Unpinned here, with the pointer on the pin button: leave the usual
+      // grace period so it does not vanish from under the cursor.
+      scheduleHide();
+    } else {
+      // Unpinned in another window. Nothing is hovering this one, so it goes
+      // at once -- it used to stay up until some later pointer move dismissed
+      // it, which looked like the bar coming back by itself.
+      hide();
+    }
+    updatePush();
     if (remember) chrome.runtime.sendMessage({ norenBar: 'pin', value: on }).catch(() => {});
   }
 
@@ -440,6 +628,7 @@
     if (!shown || pinned || menuOpen) return;
     shown = false;
     bar.classList.remove('shown');
+    setPush(0);
   }
 
   function scheduleHide() {
@@ -482,9 +671,11 @@
     document.addEventListener('mousemove', onMove, { passive: true, capture: true });
     document.addEventListener('fullscreenchange', () => {
       if (document.fullscreenElement) {
-        // Fullscreen wins even over a pin; the pin comes back afterwards.
+        // Fullscreen wins even over a pin; the pin comes back afterwards. The
+        // page must not be shifted under a fullscreen video either.
         shown = false;
         if (bar) bar.classList.remove('shown');
+        setPush(0);
       } else if (pinned) {
         show();
       }
@@ -496,6 +687,14 @@
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === 'local' && changes.themeRoles) applyRoles(changes.themeRoles.newValue);
     });
+    // The pin is one setting for every window: pinning here pins the others,
+    // and a window opened later comes up pinned too.
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes.revealBarPinned) return;
+      const wanted = Boolean(changes.revealBarPinned.newValue);
+      if (wanted !== pinned) setPinned(wanted, false);
+    });
+
     // `noren bar` toggles it from the keyboard or a Hyprland bind.
     chrome.runtime.onMessage.addListener((msg) => {
       if (msg && msg.norenBar === 'toggle') {
@@ -504,6 +703,9 @@
         (shown ? hide : show)();
       }
       if (msg && msg.norenBar === 'pin') setPinned(!pinned, true);
+      // The group changed under us -- a window joined it, left it, or became
+      // the active one. Only worth redrawing while the strip is on screen.
+      if (msg && msg.norenBar === 'refresh' && shown) refreshTabs();
     });
   }
 

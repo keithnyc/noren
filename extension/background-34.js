@@ -20,13 +20,20 @@ function connect() {
       applyTheme(msg.theme);
       return;
     }
+    if (msg && msg.type === 'groupChanged') {
+      // Hyprland moved, opened or closed a window. Every bar's tab strip is a
+      // picture of the group, so every bar redraws; the browser cannot see a
+      // grouping change on its own.
+      refreshBars();
+      return;
+    }
     if (msg && msg.type === 'wallpaper') {
       // The desktop background, for the start page to sit on. Stored rather
       // than held: the page may open long after the host last pushed it.
       chrome.storage.local.set({ wallpaper: msg.data || null }).catch(() => {});
       return;
     }
-    if (msg && (msg.type === 'sets' || msg.type === 'setOpResult')) {
+    if (msg && (msg.type === 'sets' || msg.type === 'setOpResult' || msg.type === 'group')) {
       const settle = pendingHost.get(msg.id);
       pendingHost.delete(msg.id);
       if (settle) settle(msg);
@@ -532,6 +539,62 @@ async function startSuggestions(limit) {
 
 const START_URL = chrome.runtime.getURL('start.html');
 
+async function refreshBars() {
+  try {
+    const windows = await chrome.windows.getAll({ populate: true });
+    for (const win of windows) {
+      if (win.type !== 'app') continue;
+      const tab = (win.tabs || [])[0];
+      if (!tab) continue;
+      // A page with no bar in it -- just loaded, or a chrome:// page -- simply
+      // has no listener; that is not an error worth reporting.
+      chrome.tabs.sendMessage(tab.id, { norenBar: 'refresh' }).catch(() => {});
+    }
+  } catch (e) {
+    // The browser is shutting down.
+  }
+}
+
+// Hyprland's group, joined to this browser's windows by title -- the same match
+// the host's command targeting uses, and the only thing the two sides share:
+// Hyprland has no idea what a url is, and Chromium has never heard of a group.
+async function groupTabs() {
+  const reply = await askHost({ type: 'getGroup' }, null, 3000);
+  const list = (reply && reply.members) || [];
+  const grouped = Boolean(reply && reply.grouped);
+  if (list.length < 2) return { grouped, tabs: [] };
+
+  let windows = [];
+  try {
+    windows = await chrome.windows.getAll({ populate: true });
+  } catch (e) {
+    windows = [];
+  }
+  const pages = [];
+  for (const win of windows) {
+    if (win.type !== 'app') continue;
+    const tab = (win.tabs || [])[0];
+    if (tab) pages.push(tab);
+  }
+
+  const tabs = [];
+  for (const member of list) {
+    const wanted = (member.title || '').trim();
+    const tab = pages.find((t) => {
+      const title = (t.title || '').trim();
+      return title === wanted || title.startsWith(wanted) || wanted.startsWith(title);
+    });
+    tabs.push({
+      address: member.address,
+      active: Boolean(member.active),
+      title: wanted || (tab && tab.title) || '',
+      url: (tab && tab.url) || '',
+      icon: tab && tab.url ? await faviconData(tab.url) : null,
+    });
+  }
+  return { grouped, tabs };
+}
+
 // id -> resolve, for requests the host answers asynchronously.
 const pendingHost = new Map();
 let hostSeq = 0;
@@ -592,27 +655,19 @@ setTimeout(reviveStartPages, 1500);
 // and none can open a window, read sets or touch another page.
 let revealBar = true;
 
-// Windows whose bar is pinned open. Session storage: it outlives the worker
-// being torn down, and forgets everything when the browser quits, along with
-// the window ids it was keyed by.
-async function pinnedBars() {
+// Whether the bar is pinned open -- one setting for every window, not one per
+// window. "Keep this bar visible" is a preference about how browsing looks, and
+// a pin that did not carry to the next window meant pinning it again in every
+// one. In `storage.local`, so it survives a restart; every bar watches that key
+// and follows, which is also how one window's pin reaches the others.
+async function barPinned() {
   try {
-    const got = await chrome.storage.session.get({ pinnedBars: {} });
-    return got.pinnedBars && typeof got.pinnedBars === 'object' ? got.pinnedBars : {};
+    const got = await chrome.storage.local.get({ revealBarPinned: false });
+    return Boolean(got.revealBarPinned);
   } catch (e) {
-    return {};
+    return false;
   }
 }
-
-chrome.windows.onRemoved.addListener((windowId) => {
-  pinnedBars()
-    .then((pins) => {
-      if (!pins[windowId]) return null;
-      delete pins[windowId];
-      return chrome.storage.session.set({ pinnedBars: pins });
-    })
-    .catch(() => {});
-});
 const revealBarReady = chrome.storage.local
   .get({ revealBar: true })
   .then((got) => {
@@ -670,21 +725,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .then(() => (revealBar ? chrome.windows.get(tab.windowId) : null))
         .then(async (win) => {
           const enabled = Boolean(win && win.type === 'app');
-          const pins = enabled ? await pinnedBars() : {};
-          sendResponse({ enabled, pinned: Boolean(pins[tab.windowId]) });
+          sendResponse({ enabled, pinned: enabled ? await barPinned() : false });
         })
         .catch(() => sendResponse({ enabled: false }));
       return true;
     case 'pin':
-      // Keyed by window, not tab: a chrome-less window holds one tab, and the
-      // window is what the user pinned the bar on.
-      pinnedBars()
-        .then((pins) => {
-          if (msg.value) pins[tab.windowId] = true;
-          else delete pins[tab.windowId];
-          return chrome.storage.session.set({ pinnedBars: pins });
-        })
-        .catch(() => {});
+      chrome.storage.local.set({ revealBarPinned: Boolean(msg.value) }).catch(() => {});
+      return false;
+    case 'group':
+      // The pages sharing this window's Hyprland group, for the bar's tab
+      // strip. Hyprland supplies the grouping and titles; matching those to
+      // this browser's own windows adds the url and favicon.
+      groupTabs()
+        .then((got) => sendResponse(got))
+        .catch(() => sendResponse({ grouped: false, tabs: [] }));
+      return true;
+    case 'raiseWindow':
+      // By address, and the host refuses any window outside the group.
+      send({ type: 'raiseWindow', address: String(msg.address || '') });
       return false;
     case 'favicon':
       // Only the page the bar is sitting on -- sender.tab.url, never a url the
