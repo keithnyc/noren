@@ -576,6 +576,58 @@ hue bucket; greys, near-black and near-white are skipped, so a monochrome logo
 glows in the theme accent. The time-of-day light is a table of theme *roles* per
 hour, mixed in CSS between neighbours, so it always belongs to the palette.
 
+**Gathering was slow because of flat sleeps, not Hyprland.** Measured on this
+machine, an `hyprctl` call costs ~6ms — the waiting was ours. Three fixes:
+
+- **Waiting for a new window** was a 0.2s poll plus a 0.25s settle. Hyprland's
+  event stream (`$XDG_RUNTIME_DIR/hypr/<sig>/.socket2.sock` — hidden, easy to
+  miss) announces `openwindow` with the address and class, so the wait is now as
+  long as the window takes. The socket is opened *before* the spawn, or the
+  window can appear in the gap. Polling remains the fallback.
+- **The settle** is now `wait_mapped()`: a window still being mapped reports a
+  zero size, and moving it then is what left windows outside the group. It waits
+  for a real size instead of a fixed guess.
+- **Each fold attempt** slept a flat 0.12s before looking, so every success paid
+  it in full and every wrong direction paid it again. `_wait_grouped()` polls
+  `activewindow` every 20ms instead, and `_fold_order()` tries the direction the
+  anchor actually lies in first — a wrong direction is not free, it moves the
+  window somewhere else before failing.
+
+**The bar's tab strip is Hyprland's grouping joined to Chromium's windows by
+title.** Neither side can answer alone: Hyprland has never heard of a url, and
+Chromium has no idea its windows are grouped. `group_members()` reads the
+focused client's `grouped` array (the bar only shows on the window the pointer
+is over, which is the focused one) and hands over addresses and titles;
+`groupTabs()` in the worker matches those titles to its own `app` windows for
+the url and favicon — the same title match the host's command targeting uses.
+Switching goes back through `raiseWindow`, which the host refuses for any
+address outside that group: the request comes from a content script, which
+speaks for a page.
+
+With no group, `group_members()` falls back to the chrome-less pages on that
+workspace (capped, ordered as they sit on screen) and says `grouped: false`, so
+scattering does not take the switcher away with the group; the strip draws those
+dashed and unfilled rather than as tabs.
+
+Keeping it current needs Hyprland, not the browser: a window joining a group is
+a compositor event Chromium cannot see, so the host watches the event socket
+(`watch_hyprland()`, debounced 150ms — `gather` folding four windows is one
+burst) and the worker relays a redraw to every bar. The pin is `revealBarPinned`
+in `storage.local`, one setting for every window: each bar follows the key
+through `storage.onChanged`, which is also how one window's pin reaches the
+rest.
+
+**Tabbed mode folds after the spawn, never before it.** `~/.config/noren/config.json`
+is Noren's own settings file — the first of them is `tabbed` — read by the CLI
+and the host, so it applies wherever a spawn came from. The host reads the
+anchor (the focused chrome-less window) and the set of existing chrome-less
+addresses *before* spawning, spawns immediately, and only then runs
+`noren join --anchor … --exclude …` on a thread: a peeled link leaves a
+full-chrome window on screen for exactly as long as the spawn takes, so nothing
+may sit in front of it. The fold itself is `gather()` with an explicit anchor —
+one code path for every group mutation, and one place that is careful about
+targeting.
+
 **A cold start blocks the start page.** Chromium creates the `--app` window
 before it has loaded the extension, refuses `chrome-extension://…` as
 `ERR_BLOCKED_BY_CLIENT`, and never retries — the window sits on an error page.

@@ -269,6 +269,25 @@ A theme can override the result by shipping `noren.css` in its theme directory
 (or rendering one from a template in `~/.config/omarchy/themed/`). It replaces
 the generated rules and still gets the `--noren-*` variables.
 
+## Tabbed mode
+
+Tabs, when you want them, without arranging anything:
+
+```bash
+noren tabbed on     # every new page joins the group of the page in front
+noren tabbed off    # back to a window of its own
+noren tabbed        # report
+```
+
+Or **`J`** in the radial, which shows whether it is on. With it on, a page
+opened from a page — the url bar, a tile, a link that peels — folds into that
+page's group, making a group of the two if there was not one. The group bar is
+the tab strip, so `SUPER + ]` / `SUPER + [` step through them.
+
+Nothing else changes: `--tiled` opts a single `noren open` out, sets still open
+in the shape they were saved, and the page in front is only ever joined when it
+is the focused window — never a group you are not looking at.
+
 ## Sets
 
 Pages you open together, named. Defining one requires typing no urls at all —
@@ -386,7 +405,19 @@ sight: **rest the pointer on the window's top edge** and it slides down over the
 page — back, forward, reload, the address with its favicon, your pinned sites,
 and home. Click the
 address to change it (it opens the url bar, where Ctrl+Enter redirects this
-window). Move away, or press Esc, and it goes. The **bookmark** button drops down your pinned sites (the bookmarks bar) and
+window). Move away, or press Esc, and it goes. A **tab strip** rides under the bar: every page in the group, with its favicon,
+the one you are on highlighted, and a click to switch. Scatter the group and the
+strip stays, showing the other pages on that workspace in a quieter style —
+dashed, unfilled — because they are windows side by side rather than tabs, and
+that is exactly when they are spread out and worth switching between. It follows
+Hyprland live: gathering, scattering, opening or closing a page redraws it.
+
+Pinning the bar pins it in **every** window, including ones opened later, and it
+survives a browser restart. Hyprland's own group bar is 22px of translucent grey that Omarchy does
+not use by default, so a new user has no reason to look at it; this says what is
+in the group on the page itself, in your theme's colours.
+
+The **bookmark** button drops down your pinned sites (the bookmarks bar) and
 your sets: click a site to go there in this window (Ctrl+click or middle-click
 for a new window), click a set to open it, or **Edit pins and sets…** to open the
 start page in edit mode. The **pin** button keeps it down
