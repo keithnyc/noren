@@ -40,6 +40,18 @@ START_FILE = os.path.join(os.path.dirname(SETS_FILE), "start.json")
 CONFIG_FILE = os.path.join(os.path.dirname(SETS_FILE), "config.json")
 
 
+# Settings the CLI owns and the page-side UI may change. Each maps to the
+# command that writes it: the CLI is the only writer of config.json, so there is
+# one place where a setting is validated and one format to keep.
+PREF_COMMANDS = {
+    "tabbed": lambda v: ["tabbed", "on" if v else "off"],
+    "shatter": lambda v: ["shatter", str(v)],
+    "search": lambda v: ["search", str(v)],
+}
+
+_config_stamp = None
+
+
 def read_config():
     """Noren's own settings. The CLI owns the file; this only reads it."""
     try:
@@ -437,6 +449,111 @@ FOCUS_DEBOUNCE = 0.02
 STRUCTURE_DEBOUNCE = 0.15
 
 
+# ------------------------------------------------------------------ snapshots
+#
+# A window that closes is gone before anyone hears about it, so the picture the
+# curtain tears up has to already exist. Rebinding the close key would solve it
+# the other way, but SUPER + W is Omarchy's and Noren has no business taking it:
+# the point of this plugin is that the compositor stays in charge.
+#
+# So: keep one recent snapshot per page window, taken when something actually
+# changes -- the window takes focus, or its page navigates (the extension says
+# so). Not on a timer; there is nothing to photograph between those.
+
+SNAPSHOT_DIR = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+SNAPSHOT_MAX_AGE = 15 * 60
+_snapshots = {}          # address -> file path
+_snapshot_lock = threading.Lock()
+
+
+def page_clients():
+    """Chrome-less windows right now, by address."""
+    out = {}
+    for client in _hypr_json("clients") or []:
+        cls = (client.get("class") or "").lower()
+        address = client.get("address") or ""
+        at = client.get("at") or []
+        size = client.get("size") or []
+        if not cls.startswith("chrome-") or not address or len(at) < 2 or len(size) < 2:
+            continue
+        out[address] = {"x": at[0], "y": at[1], "w": size[0], "h": size[1]}
+    return out
+
+
+def snapshot_focused():
+    """Photograph the page window in front, if there is one."""
+    if not shatter_style_name(read_config()) or shatter_style_name(read_config()) == "off":
+        return
+    client = browser_client()
+    if not client or not (client.get("class") or "").lower().startswith("chrome-"):
+        return
+    address = client.get("address") or ""
+    at = client.get("at") or []
+    size = client.get("size") or []
+    if not address or len(at) < 2 or len(size) < 2 or size[0] < 1 or size[1] < 1:
+        return
+
+    path = os.path.join(SNAPSHOT_DIR, "noren-snap-%s.png" % address.replace("0x", ""))
+    try:
+        done = subprocess.run(
+            ["grim", "-g", f"{at[0]},{at[1]} {size[0]}x{size[1]}", path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("snapshot failed:", exc)
+        return
+    if done.returncode == 0:
+        with _snapshot_lock:
+            _snapshots[address] = path
+
+
+def drop_snapshot(address):
+    with _snapshot_lock:
+        path = _snapshots.pop(address, None)
+    if not path:
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def snapshot_for(address):
+    with _snapshot_lock:
+        path = _snapshots.get(address)
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        if time.time() - os.path.getmtime(path) > SNAPSHOT_MAX_AGE:
+            return ""
+    except OSError:
+        return ""
+    return path
+
+
+def burst_closed(address, where):
+    """Ask the shell to play the close, with the last picture of that window."""
+    style = shatter_style_name(read_config())
+    if not style or style == "off":
+        drop_snapshot(address)
+        return
+    payload = json.dumps({
+        "x": where["x"], "y": where["y"], "w": where["w"], "h": where["h"],
+        "address": address,
+        "image": snapshot_for(address),
+        "style": style,
+    })
+    try:
+        subprocess.run(
+            ["omarchy-shell", "-q", PLUGIN_ID, "shatter", payload],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("could not play the close:", exc)
+    # The shell has the pixels now.
+    threading.Timer(2.5, drop_snapshot, args=(address,)).start()
+
+
 def watch_hyprland():
     """Tell the extension when the grouping changed.
 
@@ -463,6 +580,9 @@ def watch_hyprland():
         buffer = b""
         pending_since = None
         pending_wait = STRUCTURE_DEBOUNCE
+        # Where each page window was, so one that closes can still be drawn.
+        known = page_clients()
+        snap_at = None
         try:
             while True:
                 sock.settimeout(0.01)
@@ -473,7 +593,23 @@ def watch_hyprland():
                     buffer += chunk
                     while b"\n" in buffer:
                         line, buffer = buffer.split(b"\n", 1)
-                        name = line.decode("utf-8", "replace").split(">>", 1)[0]
+                        text = line.decode("utf-8", "replace")
+                        name = text.split(">>", 1)[0]
+                        if name == "closewindow":
+                            # `closewindow>>55aabb` -- addresses arrive without
+                            # the 0x that `hyprctl clients` reports.
+                            gone = ("0x" + text.split(">>", 1)[1].strip()
+                                    if ">>" in text else "")
+                            where = known.pop(gone, None)
+                            if where:
+                                threading.Thread(target=burst_closed,
+                                                 args=(gone, where), daemon=True).start()
+                        elif name in ("openwindow", "movewindow", "movewindowv2",
+                                      "resizewindow", "activewindowv2"):
+                            known = page_clients()
+                            # A moment after focus lands, so the window has
+                            # settled and drawn before it is photographed.
+                            snap_at = time.monotonic() + 0.45
                         if name not in GROUP_EVENTS:
                             continue
                         wait = FOCUS_DEBOUNCE if name in FOCUS_EVENTS else STRUCTURE_DEBOUNCE
@@ -490,6 +626,9 @@ def watch_hyprland():
                     pending_since = None
                     pending_wait = STRUCTURE_DEBOUNCE
                     write_native({"type": "groupChanged"})
+                if snap_at and time.monotonic() >= snap_at:
+                    snap_at = None
+                    threading.Thread(target=snapshot_focused, daemon=True).start()
         except OSError:
             pass
         finally:
@@ -790,6 +929,41 @@ def load_theme(force=False):
     return _theme
 
 
+def shatter_style_name(config):
+    """The CLI's own reading of the setting, for the page that shows it."""
+    value = config.get("shatter", "curtain")
+    if value is True:
+        return "curtain"
+    if value is False or value in ("off", "none", ""):
+        return "off"
+    return value if value in ("curtain", "glass") else "curtain"
+
+
+def push_config():
+    """Hand the extension the settings it needs to honour.
+
+    Only `search` so far: a typed phrase becomes a url in the extension too
+    (navigate), and it must reach the same engine as the CLI's own path.
+    """
+    config = read_config()
+    write_native({"type": "config", "search": config.get("search") or ""})
+
+
+def set_pref(msg):
+    """Change a CLI-owned setting, through the CLI."""
+    name = str(msg.get("name") or "")
+    make = PREF_COMMANDS.get(name)
+    if not make:
+        log("unknown preference:", name)
+        return
+    try:
+        subprocess.run([NOREN_BIN] + make(msg.get("value")),
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("setting %s failed: %s" % (name, exc))
+    push_config()
+
+
 def push_theme():
     theme = load_theme()
     if theme:
@@ -882,6 +1056,16 @@ def watch_theme():
         # backgrounds within a theme does not touch colors.toml at all.
         if _wallpaper_stamp_now() != _wallpaper_stamp:
             push_wallpaper()
+        # Settings the extension honours, when they change from anywhere: the
+        # CLI, the radial, or the start page.
+        global _config_stamp
+        try:
+            stamp = os.path.getmtime(CONFIG_FILE)
+        except OSError:
+            stamp = None
+        if stamp != _config_stamp:
+            _config_stamp = stamp
+            push_config()
 
 
 # ---------------------------------------------------------------- socket server
@@ -1043,6 +1227,7 @@ def main():
     # Build before the extension asks, so the first page load is already themed.
     load_theme(force=True)
     push_theme()
+    push_config()
     # Before the watcher starts, so it does not race this first push.
     threading.Thread(target=lambda: (push_wallpaper(force=True),
                                      watch_theme()), daemon=True).start()
@@ -1087,6 +1272,17 @@ def main():
         elif kind == "raiseWindow":
             raise_member(msg.get("address"))
 
+        elif kind == "getPrefs":
+            config = read_config()
+            write_native({"type": "prefs", "id": msg.get("id"), "prefs": {
+                "tabbed": bool(config.get("tabbed")),
+                "shatter": shatter_style_name(config),
+                "search": config.get("search") or "",
+            }})
+
+        elif kind == "setPref":
+            threading.Thread(target=set_pref, args=(msg,), daemon=True).start()
+
         elif kind == "getSets":
             # The start page lists sets but cannot read files; the worker asks
             # on its behalf.
@@ -1115,6 +1311,11 @@ def main():
                 )
             except OSError as exc:
                 log("could not open the url bar:", exc)
+
+        elif kind == "pageChanged":
+            # A page navigated or finished loading; its snapshot is stale.
+            threading.Timer(0.6, lambda: threading.Thread(
+                target=snapshot_focused, daemon=True).start()).start()
 
         elif kind == "wantTheme":
             # The service worker restarts far more often than the host does.

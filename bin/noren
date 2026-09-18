@@ -8,6 +8,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 SOCKET_PATH = os.path.join(
@@ -62,6 +63,9 @@ usage: noren <command> [args]
   status            what the focused window is showing
   ping              check the bridge is up
   reload-extension  reload the extension from disk (no clicking in chrome://)
+  close             close the window in front of you (Hyprland's own close)
+  shatter <style>   how a page leaves: curtain | glass | off (persists)
+  search <url>      where typed words go, with %s for them (persists)
   watch             reload on every save: extension, host, and *.qml
   doctor            diagnose the whole chain end to end
 
@@ -292,6 +296,8 @@ def doctor():
     # tiled?" is otherwise invisible.
     _row(OK, "tabbed mode", "on - new pages join the group in front"
          if tabbed_mode() else "off - new pages open as their own window")
+    style = shatter_style()
+    _row(OK, "shatter", f"{style} - how a closing page leaves" if style else "off")
 
     # And finally the live bridge.
     if os.path.exists(SOCKET_PATH):
@@ -611,6 +617,28 @@ def save_config(config):
         json.dump(config, fh, indent=2, sort_keys=True)
         fh.write("\n")
     os.replace(tmp, CONFIG_FILE)
+
+
+DEFAULT_SEARCH = "https://duckduckgo.com/?q=%s"
+
+
+def search_template():
+    template = str(load_config().get("search") or "").strip()
+    return template or DEFAULT_SEARCH
+
+
+def search_url(text):
+    """Where a typed phrase goes.
+
+    `%s` is where the words land; a template without one has them appended, so
+    both `https://example.com/search?q=%s` and `https://example.com/search?q=`
+    do what they look like.
+    """
+    import urllib.parse
+
+    query = urllib.parse.quote_plus(str(text or "").strip())
+    template = search_template()
+    return template.replace("%s", query) if "%s" in template else template + query
 
 
 def tabbed_mode():
@@ -1396,7 +1424,12 @@ def scatter():
 
 
 def normalize(url):
-    """Match the host's rule: --app= needs an absolute URL or it is ignored."""
+    """Match the host's rule: --app= needs an absolute URL or it is ignored.
+
+    Anything that is not a destination is a search. Without this, typing words
+    into the url bar and pressing Enter opened a window at `https://two words`,
+    which fails quietly and looks like Noren losing the input.
+    """
     raw = str(url or "").strip()
     if not raw:
         return None
@@ -1404,6 +1437,8 @@ def normalize(url):
         return raw
     if re.match(r"^[a-z][a-z0-9+.-]*:", raw, re.I):
         return None
+    if not looks_like_destination(raw):
+        return search_url(raw)
     return "https://" + raw
 
 
@@ -1708,6 +1743,37 @@ def watch():
                 print("           " + message, flush=True)
 
 
+SHATTER_STYLES = ("curtain", "glass")
+
+
+def shatter_style():
+    """How a page window leaves: "curtain", "glass", or None for plainly.
+
+    A noren is a split curtain in a doorway, so a page parting into panels and
+    falling is the house style; glass is the other one. Older configs stored a
+    bool, when there was only one.
+    """
+    value = load_config().get("shatter", "curtain")
+    if value is True:
+        return "curtain"
+    if value is False or value in ("off", "none", ""):
+        return None
+    return value if value in SHATTER_STYLES else "curtain"
+
+
+def close_window():
+    """Close the page in front of you.
+
+    Nothing special happens here any more, and that is the point: the host
+    watches Hyprland's own close event and plays the animation for every close,
+    whoever made it -- SUPER + W, a page closing itself, this. Noren asking for
+    the close key would have been the wrong trade: the compositor stays in
+    charge, which is the whole premise.
+    """
+    hypr_do("hl.dsp.window.close()")
+    return 0
+
+
 def start_page(new=False, keep=False):
     """Go home: the page in front of you becomes the start page.
 
@@ -1831,6 +1897,37 @@ def main(argv):
 
     if cmd == "doctor":
         return doctor()
+
+    if cmd == "close":
+        return close_window()
+
+    if cmd == "search":
+        config = load_config()
+        if rest:
+            wanted = " ".join(rest).strip()
+            if not re.match(r"^https?://", wanted, re.I):
+                sys.exit("noren search: needs an http(s) url, with %s where the words go")
+            config["search"] = wanted
+            save_config(config)
+        print("search", search_template())
+        return 0
+
+    if cmd == "shatter":
+        config = load_config()
+        if rest and rest[0] in ("on", "curtain"):
+            config["shatter"] = "curtain"
+            save_config(config)
+        elif rest and rest[0] == "glass":
+            config["shatter"] = "glass"
+            save_config(config)
+        elif rest and rest[0] == "off":
+            config["shatter"] = False
+            save_config(config)
+        elif rest and rest[0] not in ("status",):
+            sys.exit(f"noren shatter: unknown argument '{rest[0]}' "
+                     "(curtain | glass | off)")
+        print("shatter", shatter_style() or "off")
+        return 0
 
     if cmd == "watch":
         try:
