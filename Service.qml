@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import Quickshell.Hyprland
 import Quickshell.Io
 
 // Holds whatever the browser last told us, and exposes the bridge to the rest
@@ -67,6 +68,45 @@ Item {
     running: false
   }
 
+  // ------------------------------------------------------------------ shatter
+  //
+  // Page windows come apart when they close. `noren close` takes the picture
+  // first and calls in through IPC; anything else that closes a page window --
+  // SUPER+W, a page closing itself -- is caught here from Hyprland's own event
+  // and bursts without one.
+  Shatter {
+    id: burstLayer
+  }
+
+  // The same settings file the CLI writes. Read directly rather than asked for
+  // over the bridge: a window closing must not wait on the browser, and this
+  // has to hold when the browser is not running at all.
+  property bool shatterEnabled: true
+  property string shatterStyle: "curtain"
+
+  FileView {
+    id: configFile
+    path: (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config"))
+      + "/noren/config.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.readConfig()
+    onFileChanged: reload()
+  }
+
+  function readConfig() {
+    try {
+      var config = JSON.parse(configFile.text() || "{}")
+      var how = config.shatter
+      if (how === undefined || how === true) how = "curtain"
+      root.shatterEnabled = how !== false && how !== "off"
+      root.shatterStyle = how === "glass" ? "glass" : "curtain"
+    } catch (e) {
+      root.shatterEnabled = true
+      root.shatterStyle = "curtain"
+    }
+  }
+
   IpcHandler {
     target: "io.github.keithnyc.noren"
 
@@ -97,6 +137,21 @@ Item {
     }
 
     function ping(): string { return "ok" }
+
+    // The host calls this when a page window closes, whoever closed it: it
+    // keeps a recent snapshot of each page window, so there is a picture to
+    // tear up even though the window itself is already gone.
+    function shatter(payloadJson: string): string {
+      try {
+        var it = JSON.parse(payloadJson)
+        burstLayer.burst(Number(it.x), Number(it.y), Number(it.w), Number(it.h),
+                         it.image ? "file://" + it.image : "",
+                         it.style || root.shatterStyle)
+      } catch (e) {
+        return "bad payload"
+      }
+      return "ok"
+    }
   }
 
   // The host only pushes on change, so a restart of the shell leaves us blank

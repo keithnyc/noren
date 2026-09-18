@@ -566,6 +566,32 @@ Item {
     root.close()
   }
 
+  // Noren's settings file, read directly. The overlay cannot reach the service
+  // (its shell facade does not hand those out), and asking over the bridge would
+  // make closing a page wait on the browser.
+  property bool shatterEnabled: true
+  property string shatterStyle: "curtain"
+
+  FileView {
+    id: settingsFile
+    path: (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config"))
+      + "/noren/config.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      try {
+        var how = JSON.parse(settingsFile.text() || "{}").shatter
+        if (how === undefined || how === true) how = "curtain"
+        root.shatterEnabled = how !== false && how !== "off"
+        root.shatterStyle = how === "glass" ? "glass" : "curtain"
+      } catch (e) {
+        root.shatterEnabled = true
+        root.shatterStyle = "curtain"
+      }
+    }
+    onFileChanged: reload()
+  }
+
   function runNoren(args) {
     Quickshell.execDetached([root.binPath].concat(args))
   }
@@ -816,6 +842,8 @@ Item {
       anchors.fill: parent
       visible: root.mode === "overview"
       active: root.opened && root.mode === "overview"
+      shatterEnabled: root.shatterEnabled
+      shatterStyle: root.shatterStyle
 
       background: root.background
       foreground: root.foreground

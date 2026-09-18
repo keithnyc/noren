@@ -184,6 +184,7 @@ Item {
   function closeSelected() {
     var member = root.members[root.selected]
     if (!member || !member.wayland) return false
+    root.shatter(cards.itemAt(root.selected), member)
     member.wayland.close()
     // Keep the selection in range as the row disappears.
     if (root.selected >= root.count - 1) root.selected = Math.max(0, root.count - 2)
@@ -278,7 +279,35 @@ Item {
     }
   }
 
+  // ------------------------------------------------------------------ shatter
+  //
+  // The same burst the rest of Noren uses, so closing a page looks the same
+  // whether it goes from here or from `noren close`. The card is grabbed the
+  // instant before the window is asked to close: a moment later there is
+  // nothing left to photograph.
+  property string shatterStyle: "curtain"
+  property bool shatterEnabled: true
+
+  Shatter { id: burstLayer }
+
+  function shatter(item, member) {
+    if (!item || !root.shatterEnabled) return
+    // Card coordinates are overlay-local; the burst draws in Hyprland's own,
+    // so put the monitor's origin back.
+    var mon = (member && member.monitor) || Hyprland.focusedMonitor
+    var ox = mon ? mon.x : 0
+    var oy = mon ? mon.y : 0
+    var x = item.x + ox
+    var y = item.y + oy
+    var w = item.width
+    var h = item.height
+    item.grabToImage(function (result) {
+      burstLayer.burst(x, y, w, h, result.url, root.shatterStyle)
+    }, Qt.size(w, h))
+  }
+
   Repeater {
+    id: cards
     model: root.members
 
     delegate: Item {
