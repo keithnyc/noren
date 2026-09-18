@@ -29,6 +29,20 @@ function connect() {
       refreshBars();
       return;
     }
+    if (msg && msg.type === 'config') {
+      // Settings the CLI owns. Kept in storage as well as in memory: this
+      // worker is torn down whenever the browser thinks it is idle, and a
+      // search typed straight afterwards must still reach the right engine.
+      searchTemplate = String(msg.search || '') || DEFAULT_SEARCH;
+      chrome.storage.local.set({ searchTemplate }).catch(() => {});
+      return;
+    }
+    if (msg && (msg.type === 'prefs')) {
+      const settle = pendingHost.get(msg.id);
+      pendingHost.delete(msg.id);
+      if (settle) settle(msg);
+      return;
+    }
     if (msg && msg.type === 'wallpaper') {
       // The desktop background, for the start page to sit on. Stored rather
       // than held: the page may open long after the host last pushed it.
@@ -324,14 +338,31 @@ async function withTab(reply, msg, fn) {
   return reply({ ok: true });
 }
 
+// Where typed words go. The CLI owns the setting and the host pushes it here,
+// so the url bar, a link typed into a page window and `noren open` all reach
+// the same engine.
+const DEFAULT_SEARCH = 'https://duckduckgo.com/?q=%s';
+let searchTemplate = DEFAULT_SEARCH;
+chrome.storage.local
+  .get({ searchTemplate: DEFAULT_SEARCH })
+  .then((got) => {
+    searchTemplate = got.searchTemplate || DEFAULT_SEARCH;
+  })
+  .catch(() => {});
+
+function searchUrl(words) {
+  const query = encodeURIComponent(String(words || '').trim()).replace(/%20/g, '+');
+  return searchTemplate.includes('%s')
+    ? searchTemplate.replace('%s', query)
+    : searchTemplate + query;
+}
+
 function normalize(url) {
   const raw = String(url || '').trim();
   if (!raw) return 'about:blank';
   if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return raw;
   // A bare token with no dot is a search, not a hostname.
-  if (!raw.includes('.') || raw.includes(' ')) {
-    return 'https://duckduckgo.com/?q=' + encodeURIComponent(raw);
-  }
+  if (!raw.includes('.') || raw.includes(' ')) return searchUrl(raw);
   return 'https://' + raw;
 }
 
@@ -513,6 +544,52 @@ async function setHiddenSites(hosts) {
   const unique = Array.from(new Set(hosts.map((h) => String(h).toLowerCase()).filter(Boolean)));
   await chrome.storage.local.set({ hiddenSites: unique });
   send({ type: 'saveStart', hidden: unique });
+}
+
+// Settings live in two places and the page should not have to care which: the
+// extension owns what only the browser knows (auto-peel, page theming, the
+// reveal bar), the CLI owns what the shell and the compositor act on (tabbed
+// mode, the shatter, the search engine).
+const EXTENSION_PREFS = {
+  autoPeel: (value) => chrome.storage.local.set({ autoPeel: Boolean(value) }),
+  revealBar: (value) => chrome.storage.local.set({ revealBar: Boolean(value) }),
+  themeMode: (value) => (MODES.includes(value) ? setTheme(value) : Promise.resolve()),
+};
+
+async function setTheme(mode) {
+  await themeReady;
+  themeMode = mode;
+  await chrome.storage.local.set({ themeMode });
+  await restyleAllTabs();
+}
+
+async function allPrefs() {
+  const stored = await chrome.storage.local
+    .get({ autoPeel: false, revealBar: true, themeMode: 'tint' })
+    .catch(() => ({ autoPeel: false, revealBar: true, themeMode: 'tint' }));
+  const fromHost = await askHost({ type: 'getPrefs' }, null, 3000);
+  const host = (fromHost && fromHost.prefs) || {};
+  return {
+    autoPeel: Boolean(stored.autoPeel),
+    revealBar: stored.revealBar !== false,
+    themeMode: stored.themeMode || 'tint',
+    tabbed: Boolean(host.tabbed),
+    shatter: host.shatter || 'curtain',
+    search: host.search || DEFAULT_SEARCH,
+  };
+}
+
+async function setPref(name, value) {
+  const own = EXTENSION_PREFS[name];
+  if (own) {
+    await own(value).catch(() => {});
+    // Both flags are read at the top of hot paths, so the running worker has
+    // to be told as well as the store.
+    if (name === 'autoPeel') autoPeel = Boolean(value);
+    if (name === 'revealBar') revealBar = Boolean(value);
+    return;
+  }
+  send({ type: 'setPref', name, value });
 }
 
 async function places(limit) {
@@ -871,6 +948,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .then((reply) => sendResponse({ ok: Boolean(reply.ok), error: reply.error || '' }));
       return true;
     }
+    case 'prefs':
+      allPrefs().then((prefs) => sendResponse({ prefs }));
+      return true;
+    case 'setPref':
+      setPref(msg.name, msg.value).then(() => sendResponse({ ok: true }));
+      return true;
     case 'places':
       places(12).then((got) => sendResponse({ ok: true, ...got }));
       return true;
@@ -1162,6 +1245,19 @@ function pushState() {
     send({ type: 'state', state: describe(tab), autoPeel, themeMode })
   );
 }
+
+// A page that just finished loading no longer looks like its snapshot, and the
+// host keeps one per window for the close animation. Cheap to say, and only
+// when something actually changed.
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  if (info.status !== 'complete' || !tab || !/^https?:/i.test(tab.url || '')) return;
+  chrome.windows
+    .get(tab.windowId)
+    .then((win) => {
+      if (win && win.type === 'app') send({ type: 'pageChanged' });
+    })
+    .catch(() => {});
+});
 
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (info.status || info.title || info.url) pushState();

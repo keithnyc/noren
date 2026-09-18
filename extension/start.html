@@ -37,6 +37,11 @@
       <div id="sets" class="chips"></div>
     </section>
 
+    <section id="settings-section" hidden>
+      <h2>Settings</h2>
+      <div id="settings" class="settings"></div>
+    </section>
+
     <section id="empty" hidden>
       <p>Nothing here yet. Browse a little and your most visited sites turn up
         here, or put some bookmarks on Chromium's bookmarks bar.</p>
@@ -44,11 +49,13 @@
 
     <footer>
       <p class="normal-only">Click opens it here &middot; Ctrl+click opens a new window &middot;
-        <kbd>1</kbd>&ndash;<kbd>9</kbd> by number &middot; <kbd>E</kbd> edit</p>
+        <kbd>1</kbd>&ndash;<kbd>9</kbd> by number &middot; <kbd>E</kbd> edit &middot;
+        <kbd>S</kbd> settings</p>
       <p class="editing-only">Drag to reorder &middot; click a pinned title to rename &middot;
         sets save as you edit &middot; <kbd>Esc</kbd> done</p>
       <p>
         <button id="edit" class="link" type="button">Edit</button>
+        <button id="settings-toggle" class="link" type="button">Settings</button>
         <button id="unhide" class="link" type="button" hidden></button>
       </p>
     </footer>

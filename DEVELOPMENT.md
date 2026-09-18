@@ -524,6 +524,40 @@ extension's native port and a new one starts with it, so the host's own age *is*
 the time since the last load -- a number that cannot go stale, unlike a
 hand-edited build marker.
 
+**Closing keeps the compositor in charge.** The obvious way to animate a close
+is to own the close key: capture, play, then close. It was built that way and
+then thrown out — `SUPER + W` is Omarchy's, it is used constantly, and a plugin
+whose selling point is native window management has no business taking it.
+Hyprland's `closewindow` event is the only universal signal, and by the time it
+arrives the window is gone, so there is nothing to photograph.
+
+So the host keeps one recent snapshot per page window (`grim` on the window's
+region, ~90ms) refreshed when something actually changes: the window takes focus
+(`activewindowv2`, +450ms so it has drawn) and its page finishes loading (the
+worker sends `pageChanged`). On `closewindow` the host hands the shell that
+snapshot with the window's last geometry. One path for every close — the
+compositor's, a page closing itself, the overview's Shift+Del — and `noren
+close` is now just a plain close.
+
+Two styles, both in `Shatter.qml`: `curtain` is five panels hung from their top
+edge, swinging out from the middle with the outer ones a beat behind, falling
+over 520ms; `glass` is a 10×7 grid thrown outward and down over 380ms. With no
+snapshot the panels are drawn from the theme instead, shaded down their length
+with lit cut edges — that path only happens when a snapshot is missing or stale.
+
+**Settings live where they are owned, and the page does not care.** The
+extension owns what only the browser knows (auto-peel, page theming, the reveal
+bar) in `storage.local`; the CLI owns what the shell and compositor act on
+(tabbed mode, the close style, the search engine) in `config.json`. The start
+page asks the worker for everything and writes back by name; the worker sets its
+own and forwards the rest to the host, which runs the CLI — so a setting has one
+validator and one format, whoever changed it.
+
+The search engine is the reason a phrase typed into the url bar used to open
+`https://two words`: the extension had its own hard-coded engine and the CLI had
+none at all. Now `search_url()` in the CLI and `searchUrl()` in the worker read
+the same setting, which the host pushes on connect and whenever it changes.
+
 **The reveal bar is a content script, not a shell surface.** The first attempt
 put the page's address and buttons in the Omarchy bar; with two pages tiled, the
 strip was nowhere near the window it described. Drawing a toolbar over each

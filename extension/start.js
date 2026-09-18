@@ -525,6 +525,16 @@ document.addEventListener('keydown', (event) => {
     setEditing(!editing);
     return;
   }
+  if (event.key === 's' && !event.ctrlKey && !event.metaKey) {
+    event.preventDefault();
+    setSettings(!settingsOpen);
+    return;
+  }
+  if (event.key === 'Escape' && settingsOpen) {
+    event.preventDefault();
+    setSettings(false);
+    return;
+  }
   if (event.key === 'Escape' && editing) {
     event.preventDefault();
     setEditing(false);
@@ -536,6 +546,209 @@ document.addEventListener('keydown', (event) => {
   event.preventDefault();
   open(entry.url, !(event.ctrlKey || event.metaKey));
 });
+
+// -------------------------------------------------------------- settings
+//
+// One page for settings that live in three places: the extension's own storage,
+// Noren's config file, and (for the search engine) both, since the browser and
+// the CLI each have to turn typed words into a url. The page does not care --
+// it asks the worker, and the worker knows who owns what.
+
+let settingsOpen = false;
+let justOpened = false;
+
+const SEARCH_PRESETS = [
+  { name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=%s' },
+  { name: 'Kagi', url: 'https://kagi.com/search?q=%s' },
+  { name: 'Google', url: 'https://www.google.com/search?q=%s' },
+  { name: 'Startpage', url: 'https://www.startpage.com/sp/search?query=%s' },
+];
+
+async function readPrefs() {
+  try {
+    const reply = await chrome.runtime.sendMessage({ noren: 'prefs' });
+    return (reply && reply.prefs) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function writePref(name, value) {
+  try {
+    await chrome.runtime.sendMessage({ noren: 'setPref', name, value });
+  } catch (e) {
+    // Nothing to do: the next render shows what actually stuck.
+  }
+}
+
+function settingRow(name, why) {
+  const row = el('div', 'setting');
+  const what = el('div', 'what');
+  what.appendChild(el('div', 'name', name));
+  if (why) what.appendChild(el('div', 'why', why));
+  row.appendChild(what);
+  return row;
+}
+
+function toggleRow(name, why, value, onChange) {
+  const row = settingRow(name, why);
+  const button = el('button', 'switch' + (value ? ' on' : ''));
+  button.type = 'button';
+  button.setAttribute('role', 'switch');
+  button.setAttribute('aria-checked', String(Boolean(value)));
+  button.appendChild(el('span', 'knob'));
+  button.addEventListener('click', async () => {
+    const next = !button.classList.contains('on');
+    button.classList.toggle('on', next);
+    button.setAttribute('aria-checked', String(next));
+    await onChange(next);
+  });
+  row.appendChild(button);
+  return row;
+}
+
+function choiceRow(name, why, options, value, onChange) {
+  const row = settingRow(name, why);
+  const choices = el('div', 'choices');
+  for (const option of options) {
+    const button = el('button', 'choice' + (option === value ? ' on' : ''), option);
+    button.type = 'button';
+    button.addEventListener('click', async () => {
+      for (const sibling of choices.children) {
+        sibling.classList.toggle('on', sibling === button);
+      }
+      await onChange(option);
+    });
+    choices.appendChild(button);
+  }
+  row.appendChild(choices);
+  return row;
+}
+
+function searchRow(value, onChange) {
+  const row = settingRow('Search engine',
+    'Where typed words go. %s is where they land.');
+  row.classList.add('stacked');
+
+  const line = el('div', 'row');
+  const input = document.createElement('input');
+  input.className = 'text';
+  input.type = 'text';
+  input.spellcheck = false;
+  input.value = value;
+  input.addEventListener('keydown', (event) => {
+    event.stopPropagation();
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      input.blur();
+    }
+  });
+  input.addEventListener('blur', () => {
+    const wanted = input.value.trim();
+    if (wanted && wanted !== value) onChange(wanted);
+  });
+  line.appendChild(input);
+  row.appendChild(line);
+
+  const picks = el('div', 'choices');
+  picks.style.marginTop = '10px';
+  for (const preset of SEARCH_PRESETS) {
+    const button = el('button', 'choice' + (preset.url === value ? ' on' : ''), preset.name);
+    button.type = 'button';
+    button.addEventListener('click', () => {
+      input.value = preset.url;
+      onChange(preset.url);
+    });
+    picks.appendChild(button);
+  }
+  row.appendChild(picks);
+  return row;
+}
+
+async function renderSettings() {
+  const box = document.getElementById('settings');
+  const section = document.getElementById('settings-section');
+  section.hidden = !settingsOpen;
+  if (!settingsOpen) {
+    box.replaceChildren();
+    return;
+  }
+
+  const prefs = await readPrefs();
+  if (!prefs) {
+    box.replaceChildren(Object.assign(document.createElement('div'), {
+      className: 'why',
+      textContent: 'Noren is not answering. Is the browser bridge up? `noren doctor` says.',
+    }));
+    return;
+  }
+
+  // Saved the moment they are changed, like everything else on this page. The
+  // pref is re-read afterwards rather than assumed: the CLI validates, and what
+  // it accepted is the truth.
+  const save = (name) => async (value) => {
+    await writePref(name, value);
+    if (name === 'search') renderSettings();
+  };
+
+  const rows = [
+    toggleRow('Tabbed mode',
+      'New pages join the group of the page in front, like tabs.',
+      prefs.tabbed, save('tabbed')),
+    toggleRow('Auto-peel',
+      'Every new tab becomes its own chrome-less window.',
+      prefs.autoPeel, save('autoPeel')),
+    toggleRow('Reveal bar',
+      'The toolbar that slides down at the top edge of a page window.',
+      prefs.revealBar, save('revealBar')),
+    choiceRow('Closing a page',
+      'Curtain parts into panels and drops; glass breaks into pieces.',
+      ['curtain', 'glass', 'off'], prefs.shatter, save('shatter')),
+    choiceRow('Page theming',
+      'How far the Omarchy palette reaches into pages.',
+      ['respect', 'tint', 'immerse'], prefs.themeMode, save('themeMode')),
+    searchRow(prefs.search, save('search')),
+  ];
+
+  // Each row a beat behind the one above, so the panel fills the way cloth
+  // settles rather than appearing all at once.
+  rows.forEach((row, i) => {
+    row.style.animationDelay = (60 + i * 45) + 'ms';
+  });
+  box.replaceChildren(...rows);
+
+  // Only when it opens, never on a re-render after a toggle: parting the
+  // curtain every time you flip a switch would be seasickness, not juice.
+  if (justOpened) {
+    justOpened = false;
+    box.classList.add('parting');
+    const left = el('div', 'curtain left');
+    const right = el('div', 'curtain right');
+    box.append(left, right);
+    const sweep = setTimeout(() => {
+      left.remove();
+      right.remove();
+      box.classList.remove('parting');
+    }, 420);
+    // A second open before this one finished must not leave a half-drawn
+    // curtain behind.
+    box.dataset.sweep = String(sweep);
+  }
+}
+
+function setSettings(on) {
+  settingsOpen = on;
+  justOpened = on;
+  const box = document.getElementById('settings');
+  if (box.dataset.sweep) {
+    clearTimeout(Number(box.dataset.sweep));
+    delete box.dataset.sweep;
+    box.classList.remove('parting');
+    box.querySelectorAll('.curtain').forEach((half) => half.remove());
+  }
+  document.getElementById('settings-toggle').textContent = on ? 'Close settings' : 'Settings';
+  renderSettings();
+}
 
 // --------------------------------------------------------------------- sets
 
@@ -909,6 +1122,8 @@ async function render() {
 }
 
 document.getElementById('edit').addEventListener('click', () => setEditing(!editing));
+document.getElementById('settings-toggle')
+  .addEventListener('click', () => setSettings(!settingsOpen));
 document.getElementById('top-toggle').addEventListener('click', () => {
   topOpen = !topOpen;
   render();

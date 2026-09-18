@@ -446,6 +446,39 @@ chrome-less windows — never in a tabbed window, which has a toolbar of its own
 and not on Chromium's own pages (`chrome://`, the Web Store), where extensions
 cannot run. Pages open before the extension loaded get it on their next reload.
 
+## Closing a page
+
+A page window comes apart as it closes: the page splits into hanging panels
+that swing aside and drop — a noren is a split curtain in a doorway — or into
+small pieces, if you prefer glass.
+
+```bash
+noren shatter curtain   # panels part and fall (default)
+noren shatter glass     # breaks into pieces
+noren shatter off
+```
+
+It needs no keybinding of its own. `SUPER + W` stays Hyprland's own close, a
+page closing itself still closes itself, and the animation plays for all of
+them: the host keeps a recent snapshot of each page window — taken when the
+window takes focus and when its page finishes loading — so there is a picture to
+tear up even though the window is gone by the time anyone hears about it.
+
+## Settings
+
+Press **`S`** on the start page, or click **Settings**. Tabbed mode, auto-peel,
+the reveal bar, how a page closes, page theming, and the search engine, each
+saved the moment you change it.
+
+```bash
+noren search https://search.example/?q=%s   # %s is where the words go
+```
+
+The search engine is one setting for the whole plugin: the url bar, a phrase
+typed into a page window, and `noren open` all reach it. Before it existed,
+typing words and pressing Enter tried to open `https://two words`, which fails
+quietly.
+
 ## Window identity
 
 Omarchy's webapp launchers carry an icon but no `StartupWMClass`, so the window
