@@ -6,6 +6,9 @@ An Omarchy plugin that drives Chromium from the shell. Every page can be its own
 chrome-less Hyprland window; navigation, tab search and browser state live in
 Omarchy rather than in browser furniture.
 
+[Install](#install) · [What it does](#what-it-does-today) ·
+[The experiment](#the-experiment) · [Under the hood](#under-the-hood)
+
 ## Install
 
 You need:
@@ -104,127 +107,6 @@ Back, forward and reload already work in a chrome-less window via Chromium's own
 `Alt+←` / `Alt+→` / `Ctrl+R`. The CLI versions exist so you can bind them to
 whatever keys you prefer.
 
-## Architecture
-
-```
-overlay  ─ UrlBar.qml      url entry, tab search      ┐
-service  ─ Service.qml     browser state + IpcHandler ├─ io.github.keithnyc.noren
-widget   ─ BarWidget.qml   title, load state          ┘
-                    ▲
-                    │  omarchy-shell -q io.github.keithnyc.noren setState '{...}'
-                    │
-         host/noren-host   python, two protocols:
-                    │        stdin/stdout  ↔ Chromium native messaging
-                    │        unix socket   ↔ bin/noren and the shell
-                    ▲
-                    │  4-byte LE length + JSON
-                    │
-       extension/background-3.js    chrome.tabs.* , onCreated, onUpdated
-                    ▲
-                    ▼
-              chromium --app windows
-```
-
-The host is started and owned by Chromium. It exits when Chromium does, and the
-socket at `$XDG_RUNTIME_DIR/noren.sock` disappears with it — so
-`noren ping` failing means the browser isn't running, not that something broke.
-
-`goto` and `open` still work with the browser closed: they fall back to
-`omarchy-launch-webapp`, which starts it. The extension then comes up and the
-bridge with it. Everything else needs a live bridge, because it needs to ask the
-browser something.
-
-## Install
-
-```bash
-./install.sh                          # into your default browser
-./install.sh --browser chromium       # or a specific one
-./install.sh --remove                 # undo, everywhere
-```
-
-Then restart that browser completely, and `omarchy-restart-shell`.
-
-### Developer Mode is required
-
-Since Chromium M137, an unpacked extension loaded with `--load-extension` is
-**disabled on load** unless Developer Mode is on. Nothing says so: not the UI,
-not stderr. The only trace is in the profile's `Preferences`, as
-`disable_reasons: [16777216]` — that is `1 << 24`,
-`DISABLE_UNSUPPORTED_DEVELOPER_EXTENSION`.
-
-So: `chrome://extensions` → **Developer mode** on.
-
-Omarchy's own bundled extensions predate the restriction and were grandfathered
-in, which is why they run without it and Noren does not.
-
-`./bin/noren doctor` decodes this and every other failure in the chain.
-
-The installer targets **one** browser — whichever `xdg-settings get
-default-web-browser` reports, the same source `omarchy-launch-webapp` uses. That
-matters: `noren open` spawns windows in the *default* browser, so if the
-extension lives somewhere else those windows are invisible to Noren. Installing
-also clears Noren out of any other browser, because the native host owns a
-single socket and two instrumented browsers would fight over it.
-
-Rather than hardcoding paths, it reads the browser's launcher script for
-`USER_FLAGS_FILE` and `CHROME_USER_DATA_DIR`, which is how the Chromium-family
-wrappers on Arch declare both facts.
-
-It backs up the flags file to `.noren-backup` and appends to any existing
-`--load-extension` list rather than replacing it — Omarchy ships three
-extensions on that line.
-
-### Why Chromium only, for now
-
-The installer reads the browser's launcher to find its flags file, and every
-Chromium-family wrapper on Arch declares one. What differs is how the launcher
-*passes* that file to the browser, and at least one of them passes it in a way
-that silently discards every flag in it:
-
-Brave's launcher ends with:
-
-```bash
-exec ".../brave-origin" "$USER_FLAGS" "$BRAVE_FLAGS" "$FLAG" "$@"
-```
-
-`"$USER_FLAGS"` is quoted, so the **entire flags file arrives as a single
-argument**. One line works. Two or more lines reach the browser as one malformed
-switch and every flag in the file is silently ignored — no error, nothing in
-`chrome://version`.
-
-So a Brave flags file must stay at one line. If you need more flags, put them in
-the `.desktop` Exec instead. The installer detects this and warns.
-
-It is also why a Brave flags file can list several flags that never reach the
-browser at all, including Omarchy's own bundled extensions. Worth an upstream
-issue.
-
-`--browser NAME` will install into any Chromium-family browser on the machine
-and `--remove` will undo it, so nothing stops you trying. But 0.01 is tested on
-Chromium alone, and a trap like the one above is exactly what gets found by
-someone else testing properly. Support for the rest follows once each has been
-run for a while rather than merely installed.
-
-### Hyprland binds
-
-Recent Omarchy configures Hyprland in **Lua**, not `.conf`. In
-`~/.config/hypr/bindings.lua`:
-
-`./install.sh --print-binds` prints the suggested block — url bar, radial
-menu, and next/previous page in a group:
-
-```lua
-o.bind("SUPER + B", "Noren url bar", [[omarchy-shell shell toggle io.github.keithnyc.noren '{}']])
-o.bind("SUPER + M", "Noren radial menu", [[omarchy-shell shell toggle io.github.keithnyc.noren '{"mode":"radial"}']])
-o.bind("SUPER + BRACKETRIGHT", "Next window in group", hl.dsp.group.next())
-o.bind("SUPER + BRACKETLEFT", "Previous window in group", hl.dsp.group.prev())
-```
-
-`SUPER + B` because `SUPER + L` is the tiling layout toggle. Back and forward are
-in the radial rather than on keys: `SUPER + ALT + LEFT/RIGHT`, the obvious pair,
-already move a window into a group in stock Omarchy. Check what's free with
-`omarchy menu keybindings --print`, then `hyprctl reload`.
-
 ## The experiment
 
 `noren peel on` turns on tabs-as-windows: `chrome.tabs.onCreated` fires, the URL
@@ -243,146 +125,6 @@ Chromium:
    Chromium draws a small security bar at the top.
 
 Live with it for a week before deciding anything.
-
-## Per-site window rules
-
-Chromium ignores `--class` for app windows on Wayland. It assigns the `app_id`
-itself, from the URL and profile:
-
-```
-chrome-<host><path, / replaced by _>-<profile>
-chrome-news.example.com__-Default
-```
-
-So per-site identity is free — you just don't get to pick the name. Match on it
-in Hyprland directly:
-
-```
-windowrule = workspace 5, class:^chrome-video\.example.*$
-windowrule = float, class:^chrome-.*$
-windowrule = size 1280 720, class:^chrome-meet\.google\.com.*$
-```
-
-`hyprctl clients` shows the exact `app_id` for any open window.
-
-## Page theming
-
-Web pages follow the active Omarchy theme. Three modes, set with `noren theme`:
-
-| mode | what it does |
-|---|---|
-| `respect` | leave pages exactly as their authors built them |
-| `tint` | paint the canvas, selection, scrollbars and form accents (default) |
-| `immerse` | remap the site's own surfaces and text onto the theme |
-
-`tint` is the default because the canvas is the one surface no site owns: between
-pages the browser paints its own base colour, and on a dark desktop that white
-frame is the most jarring thing about browsing. Setting `color-scheme` from the
-palette also hands scrollbars and form controls to the theme for free.
-
-Colours are **contrast-corrected per theme**. Palette hues that read fine as
-terminal text often fail WCAG AA against the same theme's page background — 90 of
-434 role/background pairs across the 62 themes installed here, and 37 of 91 in
-light themes. Noren solves lightness against the actual background, holding hue
-and chroma, so `catppuccin-latte` green goes from 2.96:1 to 4.50:1 and is still
-green. 344 of 434 colours come through untouched.
-
-`immerse` is not a stylesheet — a stylesheet cannot reach a card that paints
-itself white, because `background-color` does not inherit. It walks the page,
-reads each element's computed colours, and remaps the site's *neutrals* onto the
-theme while leaving anything with real chroma alone, so brand colours, badges,
-avatars, charts and syntax highlighting keep meaning what they mean. Elevation
-and text hierarchy are preserved by keeping each colour's distance from the
-page's own background.
-
-It has limits worth knowing: inline styles are dropped by a framework re-render
-until that subtree changes again, hover backgrounds freeze on remapped elements,
-and shadow DOM and cross-origin iframes are not reached.
-
-The theme switches live: the host watches `colors.toml` and re-pushes on every
-`omarchy-theme-set`.
-
-A theme can override the result by shipping `noren.css` in its theme directory
-(or rendering one from a template in `~/.config/omarchy/themed/`). It replaces
-the generated rules and still gets the `--noren-*` variables.
-
-## Tabbed mode
-
-Tabs, when you want them, without arranging anything:
-
-```bash
-noren tabbed on     # every new page joins the group of the page in front
-noren tabbed off    # back to a window of its own
-noren tabbed        # report
-```
-
-Or **`J`** in the radial, which shows whether it is on. With it on, a page
-opened from a page — the url bar, a tile, a link that peels — folds into that
-page's group, making a group of the two if there was not one. The group bar is
-the tab strip, so `SUPER + ]` / `SUPER + [` step through them.
-
-Nothing else changes: `--tiled` opts a single `noren open` out, sets still open
-in the shape they were saved, and the page in front is only ever joined when it
-is the focused window — never a group you are not looking at.
-
-## Sets
-
-Pages you open together, named. Defining one requires typing no urls at all —
-arrange the windows you want, then name what is already there:
-
-From the overlay — `SUPER + B`, then `@`:
-
-| you type | you get |
-|---|---|
-| `@` | your sets, with their page count, shape and hosts |
-| `@news` (no such set) | a **save** row — Enter names the open pages `news` |
-| `@news` (exists) | the set first, and a **replace** row below it |
-
-A matching set stays first so Enter opens rather than overwrites; replacing is a
-deliberate arrow-down. **Shift+Delete** on a highlighted set removes it — the
-same gesture Chromium's omnibox uses to drop a suggestion. The footer says which
-keys apply to whatever row is highlighted.
-
-The same from the CLI:
-
-```bash
-noren set save news        # names the chrome-less windows open right now
-noren set preview          # what a save would capture
-noren set list             # what you have
-noren set open news        # opens them, in the shape they were saved
-noren set rm news
-```
-
-A set remembers whether it was a **group** when you saved it and comes back that
-way, so `gather` your reading into one group, save it, and it reopens as one
-group. The shape is part of what you saved.
-
-A set also turns up when you simply type its name, so you do not have to know
-the sigil exists.
-
-**Where you open a set decides what happens to the page you were on:**
-
-| opened from | click / Enter | Ctrl+click / Ctrl+Enter |
-|---|---|---|
-| start page | replaces the start page | opens alongside |
-| reveal bar menu | replaces the page you are on | opens alongside |
-| url bar (`@name`) | opens alongside | replaces the page in front |
-
-Replacing turns that window into the set's first page, and a grouped set folds
-the rest into it — nothing is left behind. If the page in front is already in a
-group, a set opens alongside instead, so it never pours into an unrelated group.
-From the CLI: `noren set open news --replace`.
-
-Or manage them on the **start page**: press `E` and each set becomes a card.
-Rename it in place, flip it between **Group** and **Tiled**, drag its pages into
-order, remove one with `×`, add one by typing it, or delete the set (two clicks).
-The **New set** card makes one from a name and a first page, or from the pages
-open right now. Every edit saves immediately, through `noren set put`:
-
-```bash
-echo '{"name":"reading","urls":["news.example.com"],"grouped":true}' | noren set put
-echo '{"name":"morning","previous":"reading","urls":["news.example.com"]}' | noren set put
-```
 
 ## Start page
 
@@ -483,6 +225,121 @@ chrome-less windows — never in a tabbed window, which has a toolbar of its own
 and not on Chromium's own pages (`chrome://`, the Web Store), where extensions
 cannot run. Pages open before the extension loaded get it on their next reload.
 
+## Tabbed mode
+
+Tabs, when you want them, without arranging anything:
+
+```bash
+noren tabbed on     # every new page joins the group of the page in front
+noren tabbed off    # back to a window of its own
+noren tabbed        # report
+```
+
+Or **`J`** in the radial, which shows whether it is on. With it on, a page
+opened from a page — the url bar, a tile, a link that peels — folds into that
+page's group, making a group of the two if there was not one. The group bar is
+the tab strip, so `SUPER + ]` / `SUPER + [` step through them.
+
+Nothing else changes: `--tiled` opts a single `noren open` out, sets still open
+in the shape they were saved, and the page in front is only ever joined when it
+is the focused window — never a group you are not looking at.
+
+## Sets
+
+Pages you open together, named. Defining one requires typing no urls at all —
+arrange the windows you want, then name what is already there:
+
+From the overlay — `SUPER + B`, then `@`:
+
+| you type | you get |
+|---|---|
+| `@` | your sets, with their page count, shape and hosts |
+| `@news` (no such set) | a **save** row — Enter names the open pages `news` |
+| `@news` (exists) | the set first, and a **replace** row below it |
+
+A matching set stays first so Enter opens rather than overwrites; replacing is a
+deliberate arrow-down. **Shift+Delete** on a highlighted set removes it — the
+same gesture Chromium's omnibox uses to drop a suggestion. The footer says which
+keys apply to whatever row is highlighted.
+
+The same from the CLI:
+
+```bash
+noren set save news        # names the chrome-less windows open right now
+noren set preview          # what a save would capture
+noren set list             # what you have
+noren set open news        # opens them, in the shape they were saved
+noren set rm news
+```
+
+A set remembers whether it was a **group** when you saved it and comes back that
+way, so `gather` your reading into one group, save it, and it reopens as one
+group. The shape is part of what you saved.
+
+A set also turns up when you simply type its name, so you do not have to know
+the sigil exists.
+
+**Where you open a set decides what happens to the page you were on:**
+
+| opened from | click / Enter | Ctrl+click / Ctrl+Enter |
+|---|---|---|
+| start page | replaces the start page | opens alongside |
+| reveal bar menu | replaces the page you are on | opens alongside |
+| url bar (`@name`) | opens alongside | replaces the page in front |
+
+Replacing turns that window into the set's first page, and a grouped set folds
+the rest into it — nothing is left behind. If the page in front is already in a
+group, a set opens alongside instead, so it never pours into an unrelated group.
+From the CLI: `noren set open news --replace`.
+
+Or manage them on the **start page**: press `E` and each set becomes a card.
+Rename it in place, flip it between **Group** and **Tiled**, drag its pages into
+order, remove one with `×`, add one by typing it, or delete the set (two clicks).
+The **New set** card makes one from a name and a first page, or from the pages
+open right now. Every edit saves immediately, through `noren set put`:
+
+```bash
+echo '{"name":"reading","urls":["news.example.com"],"grouped":true}' | noren set put
+echo '{"name":"morning","previous":"reading","urls":["news.example.com"]}' | noren set put
+```
+
+## Overview
+
+`V` in the radial lays out every page on the workspace in depth — live captures,
+cover-flow style. Arrow keys, the scroll wheel, number keys or a click pick one;
+**Shift+Delete** closes the highlighted page. It works on a group *or* on loose
+windows, so it is a page switcher first and a group view second.
+
+The selected page is sharp and the rest fall out of focus — depth of field on
+the cards, not a shadow, so the depth is real rather than drawn.
+
+This works because a *hidden* Hyprland group member can still be screencopied:
+measured, an inactive member reports `hasContent` with full window dimensions.
+That is why there is no frame caching here and no compositor plugin — it is a
+Quickshell overlay like the rest of Noren, built on `HyprlandToplevel`, which
+carries both Hyprland's address and the Wayland toplevel a `ScreencopyView` can
+capture.
+
+## Gather
+
+`peel` scatters; `noren gather` brings them back. It pulls every chrome-less
+window into one Hyprland group on the current workspace, so the compositor's
+group bar becomes the tab strip and `hl.dsp.group.active` switches tabs.
+
+```bash
+noren gather              # every chrome-less window
+noren gather github       # only those matching a host or title
+noren pop                 # lift just the window in front of you back out
+noren scatter             # break the focused group apart again
+```
+
+A group is a single tiled node in Hyprland's layout, so a popped-out window
+tiles beside the group rather than replacing it.
+
+It only touches `chrome-<host>-<profile>` windows, never an ordinary tabbed
+window, and it confirms each move against Hyprland rather than assuming —
+`into_group` takes a direction, not a target, so it tries each and checks.
+
 ## Closing a page
 
 A page window comes apart as it closes: the page splits into hanging panels
@@ -501,20 +358,46 @@ them: the host keeps a recent snapshot of each page window — taken when the
 window takes focus and when its page finishes loading — so there is a picture to
 tear up even though the window is gone by the time anyone hears about it.
 
-## Settings
+## Page theming
 
-Press **`S`** on the start page, or click **Settings**. Tabbed mode, auto-peel,
-the reveal bar, how a page closes, page theming, and the search engine, each
-saved the moment you change it.
+Web pages follow the active Omarchy theme. Three modes, set with `noren theme`:
 
-```bash
-noren search https://search.example/?q=%s   # %s is where the words go
-```
+| mode | what it does |
+|---|---|
+| `respect` | leave pages exactly as their authors built them |
+| `tint` | paint the canvas, selection, scrollbars and form accents (default) |
+| `immerse` | remap the site's own surfaces and text onto the theme |
 
-The search engine is one setting for the whole plugin: the url bar, a phrase
-typed into a page window, and `noren open` all reach it. Before it existed,
-typing words and pressing Enter tried to open `https://two words`, which fails
-quietly.
+`tint` is the default because the canvas is the one surface no site owns: between
+pages the browser paints its own base colour, and on a dark desktop that white
+frame is the most jarring thing about browsing. Setting `color-scheme` from the
+palette also hands scrollbars and form controls to the theme for free.
+
+Colours are **contrast-corrected per theme**. Palette hues that read fine as
+terminal text often fail WCAG AA against the same theme's page background — 90 of
+434 role/background pairs across the 62 themes installed here, and 37 of 91 in
+light themes. Noren solves lightness against the actual background, holding hue
+and chroma, so `catppuccin-latte` green goes from 2.96:1 to 4.50:1 and is still
+green. 344 of 434 colours come through untouched.
+
+`immerse` is not a stylesheet — a stylesheet cannot reach a card that paints
+itself white, because `background-color` does not inherit. It walks the page,
+reads each element's computed colours, and remaps the site's *neutrals* onto the
+theme while leaving anything with real chroma alone, so brand colours, badges,
+avatars, charts and syntax highlighting keep meaning what they mean. Elevation
+and text hierarchy are preserved by keeping each colour's distance from the
+page's own background.
+
+It has limits worth knowing: inline styles are dropped by a framework re-render
+until that subtree changes again, hover backgrounds freeze on remapped elements,
+and shadow DOM and cross-origin iframes are not reached.
+
+The theme switches live: the host watches `colors.toml` and re-pushes on every
+`omarchy-theme-set`.
+
+A theme can override the result by shipping `noren.css` in its theme directory
+(or rendering one from a template in `~/.config/omarchy/themed/`). It replaces
+the generated rules and still gets the `--noren-*` variables.
 
 ## Site scripts
 
@@ -570,6 +453,174 @@ Nothing depends on the card staying up: close it and the ask carries on,
 reopening shows it, and an answer that arrives while it is shut comes in as an
 Omarchy OSD.
 
+## Settings
+
+Press **`S`** on the start page, or click **Settings**. Tabbed mode, auto-peel,
+the reveal bar, how a page closes, page theming, and the search engine, each
+saved the moment you change it.
+
+```bash
+noren search https://search.example/?q=%s   # %s is where the words go
+```
+
+The search engine is one setting for the whole plugin: the url bar, a phrase
+typed into a page window, and `noren open` all reach it. Before it existed,
+typing words and pressing Enter tried to open `https://two words`, which fails
+quietly.
+
+## Not done yet
+
+Per-site theming modes, deeper immerse, workspace sessions, per-site window
+rules, peel history preservation.
+
+## Under the hood
+
+Everything above is what Noren does. Everything below is how, and why it was
+built that way -- read it if you are changing Noren, debugging it, or curious
+about the parts that were not obvious.
+
+## Architecture
+
+```
+overlay  ─ UrlBar.qml      url entry, tab search      ┐
+service  ─ Service.qml     browser state + IpcHandler ├─ io.github.keithnyc.noren
+widget   ─ BarWidget.qml   title, load state          ┘
+                    ▲
+                    │  omarchy-shell -q io.github.keithnyc.noren setState '{...}'
+                    │
+         host/noren-host   python, two protocols:
+                    │        stdin/stdout  ↔ Chromium native messaging
+                    │        unix socket   ↔ bin/noren and the shell
+                    ▲
+                    │  4-byte LE length + JSON
+                    │
+       extension/background-3.js    chrome.tabs.* , onCreated, onUpdated
+                    ▲
+                    ▼
+              chromium --app windows
+```
+
+The host is started and owned by Chromium. It exits when Chromium does, and the
+socket at `$XDG_RUNTIME_DIR/noren.sock` disappears with it — so
+`noren ping` failing means the browser isn't running, not that something broke.
+
+`goto` and `open` still work with the browser closed: they fall back to
+`omarchy-launch-webapp`, which starts it. The extension then comes up and the
+bridge with it. Everything else needs a live bridge, because it needs to ask the
+browser something.
+
+## How the installer works
+
+```bash
+./install.sh                          # into your default browser
+./install.sh --browser chromium       # or a specific one
+./install.sh --remove                 # undo, everywhere
+```
+
+Then restart that browser completely, and `omarchy-restart-shell`.
+
+### Developer Mode is required
+
+Since Chromium M137, an unpacked extension loaded with `--load-extension` is
+**disabled on load** unless Developer Mode is on. Nothing says so: not the UI,
+not stderr. The only trace is in the profile's `Preferences`, as
+`disable_reasons: [16777216]` — that is `1 << 24`,
+`DISABLE_UNSUPPORTED_DEVELOPER_EXTENSION`.
+
+So: `chrome://extensions` → **Developer mode** on.
+
+Omarchy's own bundled extensions predate the restriction and were grandfathered
+in, which is why they run without it and Noren does not.
+
+`./bin/noren doctor` decodes this and every other failure in the chain.
+
+The installer targets **one** browser — whichever `xdg-settings get
+default-web-browser` reports, the same source `omarchy-launch-webapp` uses. That
+matters: `noren open` spawns windows in the *default* browser, so if the
+extension lives somewhere else those windows are invisible to Noren. Installing
+also clears Noren out of any other browser, because the native host owns a
+single socket and two instrumented browsers would fight over it.
+
+Rather than hardcoding paths, it reads the browser's launcher script for
+`USER_FLAGS_FILE` and `CHROME_USER_DATA_DIR`, which is how the Chromium-family
+wrappers on Arch declare both facts.
+
+It backs up the flags file to `.noren-backup` and appends to any existing
+`--load-extension` list rather than replacing it — Omarchy ships three
+extensions on that line.
+
+### Why Chromium only, for now
+
+The installer reads the browser's launcher to find its flags file, and every
+Chromium-family wrapper on Arch declares one. What differs is how the launcher
+*passes* that file to the browser, and at least one of them passes it in a way
+that silently discards every flag in it:
+
+Brave's launcher ends with:
+
+```bash
+exec ".../brave-origin" "$USER_FLAGS" "$BRAVE_FLAGS" "$FLAG" "$@"
+```
+
+`"$USER_FLAGS"` is quoted, so the **entire flags file arrives as a single
+argument**. One line works. Two or more lines reach the browser as one malformed
+switch and every flag in the file is silently ignored — no error, nothing in
+`chrome://version`.
+
+So a Brave flags file must stay at one line. If you need more flags, put them in
+the `.desktop` Exec instead. The installer detects this and warns.
+
+It is also why a Brave flags file can list several flags that never reach the
+browser at all, including Omarchy's own bundled extensions. Worth an upstream
+issue.
+
+`--browser NAME` will install into any Chromium-family browser on the machine
+and `--remove` will undo it, so nothing stops you trying. But 0.01 is tested on
+Chromium alone, and a trap like the one above is exactly what gets found by
+someone else testing properly. Support for the rest follows once each has been
+run for a while rather than merely installed.
+
+### Hyprland binds
+
+Recent Omarchy configures Hyprland in **Lua**, not `.conf`. In
+`~/.config/hypr/bindings.lua`:
+
+`./install.sh --print-binds` prints the suggested block — url bar, radial
+menu, and next/previous page in a group:
+
+```lua
+o.bind("SUPER + B", "Noren url bar", [[omarchy-shell shell toggle io.github.keithnyc.noren '{}']])
+o.bind("SUPER + M", "Noren radial menu", [[omarchy-shell shell toggle io.github.keithnyc.noren '{"mode":"radial"}']])
+o.bind("SUPER + BRACKETRIGHT", "Next window in group", hl.dsp.group.next())
+o.bind("SUPER + BRACKETLEFT", "Previous window in group", hl.dsp.group.prev())
+```
+
+`SUPER + B` because `SUPER + L` is the tiling layout toggle. Back and forward are
+in the radial rather than on keys: `SUPER + ALT + LEFT/RIGHT`, the obvious pair,
+already move a window into a group in stock Omarchy. Check what's free with
+`omarchy menu keybindings --print`, then `hyprctl reload`.
+
+## Per-site window rules
+
+Chromium ignores `--class` for app windows on Wayland. It assigns the `app_id`
+itself, from the URL and profile:
+
+```
+chrome-<host><path, / replaced by _>-<profile>
+chrome-news.example.com__-Default
+```
+
+So per-site identity is free — you just don't get to pick the name. Match on it
+in Hyprland directly:
+
+```
+windowrule = workspace 5, class:^chrome-video\.example.*$
+windowrule = float, class:^chrome-.*$
+windowrule = size 1280 720, class:^chrome-meet\.google\.com.*$
+```
+
+`hyprctl clients` shows the exact `app_id` for any open window.
+
 ## Window identity
 
 Omarchy's webapp launchers carry an icon but no `StartupWMClass`, so the window
@@ -587,43 +638,6 @@ The id is a *prediction* until that app has been opened once; `noren apps` then
 confirms it against the live window. `--class` is ignored on Wayland, so there is
 no way to choose the name — only to predict it correctly.
 
-## Overview
-
-`V` in the radial lays out every page on the workspace in depth — live captures,
-cover-flow style. Arrow keys, the scroll wheel, number keys or a click pick one;
-**Shift+Delete** closes the highlighted page. It works on a group *or* on loose
-windows, so it is a page switcher first and a group view second.
-
-The selected page is sharp and the rest fall out of focus — depth of field on
-the cards, not a shadow, so the depth is real rather than drawn.
-
-This works because a *hidden* Hyprland group member can still be screencopied:
-measured, an inactive member reports `hasContent` with full window dimensions.
-That is why there is no frame caching here and no compositor plugin — it is a
-Quickshell overlay like the rest of Noren, built on `HyprlandToplevel`, which
-carries both Hyprland's address and the Wayland toplevel a `ScreencopyView` can
-capture.
-
-## Gather
-
-`peel` scatters; `noren gather` brings them back. It pulls every chrome-less
-window into one Hyprland group on the current workspace, so the compositor's
-group bar becomes the tab strip and `hl.dsp.group.active` switches tabs.
-
-```bash
-noren gather              # every chrome-less window
-noren gather github       # only those matching a host or title
-noren pop                 # lift just the window in front of you back out
-noren scatter             # break the focused group apart again
-```
-
-A group is a single tiled node in Hyprland's layout, so a popped-out window
-tiles beside the group rather than replacing it.
-
-It only touches `chrome-<host>-<profile>` windows, never an ordinary tabbed
-window, and it confirms each move against Hyprland rather than assuming —
-`into_group` takes a direction, not a target, so it tries each and checks.
-
 ## Optional: fade between tabs
 
 Omarchy disables Hyprland's `fadeSwitch`, so changing the active window in a
@@ -635,11 +649,6 @@ not restyle your compositor. If you want the crossfade, put it in your own
 ```lua
 hl.animation({ leaf = "fadeSwitch", enabled = true, speed = 2.6, bezier = "almostLinear" })
 ```
-
-## Not done yet
-
-Per-site theming modes, deeper immerse, workspace sessions, per-site window
-rules, peel history preservation.
 
 ## Development
 
