@@ -56,6 +56,21 @@ jobs:
           sys.exit(1 if fail else 0)
           PY
 
+      - name: The CLI finds itself through a symlink
+        # install.sh puts `noren` on PATH as a symlink, so this is how every
+        # tester invokes it. os.path.abspath does not resolve symlinks, and when
+        # it was used here `noren doctor` looked for the whole install inside
+        # ~/.local and reported five failures on a working machine.
+        run: |
+          mkdir -p /tmp/fakebin
+          ln -sf "$PWD/bin/noren" /tmp/fakebin/noren
+          out=$(/tmp/fakebin/noren version)
+          echo "through the symlink: $out"
+          case "$out" in
+            *unknown*|"") echo "CLI cannot find its own root through a symlink"; exit 1 ;;
+          esac
+          test "$out" = "noren $(cat VERSION)"
+
       - name: Nothing private is tracked
         run: |
           python3 - <<'PY'

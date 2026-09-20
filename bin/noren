@@ -12,6 +12,15 @@ import sys
 import threading
 import time
 
+# install.sh puts a symlink to this file on PATH, so every invocation a tester
+# makes arrives through ~/.local/bin/noren. os.path.abspath does NOT resolve a
+# symlink -- it returned ~/.local, and doctor then looked for the extension, the
+# key and the theme module inside it and reported five failures telling the user
+# to reinstall a perfectly good install. realpath is the whole fix; the constant
+# exists so there is one place left to get it wrong.
+NOREN_BIN = os.path.realpath(__file__)
+NOREN_ROOT = os.path.dirname(os.path.dirname(NOREN_BIN))
+
 SOCKET_PATH = os.path.join(
     os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "noren.sock"
 )
@@ -221,7 +230,7 @@ def host_versions():
 
 
 def doctor():
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    here = NOREN_ROOT
     ext_dir = os.path.join(here, "extension")
     cfg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     problems = 0
@@ -1741,7 +1750,7 @@ START_TITLE = "Noren Start"
 
 
 def extension_id():
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    here = NOREN_ROOT
     try:
         with open(os.path.join(here, "host", ".extid"), "r") as fh:
             ext_id = fh.read().strip()
@@ -1794,7 +1803,7 @@ def needs_shell(path):
 
 def watch():
     """Reload whatever changed, on save, until Ctrl+C."""
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root = NOREN_ROOT
     state = watch_files(root)
     print(f"noren watch: {len(state)} files under {root}", flush=True)
     print("             *.qml and manifest.json -> omarchy-restart-shell", flush=True)
@@ -1872,7 +1881,7 @@ SITES_INDEX = os.path.join(SITES_DIR, "index.json")
 
 def noren_root():
     """Where Noren itself lives -- this file's checkout or plugin directory."""
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return NOREN_ROOT
 
 
 def version():
@@ -2220,7 +2229,7 @@ def ask(question, want_site=False, dry_run=False):
     with open(context_path, "w") as fh:
         fh.write("\n".join(context))
 
-    noren_bin = os.path.abspath(__file__)
+    noren_bin = NOREN_BIN
     skill = skill_path()
     # The one line that turns a spinner into a narration. Overwrite rather than
     # append, because the panel shows the file, not a log -- and asking for

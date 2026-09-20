@@ -22,7 +22,7 @@ import threading
 import itertools
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import noren_theme
 
 SOCKET_PATH = os.path.join(
@@ -30,7 +30,7 @@ SOCKET_PATH = os.path.join(
 )
 PLUGIN_ID = "io.github.keithnyc.noren"
 
-HOST_DIR = os.path.dirname(os.path.abspath(__file__))
+HOST_DIR = os.path.dirname(os.path.realpath(__file__))
 NOREN_BIN = os.path.join(os.path.dirname(HOST_DIR), "bin", "noren")
 SETS_FILE = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),

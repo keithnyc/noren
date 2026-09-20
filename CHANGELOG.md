@@ -55,3 +55,9 @@ machine; this is the point where that stops being the only evidence.
   the installer recorded it wrote.
 - `noren doctor` names the Omarchy and Hyprland versions, and says when Hyprland
   is not the one Noren's window handling was measured against.
+- **`noren doctor` reported five failures on a working install** when run as
+  `noren` rather than `./bin/noren`. The CLI derived its own location with
+  `os.path.abspath`, which does not resolve a symlink — and install.sh puts a
+  symlink on PATH, so this was every invocation a user would ever make. It told
+  them to reinstall. Fixed with `realpath`, and CI now runs the CLI through a
+  symlink on every push.

@@ -1032,6 +1032,20 @@ To cut a release: edit `VERSION`, match the two manifests, add a
 A tester's `noren doctor` names both the version and the checkout it came from,
 so a bug report cannot be about a Noren nobody can identify.
 
+## abspath does not resolve a symlink
+
+`install.sh` links `bin/noren` into `~/.local/bin`, so every invocation a user
+makes arrives through that link. `os.path.abspath(__file__)` returns
+`~/.local/bin/noren` unchanged — it normalises, it does not resolve — so the
+root came out as `~/.local`, and `doctor` went looking for the extension, the
+pinned key and `noren_theme` inside it. It reported five failures and told the
+user to reinstall a working install. Invisible from the repo, because
+`./bin/noren doctor` is not a symlink and every test here had used that.
+
+`NOREN_BIN` / `NOREN_ROOT` are computed once with `realpath` and everything
+reads them. CI runs the CLI through a symlink on every push, which is the only
+check that would have caught it.
+
 ## Local gotcha
 
 `pkill -f` / `pgrep -f` with a pattern matching the project path will match the
