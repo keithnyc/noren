@@ -44,3 +44,11 @@ machine; this is the point where that stops being the only evidence.
 - Site scripts and `noren ask` are as safe as what you install and what you
   browse. [`SECURITY.md`](SECURITY.md) is not boilerplate; read it.
 - Nothing here is API-stable. Settings, file layout and command names can move.
+
+**Fixed after tagging**
+
+- `--remove` could not undo an install made with `--browser` into a browser the
+  script had no hardcoded entry for (Chrome, Vivaldi, Edge). It now removes what
+  the installer recorded it wrote.
+- `noren doctor` names the Omarchy and Hyprland versions, and says when Hyprland
+  is not the one Noren's window handling was measured against.

@@ -17,7 +17,8 @@ GitHub profile if it is the kind of thing that should not be an issue yet.
 | command | `~/.local/bin/noren` | a symlink to `bin/noren` |
 | skill | `~/.claude/skills/noren-site` | a symlink, only if `~/.claude` already exists |
 
-`./install.sh --remove` undoes all five. `--purge` also deletes the state below.
+`./install.sh --remove` undoes all five, using a record the installer keeps of
+exactly which browser files it wrote to. `--purge` also deletes the state below.
 
 Nothing is installed system-wide, nothing runs as root, and the installer never
 asks for a password.
@@ -131,7 +132,7 @@ So, for the alpha:
 | path | what |
 |---|---|
 | `~/.config/noren/` | settings, named sets, site scripts, the generated page theme |
-| `~/.local/share/noren/` | the extension key backup, so a fresh clone keeps its id |
+| `~/.local/share/noren/` | the extension key backup, so a fresh clone keeps its id, and a list of the browser files the installer touched |
 | `~/.cache/noren/host.log` | what the host spawned and why |
 | `$XDG_RUNTIME_DIR/noren.sock`, `noren-ask/` | the bridge, and asks in flight |
 

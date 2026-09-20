@@ -182,6 +182,44 @@ def browser_instances(ext_dir):
     return sorted(pids, key=int)
 
 
+# What Noren was measured against. Everything in DEVELOPMENT.md -- and every
+# `hl.dsp.*` signature, which came from Omarchy's own bindings.lua -- was
+# verified here. A tester on a different Hyprland can have `gather` fail in a
+# way that reads as a Noren bug, so doctor says the version out loud rather
+# than leaving it to be guessed from a bug report.
+TESTED_HYPRLAND = "0.56"
+
+
+def host_versions():
+    """(omarchy, hyprland), either possibly empty."""
+    omarchy = ""
+    try:
+        out = subprocess.run(["omarchy", "version"], capture_output=True,
+                             text=True, timeout=5)
+        if out.returncode == 0:
+            omarchy = out.stdout.strip().splitlines()[0].strip() if out.stdout.strip() else ""
+    except (OSError, subprocess.SubprocessError, IndexError):
+        pass
+    if not omarchy:
+        try:
+            with open("/usr/share/omarchy/version") as fh:
+                omarchy = fh.read().strip()
+        except OSError:
+            pass
+
+    hypr = ""
+    try:
+        out = subprocess.run(["hyprctl", "version"], capture_output=True,
+                             text=True, timeout=5)
+        if out.returncode == 0:
+            found = re.search(r"Hyprland\s+v?(\d+\.\d+(?:\.\d+)?)", out.stdout)
+            if found:
+                hypr = found.group(1)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return omarchy, hypr
+
+
 def doctor():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     ext_dir = os.path.join(here, "extension")
@@ -189,6 +227,21 @@ def doctor():
     problems = 0
 
     _row(OK, "noren", f"{version()}  ({here})")
+
+    omarchy_ver, hypr_ver = host_versions()
+    if omarchy_ver:
+        _row(OK, "omarchy", omarchy_ver)
+    else:
+        problems += 1
+        _row(BAD, "omarchy", "not found - Noren is an Omarchy plugin")
+    if not hypr_ver:
+        _row(MEH, "hyprland", "not running - window commands will not work")
+    elif hypr_ver.rsplit(".", 1)[0] == TESTED_HYPRLAND or hypr_ver == TESTED_HYPRLAND:
+        _row(OK, "hyprland", f"{hypr_ver}  (what Noren was measured against)")
+    else:
+        _row(MEH, "hyprland",
+             f"{hypr_ver} - Noren was measured against {TESTED_HYPRLAND}.x; if "
+             f"gather/scatter misbehave, say this in the bug report")
 
     name = default_browser()
     _row(OK, "default browser", name)

@@ -997,6 +997,21 @@ stopped using an hour ago" are otherwise indistinguishable.
   output and a click-anywhere-to-close. An ask outlives its panel, so the panel
   now behaves like it.
 
+## The installer remembers what it touched
+
+`--browser NAME` resolves any launcher that exists on the machine, so a
+hardcoded table of browsers cannot undo every install the script allows. It
+could not: installing into Chrome or Vivaldi and then running `--remove` left
+the `--load-extension` flag and the native host manifest in place, silently,
+with nothing to notice it by.
+
+So install writes `~/.local/share/noren/installed.list`, one
+`flags-file<TAB>host-manifest` per line, and `--remove` reads it back. The old
+hardcoded lists stay as a fallback for installs that predate the record, or that
+were made from a different checkout. Reproduced and fixed 2026-09-20 with a
+sandboxed `$HOME` and a fake `vivaldi-stable.desktop`, which is the cheapest way
+to exercise the installer without touching the real machine.
+
 ## Releasing
 
 The version lives in one file, `VERSION`, and everything else is derived:

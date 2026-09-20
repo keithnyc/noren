@@ -17,6 +17,12 @@ CFG="${XDG_CONFIG_HOME:-$HOME/.config}"
 
 CLI_LINK="$HOME/.local/bin/noren"
 
+# What this machine was actually installed into, one "flags-file<TAB>host-manifest"
+# per line. --browser accepts any launcher that exists, so a hardcoded table of
+# browsers cannot undo every install it allows; the record can. Kept beside the
+# extension key, which is already the off-repo home for per-machine facts.
+INSTALL_RECORD="${XDG_DATA_HOME:-$HOME/.local/share}/noren/installed.list"
+
 say()  { printf '\033[32m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33m==>\033[0m %s\n' "$1"; }
 die()  { printf '\033[31m==>\033[0m %s\n' "$1" >&2; exit 1; }
@@ -115,6 +121,18 @@ path.write_text(text + "\n" if text.strip() else "")
 PY
 }
 
+# Append this install's locations, if they are not already there. Read back by
+# --remove, which is the only reason it exists.
+remember_install() {
+  local flags="$1" nmh="$2" line
+  line="$flags\t$nmh"
+  mkdir -p "$(dirname "$INSTALL_RECORD")"
+  if [[ -f $INSTALL_RECORD ]] && grep -qxF -- "$(printf '%b' "$line")" "$INSTALL_RECORD"; then
+    return 0
+  fi
+  printf '%b\n' "$line" >>"$INSTALL_RECORD"
+}
+
 # --- suggested bindings ------------------------------------------------------
 #
 # Printed, never written: bindings.lua is the user's own file, and the keys are
@@ -151,6 +169,22 @@ if [[ ${1-} == "--remove" || ${1-} == "--purge" ]]; then
   SKILL_LINK="$HOME/.claude/skills/noren-site"
   [[ -L $SKILL_LINK && $(readlink "$SKILL_LINK") == "$NOREN_DIR/skills/noren-site" ]] \
     && rm -f "$SKILL_LINK" && say "removed the site-script skill link"
+  # What we actually installed into, browser by browser, whether or not it is a
+  # browser this script has ever heard of.
+  if [[ -f $INSTALL_RECORD ]]; then
+    while IFS=$'\t' read -r rec_flags rec_nmh; do
+      [[ -n ${rec_flags:-} || -n ${rec_nmh:-} ]] || continue
+      if [[ -n ${rec_nmh:-} && -f $rec_nmh ]]; then
+        rm -f "$rec_nmh" && say "removed host manifest from $(dirname "$rec_nmh")"
+      fi
+      if [[ -n ${rec_flags:-} && -f $rec_flags ]] && grep -q -- "$EXT_DIR" "$rec_flags"; then
+        strip_flag "$rec_flags"
+        say "removed extension from $(basename "$rec_flags")"
+      fi
+    done <"$INSTALL_RECORD"
+    rm -f "$INSTALL_RECORD"
+  fi
+  # Anything installed before the record existed, or by a different checkout.
   for d in "${KNOWN_NMH[@]}"; do
     [[ -f $d/$HOST_NAME.json ]] && rm -f "$d/$HOST_NAME.json" && say "removed host manifest from $d"
   done
@@ -318,6 +352,8 @@ else:
 path.write_text("\n".join(lines) + "\n")
 PY
 say "added extension to $(basename "$FLAGS_FILE") (backup alongside it)"
+
+remember_install "$FLAGS_FILE" "$NMH_DIR/$HOST_NAME.json"
 
 # Brave's launcher passes the whole flags file as ONE quoted argument
 # ("$USER_FLAGS"), so a file with more than one line reaches the browser as a
