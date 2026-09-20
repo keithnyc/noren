@@ -1,7 +1,9 @@
 # Agents
 
 - **Installing Noren for someone?** Follow [`INSTALL.md`](INSTALL.md). It is a
-  step-by-step runbook that says where to stop and ask the user.
+  step-by-step runbook that says where to stop and ask the user. Show them
+  [`SECURITY.md`](SECURITY.md) before you touch their browser — this is an
+  alpha, and what it asks for is their call to make, not yours.
 - **Writing a site script** — per-site CSS or JS that changes how one website
   behaves — read [`skills/noren-site/SKILL.md`](skills/noren-site/SKILL.md). It
   carries the rules, the safety model and the workflow. Claude Code picks it up

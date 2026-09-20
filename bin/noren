@@ -82,6 +82,7 @@ usage: noren <command> [args]
   agent raise       bring that agent's terminal to the front
   log [-n N]        the host's recent activity: what it spawned, and why
   doctor            diagnose the whole chain end to end
+  version           which Noren this is
 
 The bridge runs only while your default browser is running with the Noren
 extension loaded. It starts and stops with that browser.
@@ -186,6 +187,8 @@ def doctor():
     ext_dir = os.path.join(here, "extension")
     cfg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     problems = 0
+
+    _row(OK, "noren", f"{version()}  ({here})")
 
     name = default_browser()
     _row(OK, "default browser", name)
@@ -1815,6 +1818,17 @@ def noren_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def version():
+    """The one place the version is written down. install.sh copies it into the
+    extension manifest, so a tester reporting a bug and the extension Chromium
+    actually loaded cannot disagree."""
+    try:
+        with open(os.path.join(noren_root(), "VERSION")) as fh:
+            return fh.read().strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
 def skill_path():
     """The site-script skill, as a path an agent can read without looking."""
     path = os.path.join(noren_root(), "skills", "noren-site", "SKILL.md")
@@ -2075,7 +2089,24 @@ def site_remove(host):
 # would fight the interface the user picked. What comes back to Noren is a
 # single answer file, which the overlay renders when it appears.
 
-ASK_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "noren-ask")
+# The page in front of you goes through here -- its url, its title, whatever you
+# had selected, its text. XDG_RUNTIME_DIR is already private to one user; the
+# fallback must be too, so never /tmp, where the next user along can read it.
+ASK_DIR = os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR")
+    or os.environ.get("XDG_CACHE_HOME")
+    or os.path.join(os.path.expanduser("~"), ".cache"),
+    "noren-ask")
+
+
+def ask_dir():
+    """ASK_DIR, made if it is missing, readable only by its owner."""
+    os.makedirs(ASK_DIR, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(ASK_DIR, 0o700)
+    except OSError:
+        pass
+    return ASK_DIR
 
 
 def default_agent():
@@ -2109,7 +2140,7 @@ def ask(question, want_site=False, dry_run=False):
     if not url:
         sys.exit("noren ask: no page in front of you")
 
-    os.makedirs(ASK_DIR, exist_ok=True)
+    ask_dir()
     stamp = time.strftime("%H%M%S")
     context_path = os.path.join(ASK_DIR, f"page-{stamp}.md")
     answer_path = os.path.join(ASK_DIR, f"answer-{stamp}.md")
@@ -2240,7 +2271,7 @@ def ask_remember(record):
     panel picks it back up when it reopens.
     """
     try:
-        os.makedirs(ASK_DIR, exist_ok=True)
+        ask_dir()
         with open(os.path.join(ASK_DIR, "last.json"), "w") as fh:
             json.dump(record, fh)
     except OSError:
@@ -2465,6 +2496,10 @@ def main(argv):
         return 0
 
     cmd, rest = argv[0], argv[1:]
+
+    if cmd in ("version", "--version", "-V"):
+        print(f"noren {version()}")
+        return 0
 
     if cmd == "doctor":
         return doctor()

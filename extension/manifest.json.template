@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Noren",
-  "version": "0.1.0",
+  "version": "0.0.1",
+  "version_name": "0.01-alpha",
   "description": "Bridges Chromium to the Omarchy shell. Installed by Noren.",
   "permissions": [
     "tabs",

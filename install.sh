@@ -3,6 +3,7 @@
 #   ./install.sh                  install into the default browser
 #   ./install.sh --browser NAME   install into a specific one (chromium, brave-origin-beta, ...)
 #   ./install.sh --remove         undo, from every browser it knows about
+#   ./install.sh --purge          --remove, and delete Noren's saved state too
 #   ./install.sh --print-binds    print suggested Hyprland bindings (changes nothing)
 
 set -euo pipefail
@@ -19,6 +20,26 @@ CLI_LINK="$HOME/.local/bin/noren"
 say()  { printf '\033[32m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33m==>\033[0m %s\n' "$1"; }
 die()  { printf '\033[31m==>\033[0m %s\n' "$1" >&2; exit 1; }
+
+# --- preflight ---------------------------------------------------------------
+#
+# Alpha: say plainly when this machine is not what Noren was built against,
+# rather than failing four steps later with something that looks like a bug.
+
+preflight() {
+  local missing=()
+  for tool in python3 openssl; do
+    command -v "$tool" >/dev/null || missing+=("$tool")
+  done
+  [[ ${#missing[@]} -eq 0 ]] || die "missing: ${missing[*]} — install, then run this again"
+
+  command -v hyprctl >/dev/null \
+    || die "hyprctl not found. Noren drives Hyprland windows; it needs an Omarchy/Hyprland session"
+  command -v omarchy-shell >/dev/null \
+    || die "omarchy-shell not found. Noren is an Omarchy plugin: https://omarchy.org"
+  [[ -n ${HYPRLAND_INSTANCE_SIGNATURE-} ]] \
+    || warn "not inside a Hyprland session — install will finish, but nothing will run until you are"
+}
 
 # --- which browser -----------------------------------------------------------
 #
@@ -123,7 +144,7 @@ fi
 
 # --- remove ------------------------------------------------------------------
 
-if [[ ${1-} == "--remove" ]]; then
+if [[ ${1-} == "--remove" || ${1-} == "--purge" ]]; then
   [[ -L $PLUGIN_LINK ]] && rm -f "$PLUGIN_LINK" && say "unlinked plugin"
   [[ -L $CLI_LINK && $(readlink "$CLI_LINK") == "$NOREN_DIR/bin/noren" ]] \
     && rm -f "$CLI_LINK" && say "removed $CLI_LINK"
@@ -139,11 +160,32 @@ if [[ ${1-} == "--remove" ]]; then
       say "removed extension from $(basename "$f")"
     fi
   done
+  # State Noren wrote that is the user's, not ours: named sets, settings, site
+  # scripts, the generated page themes, the host log. Kept by default -- a
+  # reinstall should find your sets where you left them -- and named either way,
+  # so nothing is left behind invisibly.
+  STATE=(
+    "$CFG/noren"
+    "${XDG_DATA_HOME:-$HOME/.local/share}/noren"
+    "${XDG_CACHE_HOME:-$HOME/.cache}/noren"
+  )
+  if [[ ${1-} == "--purge" ]]; then
+    for d in "${STATE[@]}"; do
+      [[ -d $d ]] && rm -rf "$d" && say "deleted $d"
+    done
+    warn "the extension key is gone too: a reinstall gets a new extension id"
+  else
+    for d in "${STATE[@]}"; do
+      [[ -d $d ]] && say "kept your state in $d  (--purge deletes it)"
+    done
+  fi
   warn "restart your browser and run: omarchy-restart-shell"
   exit 0
 fi
 
 # --- install -----------------------------------------------------------------
+
+preflight
 
 BROWSER=""
 if [[ ${1-} == "--browser" ]]; then
@@ -192,19 +234,29 @@ print(''.join(chr(ord('a') + int(c, 16)) for c in h))
 " >"$NOREN_DIR/host/.extid"
   say "derived extension id $(cat "$NOREN_DIR/host/.extid")"
 fi
-# manifest.json is generated, not tracked: it carries this machine's public key
-# so the extension id stays stable across reloads. Seed it from the template.
-if [[ ! -f $NOREN_DIR/extension/manifest.json ]]; then
-  cp "$NOREN_DIR/extension/manifest.json.template" "$NOREN_DIR/extension/manifest.json"
-  say "created extension/manifest.json from template"
-fi
-python3 - "$NOREN_DIR/extension/manifest.json" "$(cat "$NOREN_DIR/host/.pubkey")" <<'PYKEY'
+# manifest.json is generated, not tracked. Rebuilt from the template on every
+# run rather than patched, so an edit to the template always reaches the
+# browser and a stale generated file cannot drift out of step -- only two
+# things are local to this machine: the public key that pins the extension id,
+# and the readable version from VERSION.
+python3 - "$NOREN_DIR/extension/manifest.json.template" \
+         "$NOREN_DIR/extension/manifest.json" \
+         "$(cat "$NOREN_DIR/host/.pubkey")" \
+         "$(cat "$NOREN_DIR/VERSION" 2>/dev/null || echo unknown)" <<'PYKEY'
 import json, sys, pathlib
-path, key = pathlib.Path(sys.argv[1]), sys.argv[2]
-man = json.loads(path.read_text())
-if man.get("key") != key:
-    man["key"] = key
-    path.write_text(json.dumps(man, indent=2) + "\n")
+tpl, out, key, ver = (pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]),
+                      sys.argv[3], sys.argv[4].strip())
+man = json.loads(tpl.read_text())
+man["key"] = key
+if ver:
+    # Chrome refuses a manifest whose "version" is not 1-4 dotted integers, so
+    # the name we actually use goes in version_name.
+    man["version_name"] = ver
+before = out.read_text() if out.exists() else ""
+text = json.dumps(man, indent=2) + "\n"
+if text != before:
+    out.write_text(text)
+    print("wrote extension/manifest.json")
 PYKEY
 
 # 1. plugin -------------------------------------------------------------------

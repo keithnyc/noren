@@ -27,6 +27,11 @@ say briefly what each one does before running it, and follow these rules:
   global and sticky. Nothing in this install needs a dispatcher.
 - **When something fails, run `noren doctor` before guessing.** It checks the
   whole chain and names the broken link.
+- **Show the user `SECURITY.md` before step 3.** This is an alpha that adds an
+  extension with access to their tabs, bookmarks and history, turns on the
+  browser's Developer mode, and — if they use `noren ask` — hands the page they
+  are reading to their agent. Summarise those three facts in your own words and
+  get a yes before running the installer. Do not paraphrase them away.
 - `CLAUDE.md` and `DEVELOPMENT.md` are for people changing Noren's code. You do
   not need them to install it.
 
@@ -52,19 +57,20 @@ command -v python3 openssl git
 
 ## 2. Get the code
 
-The repository is private, so git needs GitHub access first:
-
-```bash
-gh auth status || gh auth login          # interactive: the user signs in
-gh auth setup-git                         # lets git clone private repos
-```
-
-`gh auth login` opens a browser flow — tell the user it is coming and let them do
-it. Then:
-
 ```bash
 omarchy plugin add https://github.com/keithnyc/noren.git --enable --yes
 ```
+
+If that fails with a 404 or an authentication prompt, the repository is not
+public yet and the user needs access to it:
+
+```bash
+gh auth status || gh auth login          # interactive: the user signs in
+gh auth setup-git
+```
+
+`gh auth login` opens a browser flow — tell the user it is coming and let them
+do it, then run the `omarchy plugin add` again.
 
 That clones into `~/.config/omarchy/plugins/io.github.keithnyc.noren/`. Use that
 path as `NOREN` below.
@@ -216,5 +222,9 @@ omarchy plugin remove io.github.keithnyc.noren
 
 Then delete the `-- >>> noren bindings` block from `~/.config/hypr/bindings.lua`
 (ask first), run `hyprctl reload`, restart the browser and
-`omarchy-restart-shell`. Saved sets live in `~/.config/noren/` and are left in
-place; delete that folder too if the user wants a clean slate.
+`omarchy-restart-shell`.
+
+`--remove` keeps the user's state -- saved sets, settings, site scripts -- and
+prints where each piece is. `"$NOREN/install.sh" --purge` removes those too,
+including the extension key, which means a later reinstall gets a new extension
+id. Ask before purging.

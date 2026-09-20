@@ -6,6 +6,24 @@ An Omarchy plugin that drives Chromium from the shell. Every page can be its own
 chrome-less Hyprland window; navigation, tab search and browser state live in
 Omarchy rather than in browser furniture.
 
+## 0.01 alpha
+
+This is the first release meant for anyone but its author. It has been driven
+daily on one machine, against Omarchy with Chromium; that is the whole of the
+evidence so far. Expect to find things.
+
+- **Read [`SECURITY.md`](SECURITY.md) before installing.** Noren asks for a lot
+  of your browser, and `noren ask` hands the page you are reading to your agent.
+- **`noren doctor` first**, whenever something is off. It checks the chain end
+  to end and names the broken link, which beats guessing.
+- **Undo is one command**: `./install.sh --remove` puts everything back, and
+  `--purge` takes the saved state with it.
+- Bugs and what surprised you: [issues](https://github.com/keithnyc/noren/issues).
+  Attach `noren doctor`. Do not attach `noren log` without reading it — it has
+  urls you visited in it.
+
+[`CHANGELOG.md`](CHANGELOG.md) lists what works and what is known rough.
+
 ## Trying Noren
 
 **With an agent:** point Claude (or any coding agent) at this repository and ask
@@ -30,6 +48,7 @@ First things to try: `SUPER + B` and a url · `SUPER + M` then `H` for the start
 page · `noren peel on` to make every new tab its own window.
 
 Noren is early. Expect rough edges, and `noren doctor` when something is off.
+`noren version` says which one you have.
 
 ## What it does today
 

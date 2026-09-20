@@ -3,8 +3,8 @@
 Architecture, design decisions, and the environment facts behind the Noren v1
 build. First stop for future development sessions.
 
-Built 2026-09-11, extended 2026-09-12. Everything below was verified on
-devbox against Omarchy `quattro` — the numbers and behaviours are measured,
+Built 2026-09-11, extended 2026-09-12. Everything below was verified on one
+machine against Omarchy `quattro` — the numbers and behaviours are measured,
 not assumed.
 
 Browser versions are called out where they matter rather than stated once here,
@@ -435,7 +435,7 @@ several urls caused it. From a cold start every url falls back to
 `omarchy-launch-webapp`, and two of those firing in the same instant race
 Chromium's singleton lock — both win. Observed: two browsers started in the same
 second, one holding `--app=https://social.example` and the other `--app=https://search.example`,
-with `SingletonLock -> devbox-17454`.
+with `SingletonLock -> <hostname>-17454`.
 
 Both load the extension, but only one can own the native messaging socket, so
 every window in the other silently has no working extension: nothing peels
@@ -996,6 +996,26 @@ stopped using an hour ago" are otherwise indistinguishable.
   Both came from reusing the url bar's overlay as-is: a scrim across every
   output and a click-anywhere-to-close. An ask outlives its panel, so the panel
   now behaves like it.
+
+## Releasing
+
+The version lives in one file, `VERSION`, and everything else is derived:
+
+- `noren version` and the first row of `noren doctor` read it directly.
+- `install.sh` copies it into the generated `extension/manifest.json` as
+  `version_name`. It cannot go in `version`: Chrome refuses a manifest whose
+  version is not one to four dotted integers, so `0.01-alpha` would stop the
+  extension loading. `version` stays a plain number in
+  `manifest.json.template` and is bumped by hand at a release.
+- `manifest.json` (the Omarchy plugin manifest) carries the same string.
+  Omarchy's validator only checks the field exists, so it can be the readable
+  one.
+
+To cut a release: edit `VERSION`, match the two manifests, add a
+`CHANGELOG.md` entry, commit, tag `v<version>`.
+
+A tester's `noren doctor` names both the version and the checkout it came from,
+so a bug report cannot be about a Noren nobody can identify.
 
 ## Local gotcha
 

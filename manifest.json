@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.keithnyc.noren",
   "name": "Noren",
-  "version": "0.1.0",
+  "version": "0.01-alpha",
   "author": "Keith",
   "license": "MIT",
   "description": "Drive Chromium from the Omarchy shell: url bar, tab search, and chrome-less windows",
