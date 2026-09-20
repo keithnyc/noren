@@ -297,10 +297,28 @@ body.has-wallpaper .tile:focus-visible {
 }
 
 .chip .count { color: var(--noren-muted); margin-left: 6px; }
+/* Sits between the heading and its chevron: "Most visited 6 \25B8". Quieter
+   than the heading, so it reads as a count and not as part of the word. */
+.toggle .count { color: var(--noren-muted); margin-left: 6px; font-variant-numeric: tabular-nums; }
 
+#empty {
+  max-width: 44ch;
+  margin: 0 auto;
+}
 #empty p {
   text-align: center;
   color: var(--noren-muted);
+}
+#empty p + p {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+#empty em { font-style: normal; color: var(--noren-fg); }
+#empty code {
+  font: inherit;
+  color: var(--noren-fg);
+  white-space: nowrap;
 }
 
 footer {

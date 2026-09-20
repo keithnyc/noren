@@ -1174,6 +1174,12 @@ async function render() {
   const toggle = document.getElementById('top-toggle');
   toggle.setAttribute('aria-expanded', String(topOpen));
   toggle.classList.toggle('open', topOpen);
+  // Collapsed, this heading is indistinguishable from an empty one, and on a
+  // fresh profile it is the only thing on the page. The count says there is
+  // something behind it without saying what -- which is the whole point of
+  // keeping it shut.
+  const topCount = document.getElementById('top-count');
+  topCount.textContent = topOpen ? '' : String(row.length);
   document.getElementById('top-section').hidden = top.length === 0;
 
   const reset = document.getElementById('unhide');

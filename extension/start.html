@@ -28,7 +28,7 @@
 
     <section id="top-section" hidden>
       <h2><button id="top-toggle" class="toggle" type="button" aria-expanded="false"
-        aria-controls="top">Most visited</button></h2>
+        aria-controls="top">Most visited<span id="top-count" class="count"></span></button></h2>
       <div id="top" class="grid row" hidden></div>
     </section>
 
@@ -43,8 +43,11 @@
     </section>
 
     <section id="empty" hidden>
-      <p>Nothing here yet. Browse a little and your most visited sites turn up
-        here, or put some bookmarks on Chromium's bookmarks bar.</p>
+      <p>Nothing here yet. Your most visited sites turn up here as you browse.</p>
+      <p>To fill it now: press <kbd>E</kbd>, then type a site into
+        <em>+ add a site</em>. Pinned sites are Chromium's bookmarks bar, so
+        anything already on yours shows up here &mdash; and
+        <code>noren save</code> puts the page you are on there too.</p>
     </section>
 
     <footer>
