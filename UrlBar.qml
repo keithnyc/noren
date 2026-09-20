@@ -30,6 +30,12 @@ Item {
   // The window the overview asked for, kept across the close so it can be
   // raised again afterwards -- see onChosen.
   property string pendingRaise: ""
+  // While an ask is out the composer stands aside into a corner card: the
+  // surface keeps drawing but stops being a dialog. No keyboard, and only the
+  // card itself takes clicks, so the page the agent is changing -- and
+  // everything else -- is usable while it works.
+  readonly property bool passive: root.mode === "agent" && agentPanel.compact
+
   // Set while handing the screen over to a window the overview picked. The
   // overlay drops its exclusive keyboard focus first -- see the PanelWindow.
   property bool handingOff: false
@@ -297,7 +303,8 @@ Item {
     // neighbours are the same bookmark filled and outlined, with no plus.
     { icon: "\udb80\udcc4", key: "D", label: "Save", hint: "Bookmark this page",
       run: function () { root.runNoren(["save"]) } },
-    { icon: "\udb80\udd9f", key: "U", label: "Url bar", hint: "Type a url, search tabs and history",
+    { icon: "\udb80\udd9f", key: "U", label: "Url bar", swaps: true,
+      hint: "Type a url, search tabs and history",
       run: function () { root.showUrlBar() } },
     // U+F02DC: a house. Rendered and looked at; its neighbour U+F07D1 is a
     // house with a wifi signal in it.
@@ -307,12 +314,18 @@ Item {
       run: function () { root.runNoren(["peel"]) } },
     // U+F1400: a window with content panels. U+F00C5 was the first pick and is
     // a bookmark-plus -- all but identical to Save, two items along.
-    { icon: "\udb85\udc00", key: "V", label: "Overview", hint: "See every page in the group",
+    { icon: "\udb85\udc00", key: "V", label: "Overview", swaps: true,
+      hint: "See every page in the group",
       run: function () { root.showOverview() } },
     { icon: "\udb81\udd70", key: "G", label: "Gather", hint: "Fold windows into one group",
       run: function () { root.runNoren(["gather"]) } },
     // U+F1401: a window with a bar across its top. Rendered and looked at --
     // its neighbour U+F1400 is the panelled window Overview uses.
+    // U+F1719: a robot's head. Rendered and looked at; its neighbours are a
+    // speech bubble and a pair of tools.
+    { icon: "\udb85\udf19", key: "A", label: "Ask", swaps: true,
+      hint: "Put this page to your Omarchy agent",
+      run: function () { root.showAgent() } },
     { icon: "\udb85\udc01", key: "J", label: "Tabs",
       state: root.tabbedMode ? "on" : "off",
       hint: root.tabbedMode
@@ -364,6 +377,14 @@ Item {
     Qt.callLater(function () { overview.forceActiveFocus() })
   }
 
+  // Same swap as the overview: the ring is how you get to the agent, not
+  // something to dismiss first.
+  function showAgent() {
+    root.mode = "agent"
+    agentPanel.reset()
+    Qt.callLater(function () { agentPanel.forceActiveFocus() })
+  }
+
   // The ring's own way back to the url bar: swap face instead of closing, so
   // it is one gesture rather than dismiss-and-summon.
   function showUrlBar() {
@@ -382,6 +403,7 @@ Item {
       var payload = payloadJson ? JSON.parse(payloadJson) : null
       if (payload && payload.mode === "radial") wanted = "radial"
       if (payload && payload.mode === "overview") wanted = "overview"
+      if (payload && payload.mode === "agent") wanted = "agent"
     } catch (e) {
       // A malformed payload is a url bar, not an error worth surfacing.
     }
@@ -405,6 +427,8 @@ Item {
       Qt.callLater(function () { input.forceActiveFocus() })
     } else if (root.mode === "overview") {
       Qt.callLater(function () { overview.forceActiveFocus() })
+    } else if (root.mode === "agent") {
+      Qt.callLater(function () { agentPanel.forceActiveFocus() })
     } else {
       Qt.callLater(function () { radial.forceActiveFocus() })
     }
@@ -786,21 +810,41 @@ Item {
     // came back for a frame or two before the second raise pulled the new one
     // in again. Letting the focus go before raising means there is nothing left
     // to restore, and the switch happens once, behind the flying card.
-    WlrLayershell.keyboardFocus: root.handingOff
+    WlrLayershell.keyboardFocus: (root.handingOff || root.passive)
       ? WlrKeyboardFocus.None
       : WlrKeyboardFocus.Exclusive
     exclusionMode: ExclusionMode.Ignore
+
+    // The input region. Normally the whole surface, because a click anywhere
+    // dismisses; while an ask is out, only the corner card, so every other
+    // click lands on the desktop underneath.
+    mask: Region { item: root.passive ? agentPanel.hotItem : fullArea }
+
+    Item {
+      id: fullArea
+      anchors.fill: parent
+    }
 
     Rectangle {
       anchors.fill: parent
       color: root.scrim
       // Fades while the overview launches a page, so the card lands on the real
       // window rather than on a dimmed copy of the desktop.
-      opacity: (root.mode === "overview" && overview.launching) ? 0 : 1
+      //
+      // The composer gets no scrim at all. A ring or a url bar is a moment;
+      // an agent working is minutes, and dimming every window on every
+      // workspace for that long says the desktop is busy when it is not.
+      opacity: (root.mode === "agent"
+        || (root.mode === "overview" && overview.launching)) ? 0 : 1
       Behavior on opacity { NumberAnimation { duration: 240 } }
       MouseArea {
         anchors.fill: parent
-        onClicked: root.close()
+        // Anywhere-but-the-card dismisses the ring and the url bar, which cost
+        // a keypress to bring back. Not the composer: a stray click there used
+        // to take away a question that was already on its way, and the
+        // panel looked like the thing doing the work rather than a window onto
+        // it.
+        onClicked: if (root.mode !== "agent") root.close()
       }
     }
 
@@ -823,18 +867,47 @@ Item {
 
       onChose: function (index) {
         var chosen = root.radialActions[index]
-        // Url bar and Overview swap face rather than dismissing. A setting --
-        // anything carrying a `state` -- also stays, so the ring can show what
-        // it just became; flipping a toggle and being thrown out to check it is
-        // how you end up toggling it twice.
+        // Some items swap the overlay's face rather than dismissing it, and a
+        // setting -- anything carrying a `state` -- stays so the ring can show
+        // what it just became. `swaps` is a property rather than a list of
+        // labels here: the list silently missed a new face (Ask), which then
+        // opened and closed in the same breath.
         var staysOpen = chosen
-          && (chosen.label === "Url bar" || chosen.label === "Overview"
-              || chosen.state !== undefined)
+          && (chosen.swaps === true || chosen.state !== undefined)
         if (chosen && chosen.run) chosen.run()
         if (staysOpen && chosen.state !== undefined) statusRefresh.restart()
         if (!staysOpen) root.close()
       }
       onDismissed: root.close()
+    }
+
+    AgentPanel {
+      id: agentPanel
+      anchors.fill: parent
+      visible: root.mode === "agent"
+      active: root.opened && root.mode === "agent"
+
+      binPath: root.binPath
+      pageTitle: root.pageTitle
+      pageHost: root.hostOf(root.pageUrl)
+
+      background: root.background
+      foreground: root.foreground
+      borderColor: root.borderColor
+      accent: root.selectedText
+      surface: root.selectedBackground
+      fontFamily: root.fontFamily
+
+      // Escape returns to the ring rather than closing outright, the same as
+      // the overview: a wrong turn costs one key.
+      onDismissed: {
+        root.mode = "radial"
+        Qt.callLater(function () { radial.forceActiveFocus() })
+      }
+
+      // The corner card's own ✕, which is the only way out of a click-through
+      // overlay: there is no keyboard focus left to press Escape with.
+      onCloseRequested: root.close()
     }
 
     Overview {

@@ -524,6 +524,100 @@ extension's native port and a new one starts with it, so the host's own age *is*
 the time since the last load -- a number that cannot go stale, unlike a
 hand-edited build marker.
 
+**Site scripts are safe because of where they run, not because of what they
+promise.** `chrome.scripting.executeScript({ world: 'MAIN' })` puts them in the
+page's own JavaScript world, where there are no extension APIs at all: no
+`chrome.runtime`, so no route to this worker, the native host, the CLI, sets or
+any other page. Verified rather than assumed — a test script wrote
+`chrome.runtime && chrome.runtime.id` into a data attribute and read back
+`blocked`, while its sibling change to the DOM landed. That is what lets an
+agent write them: the blast radius is one site's layout, and `noren site off`
+is the undo.
+
+The CLI is the only installer (`noren site add`): it size-limits at 128KB,
+parses JS with `node --check` when node is there, and flags `fetch`,
+`eval`, `document.cookie` and storage for the user to read. Those are prompts
+for a human, not a sandbox — the world is the sandbox.
+
+Injection hangs off `webNavigation.onCommitted` (css, before first paint, so
+there is no flash of the unstyled site) and `onCompleted` (js, once there is a
+page to act on). It used to hang off `tabs.onUpdated` with
+`status === 'complete'`, which is not something to build on: in a headless run
+that status never arrived at all, and the shared handler returns early whenever
+it peels a tab.
+
+**An install that changes nothing looks like a feature that does not work.**
+Installing a script used to leave the open page alone until the user reloaded
+it, and the first time an agent wrote one that is exactly what happened: the
+agent reported success over a page that had not moved, and the honest reading
+from the outside was "it lied". So `noren site add` and `noren site on` end on
+the live page: the CLI asks the host, the host pushes the new script *ahead* of
+the injection (the extension learns about site scripts from a push, and its poll
+is seconds away), and the worker's `applySite` command injects into every open
+tab on that host. The CLI says how many pages it reached. `off` and `rm` do not
+try the reverse — css could be pulled back out and js could not, and half an
+undo is worse than a reload.
+
+This is also why a script has to be idempotent and guard for elements that
+already exist, which the skill now says outright: it is applied to a page that
+is mid-life, not one that just loaded.
+
+**The agent panel is a window onto a file, not the thing doing the work.** The
+agent runs in its own terminal — `omarchy-agent-prompt`, the agent Omarchy is
+set to — and writes its answer to a path Noren named. Two consequences that were
+not obvious until it was used: the panel must be losable, and it must not act
+like a modal. It was both, badly. A click on the Omarchy bar dismissed the
+overlay, which read as "the question is gone" (it was not: the agent was still
+working), and a full-screen scrim darkened every window on every workspace for
+minutes on end to announce a text box. Now the composer draws no scrim, ignores
+clicks outside the card, resumes from `noren ask --last` when it opens, and when
+an answer lands while it is shut it says so through Omarchy's own OSD. `start
+over` exists because an agent can be denied, shut down or simply told no, and
+none of that reaches the file the panel is waiting on — waiting must never be a
+dead end.
+
+**One surface at a time.** Asking used to leave two things half-telling the
+story: a panel that knew the question but nothing about the work, and a terminal
+that knew the work but appeared from nowhere over whatever you were reading.
+The panel now takes the middle of the screen only while it is being typed into.
+The moment an ask is out it stands aside into a corner card, the overlay gives
+up the keyboard (`WlrKeyboardFocus.None`) and narrows its input region to that
+one card (`mask: Region { item: ... }`), and the desktop comes back — which
+matters most for a site script, where the interesting thing is the page changing
+behind it. The move is never seen: a curtain drops over the card that is leaving
+and lifts off the one arriving, the same gesture as a closing window.
+
+The ✕ on the corner card is not decoration. Once the surface is click-through
+there is no keyboard to press Escape with, so the card has to carry its own way
+out, and `start over` has to carry the way back to a composer.
+
+**Ask the agent to narrate; do not parse it.** A spinner that says "Asking…" for
+three minutes is indistinguishable from a hang. The fix is one line in the
+prompt: overwrite a status file with a short line saying what you are doing now.
+Noren polls that file beside the answer file and shows the last line, rising
+into place as it changes. The alternative — reading the agent's own stream — was
+rejected for the same reason Noren does not host the agent's terminal: there are
+twelve agent CLIs behind `omarchy-default-agent` and their output is theirs, not
+an API. An instruction in the prompt works with all of them, including ones that
+do not exist yet.
+
+**Tell the agent where things are; it cannot guess.** The first prompt said
+"read the skill `noren-site`" and named `noren site add` as a bare command. On a
+machine where the installer's symlinks had not been run, neither existed: the
+agent spent two or three minutes searching the filesystem for Noren before it
+could start. The prompt now carries absolute paths — this file's own checkout
+for `SKILL.md`, `os.path.abspath(__file__)` for the CLI — and says outright not
+to go looking for Noren's source or change it. An install step that is nice to
+have for a human is load-bearing for an agent.
+
+**What is installed has to be visible somewhere.** A script that changes a site
+and appears in no list is indistinguishable from the site changing on its own.
+The start page's settings panel lists every site script with a switch and a
+delete (`getSites` → `site_summary()` in the host, `siteOp` → the CLI), and
+`noren site list` prints the file paths, because the next question after "what
+is installed" is "what does it do". The page gets a summary only, never the
+source: an extension page has no business holding a script someone else wrote.
+
 **Closing keeps the compositor in charge.** The obvious way to animate a close
 is to own the close key: capture, play, then close. It was built that way and
 then thrown out — `SUPER + W` is Omarchy's, it is used constantly, and a plugin
@@ -831,12 +925,18 @@ exactly like "the fix didn't work".
 | changed | needs |
 |---|---|
 | `*.qml` | `omarchy-restart-shell` |
-| `host/noren-host` | cycle the host — kill it, the extension reconnects on a backoff |
-| `extension/*.js` | bump the filename, restart the browser, **and** Reload in `chrome://extensions` |
+| `host/noren-host` | `noren reload-extension` (it takes the host with it), or kill the host by PID |
+| `extension/*` | `noren reload-extension` |
 
-The filename bump is not optional: Chromium caches service workers for
-`--load-extension` extensions, and only a new URL forces new code to register.
-Omarchy's own `copy-url` ships as `background-4.js` for the same reason.
+`noren reload-extension` is `chrome.runtime.reload()` over the bridge, which
+re-reads every file from disk for an unpacked extension — so the filename bump
+that used to be mandatory is not any more (see CLAUDE.md for the measurement).
+What *is* still true is the reason behind it: **Chromium caches the
+service-worker script, and starting the browser does not clear that cache.** A
+browser launched after an edit answered a brand-new command with
+`unknown command` and worked a second after a reload. Edit, then reload, whether
+or not the browser was already running. `noren ping` prints how long ago the
+extension loaded, which is the only honest answer to "did my reload take?".
 
 ## Diagnosis
 
@@ -881,6 +981,21 @@ stopped using an hour ago" are otherwise indistinguishable.
   closed" from "something is broken". Hence the signal handlers.
 - **Silent `onDisconnect`.** A rejected `connectNative` looked identical to a
   clean shutdown until the reason was logged.
+- **A site script did nothing until the page was reloaded.** Reported by its
+  author as installed, over an unchanged page. `site add` now applies to the
+  open pages; see the design note above.
+- **The Noren mark collapsed to one panel whenever an answer landed.** The
+  panels are laid out by a `Row`, and each one also bound its own `x` to step
+  aside during the parting. A positioner assigns `x` itself, so the first time
+  `parted` changed the bindings overwrote the layout and stacked all four on top
+  of each other. Stepping aside is a `transform: Translate` now. The same
+  `parted` was left at 1 by its `Behavior` — a Behavior restores the value that
+  was *assigned*, not the one its last animation wrote — so the second answer
+  parted nothing; it is driven by a named `SequentialAnimation` instead.
+- **The agent panel darkened the whole desktop and could be lost by a click.**
+  Both came from reusing the url bar's overlay as-is: a scrim across every
+  output and a click-anywhere-to-close. An ask outlives its panel, so the panel
+  now behaves like it.
 
 ## Local gotcha
 

@@ -573,6 +573,24 @@ async function readPrefs() {
   }
 }
 
+async function readSites() {
+  try {
+    const reply = await chrome.runtime.sendMessage({ noren: 'sites' });
+    return (reply && reply.sites) || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function siteOp(op, host) {
+  try {
+    const reply = await chrome.runtime.sendMessage({ noren: 'siteOp', op, host });
+    return Boolean(reply && reply.ok);
+  } catch (e) {
+    return false;
+  }
+}
+
 async function writePref(name, value) {
   try {
     await chrome.runtime.sendMessage({ noren: 'setPref', name, value });
@@ -665,6 +683,75 @@ function searchRow(value, onChange) {
   return row;
 }
 
+// What your agent (or you) installed for one site, and nothing more: a script
+// that changes a site is invisible until something lists it, and the first one
+// written here was reported as installed over a page that looked untouched.
+// Listed, switchable, removable -- the source stays in ~/.config/noren/sites,
+// which is where it can be read and edited.
+function sitesRow(sites, onChange) {
+  const row = settingRow('Site scripts',
+    'CSS or JS Noren runs on one site. `noren site list` says where the files are.');
+  row.classList.add('stacked');
+
+  if (!sites.length) {
+    row.appendChild(el('div', 'why',
+      'None yet. SUPER + M → A asks your agent to write one for the page you are on.'));
+    return row;
+  }
+
+  const list = el('div', 'sites');
+  for (const site of sites) {
+    const line = el('div', 'site');
+    const what = el('div', 'what');
+    what.appendChild(el('div', 'name', site.host));
+    const kinds = (site.kinds || []).join(' + ') || 'nothing';
+    const when = String(site.updated || '').replace('T', ' ').slice(0, 16);
+    what.appendChild(el('div', 'why', when ? kinds + '  ·  ' + when : kinds));
+    line.appendChild(what);
+
+    const button = el('button', 'switch' + (site.enabled ? ' on' : ''));
+    button.type = 'button';
+    button.setAttribute('role', 'switch');
+    button.setAttribute('aria-checked', String(Boolean(site.enabled)));
+    button.title = 'Run this script on ' + site.host;
+    button.appendChild(el('span', 'knob'));
+    button.addEventListener('click', async () => {
+      const next = !button.classList.contains('on');
+      button.classList.toggle('on', next);
+      button.setAttribute('aria-checked', String(next));
+      await siteOp(next ? 'on' : 'off', site.host);
+      onChange();
+    });
+    line.appendChild(button);
+
+    // Two presses: this deletes the file, and the switch beside it is the
+    // reversible way to stop a script.
+    const del = el('button', 'tool danger', '✕');
+    del.type = 'button';
+    del.title = 'Delete the script for ' + site.host;
+    let armed = null;
+    del.addEventListener('click', async () => {
+      if (!armed) {
+        del.textContent = 'Sure?';
+        del.classList.add('armed');
+        armed = setTimeout(() => {
+          armed = null;
+          del.textContent = '✕';
+          del.classList.remove('armed');
+        }, 3000);
+        return;
+      }
+      clearTimeout(armed);
+      await siteOp('rm', site.host);
+      onChange();
+    });
+    line.appendChild(del);
+    list.appendChild(line);
+  }
+  row.appendChild(list);
+  return row;
+}
+
 async function renderSettings() {
   const box = document.getElementById('settings');
   const section = document.getElementById('settings-section');
@@ -674,7 +761,7 @@ async function renderSettings() {
     return;
   }
 
-  const prefs = await readPrefs();
+  const [prefs, sites] = await Promise.all([readPrefs(), readSites()]);
   if (!prefs) {
     box.replaceChildren(Object.assign(document.createElement('div'), {
       className: 'why',
@@ -708,6 +795,7 @@ async function renderSettings() {
       'How far the Omarchy palette reaches into pages.',
       ['respect', 'tint', 'immerse'], prefs.themeMode, save('themeMode')),
     searchRow(prefs.search, save('search')),
+    sitesRow(sites, () => renderSettings()),
   ];
 
   // Each row a beat behind the one above, so the panel fills the way cloth

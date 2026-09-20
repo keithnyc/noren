@@ -127,6 +127,9 @@ if [[ ${1-} == "--remove" ]]; then
   [[ -L $PLUGIN_LINK ]] && rm -f "$PLUGIN_LINK" && say "unlinked plugin"
   [[ -L $CLI_LINK && $(readlink "$CLI_LINK") == "$NOREN_DIR/bin/noren" ]] \
     && rm -f "$CLI_LINK" && say "removed $CLI_LINK"
+  SKILL_LINK="$HOME/.claude/skills/noren-site"
+  [[ -L $SKILL_LINK && $(readlink "$SKILL_LINK") == "$NOREN_DIR/skills/noren-site" ]] \
+    && rm -f "$SKILL_LINK" && say "removed the site-script skill link"
   for d in "${KNOWN_NMH[@]}"; do
     [[ -f $d/$HOST_NAME.json ]] && rm -f "$d/$HOST_NAME.json" && say "removed host manifest from $d"
   done
@@ -275,7 +278,21 @@ fi
 
 chmod +x "$NOREN_DIR/host/noren-host" "$NOREN_DIR/bin/noren"
 
-# 4. the cli on PATH ------------------------------------------------------------
+# 4. the site-script skill ------------------------------------------------------
+# Claude Code reads skills from ~/.claude/skills. Linked rather than copied, so
+# it follows the checkout; other agents are pointed at the file by AGENTS.md.
+SKILL_LINK="$HOME/.claude/skills/noren-site"
+if [[ -d $HOME/.claude/skills || -d $HOME/.claude ]]; then
+  mkdir -p "$HOME/.claude/skills"
+  if [[ -e $SKILL_LINK && ! -L $SKILL_LINK ]]; then
+    warn "$SKILL_LINK exists and is not a symlink -- leaving it alone"
+  else
+    ln -sfn "$NOREN_DIR/skills/noren-site" "$SKILL_LINK"
+    say "linked the site-script skill into ~/.claude/skills"
+  fi
+fi
+
+# 5. the cli on PATH ------------------------------------------------------------
 # Every doc says `noren doctor`; that should work without knowing where the
 # plugin was cloned. Never replace a `noren` that is not ours.
 mkdir -p "$(dirname "$CLI_LINK")"

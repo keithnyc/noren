@@ -25,7 +25,14 @@ unpacked extension that re-reads every file from disk, and the worker re-injects
 `bar.js` into pages that are already open. Verified 2026-09-17 by changing a
 constant and watching `noren ping` report the new value **without** bumping the
 service-worker filename — the old ritual (bump `background-N.js` + manifest,
-restart the browser, click Reload) is no longer needed. `noren ping` prints how
+restart the browser, click Reload) is no longer needed.
+
+**Starting the browser is not a reload.** Measured 2026-09-18: a Chromium
+started *after* an edit to `background-*.js` answered a brand-new command with
+`unknown command`, and the same command worked a second after
+`noren reload-extension`. Chromium serves the cached service-worker script until
+something explicitly reloads the extension. So the rule is the same whether the
+browser was running or not: edit, then `noren reload-extension`. `noren ping` prints how
 long ago the extension loaded, which is the honest answer to "did my reload
 take?". Only if the worker is too broken to receive the command does it need the
 Reload button in `chrome://extensions`.

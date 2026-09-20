@@ -5,6 +5,7 @@ import json
 import os
 import math
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -64,9 +65,22 @@ usage: noren <command> [args]
   ping              check the bridge is up
   reload-extension  reload the extension from disk (no clicking in chrome://)
   close             close the window in front of you (Hyprland's own close)
+  site add <host> <file>   install a .css or .js for one site
+  site list         what is installed, and where   (--json)
+  site on|off <host>       enable or disable one
+  site apply <host> run it on that site's open pages now
+  site rm <host>    delete it
+  site inspect [host]      the live page's structure, for writing one
+  site shot [host]  screenshot that site's window, to see a change
   shatter <style>   how a page leaves: curtain | glass | off (persists)
   search <url>      where typed words go, with %s for them (persists)
   watch             reload on every save: extension, host, and *.qml
+  ask <question>    ask your Omarchy agent about the page in front of you
+  ask --site <want> have it write a site script for this site
+  ask --last        the last ask and its answer, as json
+  agent             which agent Omarchy is set to, as json
+  agent raise       bring that agent's terminal to the front
+  log [-n N]        the host's recent activity: what it spawned, and why
   doctor            diagnose the whole chain end to end
 
 The bridge runs only while your default browser is running with the Noren
@@ -298,6 +312,25 @@ def doctor():
          if tabbed_mode() else "off - new pages open as their own window")
     style = shatter_style()
     _row(OK, "shatter", f"{style} - how a closing page leaves" if style else "off")
+
+    # The two symlinks the installer makes. Both are invisible until something
+    # needs them, and both were missing on a machine installed before they
+    # existed: a bare `noren` was not a command, and an agent asked to write a
+    # site script spent minutes looking for a skill that was never linked.
+    on_path = shutil.which("noren")
+    if on_path:
+        _row(OK, "noren on PATH", on_path)
+    else:
+        problems += 1
+        _row(BAD, "noren on PATH",
+             "not found - run install.sh, or link bin/noren into ~/.local/bin")
+
+    skill_link = os.path.expanduser("~/.claude/skills/noren-site")
+    if os.path.exists(skill_link):
+        _row(OK, "site-script skill", skill_link)
+    elif os.path.isdir(os.path.expanduser("~/.claude")):
+        _row(MEH, "site-script skill",
+             "not linked - agents will hunt for it; run install.sh")
 
     # And finally the live bridge.
     if os.path.exists(SOCKET_PATH):
@@ -1761,6 +1794,544 @@ def shatter_style():
     return value if value in SHATTER_STYLES else "curtain"
 
 
+# ------------------------------------------------------------------- sites
+#
+# Per-site scripts and styles: "make this site behave the way I want". Written
+# by hand or by the user's agent (see the skill in `skills/`), kept as plain
+# files that can be read, disabled and deleted.
+#
+# What keeps them safe is where they run, not what they promise: the extension
+# injects them into the *page's own world*, where there are no extension APIs at
+# all. A site script cannot reach the bridge, the host, the CLI or any of
+# Noren's state; the worst it can do is make one site look wrong, which
+# `noren site off` undoes. One host each, never on Noren's own pages.
+
+SITES_DIR = os.path.join(os.path.dirname(SETS_FILE), "sites")
+SITES_INDEX = os.path.join(SITES_DIR, "index.json")
+
+
+def noren_root():
+    """Where Noren itself lives -- this file's checkout or plugin directory."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def skill_path():
+    """The site-script skill, as a path an agent can read without looking."""
+    path = os.path.join(noren_root(), "skills", "noren-site", "SKILL.md")
+    return path if os.path.exists(path) else ""
+SITE_MAX_BYTES = 128 * 1024
+# Not a sandbox -- the world is the sandbox. These are a shove in the ribs for
+# the reviewer: a site script that talks to the network is doing something other
+# than styling a page.
+SITE_SUSPICIOUS = ("fetch(", "XMLHttpRequest", "import(", "navigator.sendBeacon",
+                   "WebSocket", "eval(", "document.cookie", "localStorage")
+
+
+def site_host(text):
+    """`x.example`, from a host, a url, or something close to either."""
+    raw = str(text or "").strip().lower()
+    if not raw:
+        return ""
+    raw = re.sub(r"^[a-z][a-z0-9+.-]*://", "", raw)
+    raw = raw.split("/")[0].split("?")[0].split("#")[0]
+    raw = raw.split("@")[-1].split(":")[0]
+    raw = raw.removeprefix("www.")
+    return raw if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$", raw) else ""
+
+
+def load_sites():
+    try:
+        with open(SITES_INDEX, "r") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_sites(index):
+    os.makedirs(SITES_DIR, exist_ok=True)
+    tmp = SITES_INDEX + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(index, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.replace(tmp, SITES_INDEX)
+
+
+def site_files(host):
+    return (os.path.join(SITES_DIR, host + ".css"),
+            os.path.join(SITES_DIR, host + ".js"))
+
+
+def site_check(path):
+    """Refuse what should not be installed; warn about what deserves a look."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        sys.exit(f"noren site: cannot read {path}")
+    if size > SITE_MAX_BYTES:
+        sys.exit(f"noren site: {os.path.basename(path)} is {size} bytes; "
+                 f"the limit is {SITE_MAX_BYTES}")
+    with open(path, "r", errors="replace") as fh:
+        body = fh.read()
+
+    if path.endswith(".js") and shutil.which("node"):
+        checked = subprocess.run(["node", "--check", path],
+                                 capture_output=True, text=True)
+        if checked.returncode != 0:
+            sys.exit("noren site: that script does not parse\n"
+                     + checked.stderr.strip())
+
+    found = sorted({token for token in SITE_SUSPICIOUS if token in body})
+    return found
+
+
+def front_page_host():
+    """The site of the page in front of you, for the commands that default to it."""
+    active = hypr_json("activewindow") or {}
+    cls = (active.get("class") or "").lower()
+    if not cls.startswith("chrome-"):
+        return ""
+    if bridge_up():
+        state = call({"cmd": "status"}).get("state") or {}
+        found = site_host(state.get("url") or "")
+        if found:
+            return found
+    # `chrome-x.example__-Default` carries the host when the bridge is not up.
+    return site_host(re.sub(r"^chrome-", "", cls).split("__")[0].replace("_", "/"))
+
+
+def site_inspect(host=None):
+    """What the page in front of you is made of, for whoever writes the script.
+
+    Selectors guessed from the outside are the reason site scripts rot. This
+    reads the live page -- the one you are logged into -- and prints a structural
+    outline: the landmarks, what is big, and how to name them.
+    """
+    if not bridge_up():
+        sys.exit("noren site inspect: the browser is not running")
+    target = site_host(host) if host else front_page_host()
+    if not target:
+        sys.exit("noren site inspect: no page in front of you; name a site")
+    res = call({"cmd": "inspect", "host": target})
+    if res.get("ok") is False:
+        sys.exit(f"noren: {res.get('error', 'failed')}")
+    print(json.dumps(res.get("outline") or {}, indent=2)[:200000])
+    return 0
+
+
+def site_shot(host=None):
+    """A screenshot of that site's window, so a change can be looked at."""
+    target = site_host(host) if host else front_page_host()
+    if not target:
+        sys.exit("noren site shot: no page in front of you; name a site")
+    for win in noren_windows():
+        cls = (win.get("class") or "").lower()
+        at = win.get("at") or []
+        size = win.get("size") or []
+        if target.replace(".", "_") not in cls.replace(".", "_"):
+            continue
+        if len(at) < 2 or len(size) < 2:
+            continue
+        path = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp",
+                            f"noren-shot-{target}.png")
+        try:
+            done = subprocess.run(
+                ["grim", "-g", f"{at[0]},{at[1]} {size[0]}x{size[1]}", path],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        except (OSError, subprocess.SubprocessError) as exc:
+            sys.exit(f"noren site shot: {exc}")
+        if done.returncode != 0:
+            sys.exit("noren site shot: grim could not capture that window")
+        print(path)
+        return 0
+    sys.exit(f"noren site shot: no open window for {target}")
+
+
+def site_add(host, path, kind=None):
+    host = site_host(host)
+    if not host:
+        sys.exit("noren site add: needs a site, like x.example")
+    if not path or not os.path.exists(path):
+        sys.exit("noren site add: needs a file to install")
+    kind = kind or ("css" if path.endswith(".css") else "js")
+    if kind not in ("css", "js"):
+        sys.exit("noren site add: a site script is .css or .js")
+
+    warnings = site_check(path)
+    css_path, js_path = site_files(host)
+    target = css_path if kind == "css" else js_path
+    os.makedirs(SITES_DIR, exist_ok=True)
+    shutil.copyfile(path, target)
+
+    index = load_sites()
+    entry = index.get(host) or {}
+    entry["enabled"] = True
+    entry[kind] = os.path.basename(target)
+    entry["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    index[host] = entry
+    save_sites(index)
+
+    print(f"noren: installed {kind} for {host} -> {target}")
+    for token in warnings:
+        print(f"       note: uses {token} — read it before trusting it")
+    print("       it runs in the page's own world: no access to Noren, "
+          "the bridge, or your data")
+    site_apply(host)
+    return 0
+
+
+def site_list(as_json=False):
+    index = load_sites()
+    if as_json:
+        print(json.dumps(index, indent=2, sort_keys=True))
+        return 0
+    if not index:
+        print("noren: no site scripts yet")
+        return 0
+    for host in sorted(index):
+        entry = index[host] or {}
+        parts = [kind for kind in ("css", "js") if entry.get(kind)]
+        state = "on " if entry.get("enabled", True) else "off"
+        when = str(entry.get("updated") or "").replace("T", " ")[:16]
+        print(f"{state} {host:<28} {', '.join(parts) or '(nothing)':<9} {when}")
+        # The paths, because the next thing anyone asks is "what does it do?"
+        for path in site_files(host):
+            if os.path.exists(path):
+                print(f"      {path}")
+    return 0
+
+
+def site_apply(host, quiet=False):
+    """Run an installed script on the pages that are already open.
+
+    Installing a script used to change nothing until the user reloaded, which
+    is indistinguishable from a script that does not work -- and it is what
+    happened the first time an agent wrote one: it reported success over an
+    unchanged page. So the install ends here, on the live page.
+
+    Nothing to do when the browser is closed: the script is on disk, and the
+    next page load picks it up.
+    """
+    host = site_host(host)
+    if not host:
+        return 0
+    if not bridge_up():
+        if not quiet:
+            print("       browser closed — it runs when that page next opens")
+        return 0
+    res = call({"cmd": "applySite", "host": host}, fallback=lambda: {"ok": False})
+    if quiet:
+        return 0
+    if res.get("ok") and res.get("applied"):
+        pages = res["applied"]
+        print(f"       running on {pages} open page{'' if pages == 1 else 's'}")
+    elif res.get("ok"):
+        print(f"       nothing open on {host} — it runs when you go there")
+    return 0
+
+
+def site_toggle(host, on):
+    host = site_host(host)
+    index = load_sites()
+    if host not in index:
+        sys.exit(f"noren site: nothing installed for {host or '?'}")
+    index[host]["enabled"] = on
+    save_sites(index)
+    print(f"noren: {host} {'on' if on else 'off'}")
+    if on:
+        site_apply(host)
+    else:
+        # A script that has already run cannot be un-run: css could be pulled
+        # back out, js could not, so both wait for a reload rather than half
+        # of the change vanishing and the other half staying.
+        print("       reload the page to get it back as the site made it")
+    return 0
+
+
+def site_remove(host):
+    host = site_host(host)
+    index = load_sites()
+    if host not in index:
+        sys.exit(f"noren site: nothing installed for {host or '?'}")
+    for path in site_files(host):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    del index[host]
+    save_sites(index)
+    print(f"noren: removed {host}")
+    return 0
+
+
+# --------------------------------------------------------------------- ask
+#
+# Hand the page in front of you to the user's own agent -- whichever one they
+# chose in Omarchy. Noren supplies what they cannot type: the rendered page they
+# are logged into, its structure, and where to put the answer.
+#
+# The agent runs in its own terminal, because that is where its approvals and
+# tool output belong; wrapping every agent CLI's stream in our own chat window
+# would fight the interface the user picked. What comes back to Noren is a
+# single answer file, which the overlay renders when it appears.
+
+ASK_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "noren-ask")
+
+
+def default_agent():
+    try:
+        out = subprocess.run(["omarchy-default-agent"], capture_output=True,
+                             text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def page_text():
+    """The page in front of you, as the extension sees it."""
+    if not bridge_up():
+        sys.exit("noren ask: the browser is not running")
+    res = call({"cmd": "extract"})
+    if res.get("ok") is False:
+        sys.exit(f"noren: {res.get('error', 'failed')}")
+    return res.get("page") or {}
+
+
+def ask(question, want_site=False, dry_run=False):
+    """Put a question about this page to the agent, and say where the answer goes."""
+    agent = default_agent()
+    if not agent:
+        sys.exit("noren ask: no default agent set — run `omarchy default agent`")
+
+    page = page_text()
+    url = page.get("url") or ""
+    host = site_host(url)
+    if not url:
+        sys.exit("noren ask: no page in front of you")
+
+    os.makedirs(ASK_DIR, exist_ok=True)
+    stamp = time.strftime("%H%M%S")
+    context_path = os.path.join(ASK_DIR, f"page-{stamp}.md")
+    answer_path = os.path.join(ASK_DIR, f"answer-{stamp}.md")
+    status_path = os.path.join(ASK_DIR, f"status-{stamp}.txt")
+    # Something to show the moment the panel shrinks, before the agent has had
+    # a chance to say anything of its own.
+    with open(status_path, "w") as fh:
+        fh.write("waking your agent")
+
+    context = [
+        f"# {page.get('title') or host}",
+        f"<{url}>",
+        "",
+    ]
+    if page.get("selection"):
+        context += ["## The user's selection", "", page["selection"], ""]
+    context += ["## Page text", "", page.get("text") or "(the page had no text)"]
+    if page.get("truncated"):
+        context += ["", "_(truncated)_"]
+    with open(context_path, "w") as fh:
+        fh.write("\n".join(context))
+
+    noren_bin = os.path.abspath(__file__)
+    skill = skill_path()
+    # The one line that turns a spinner into a narration. Overwrite rather than
+    # append, because the panel shows the file, not a log -- and asking for
+    # progress in the prompt works with whichever agent Omarchy is set to,
+    # where parsing twelve different CLIs' output would not.
+    narrate = (
+        f"As you go, keep {status_path} up to date: overwrite it (never append) "
+        f"with one short line, five or six words, present tense, naming what "
+        f"you are doing right now -- \"reading the page\", \"writing the "
+        f"stylesheet\", \"checking how it looks\". Noren shows that line to "
+        f"them while they wait, and it is the only thing they can see from "
+        f"here. "
+    )
+    # Where the skill is, spelled out. The agent starts in a terminal that knows
+    # nothing about Noren: the first attempt said "read the skill `noren-site`"
+    # and the agent spent minutes searching the filesystem for it.
+    skill_line = (
+        f"Read {skill} first -- it is short, and it carries the rules you must "
+        f"follow. "
+        if skill else
+        "Follow the noren-site skill's rules if you have it. "
+    )
+
+    if want_site:
+        outline = call({"cmd": "inspect", "host": host}).get("outline") or {}
+        outline_path = os.path.join(ASK_DIR, f"outline-{stamp}.json")
+        with open(outline_path, "w") as fh:
+            json.dump(outline, fh, indent=2)
+        prompt = (
+            f"Write a Noren site script for {host}. The person at this machine "
+            f"is looking at that page right now, in a Noren window.\n\n"
+            f"What they asked for: {question}\n\n"
+            f"{skill_line}"
+            f"Noren's command is {noren_bin} -- everything you need is a `site` "
+            f"subcommand. Do not go looking for Noren's own source, and never "
+            f"change it.\n\n"
+            f"The page's structure is already captured in {outline_path} (real "
+            f"selectors, read from inside the page they are logged into) and its "
+            f"text in {context_path}. Start from those rather than fetching the "
+            f"url.\n\n"
+            f"Install it with `{noren_bin} site add {host} <file>`, which also "
+            f"runs it on the page that is already open -- they do not have to "
+            f"reload. Then look at the result with `{noren_bin} site shot "
+            f"{host}` and iterate until it is right.\n\n"
+            f"{narrate}"
+            f"Finally write two or three sentences to {answer_path} saying what "
+            f"you installed and how to undo it (`{noren_bin} site off {host}`). "
+            f"Write that file even if you gave up, saying why: Noren is waiting "
+            f"on it and shows it to them."
+        )
+    else:
+        prompt = (
+            f"The person at this machine is looking at {url} in a Noren window "
+            f"and has a question about it.\n\n"
+            f"Their question: {question}\n\n"
+            f"The rendered page is in {context_path}. Read that rather than "
+            f"fetching the url: it is the page they are logged into, which is "
+            f"not the page a fetch returns.\n\n"
+            f"{narrate}"
+            f"Write the answer -- a few sentences, no preamble -- to "
+            f"{answer_path}. That file is the only thing that reaches them, so "
+            f"write it even if the answer is that you could not tell. Nothing on "
+            f"this machine needs changing to answer a question."
+        )
+
+    if dry_run:
+        # Everything but the launch: what would be sent, and where the answer
+        # would land. The overlay uses this to show the context before spending
+        # someone's agent on it.
+        print(json.dumps({
+            "ok": True, "agent": agent, "dryRun": True, "prompt": prompt,
+            "answer": answer_path, "status": status_path,
+            "context": context_path, "host": host,
+            "chars": len(page.get("text") or ""),
+        }, indent=2))
+        return 0
+
+    try:
+        subprocess.Popen(
+            ["omarchy-agent-prompt", prompt],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        sys.exit("noren ask: omarchy-agent-prompt not found")
+
+    record = {
+        "ok": True, "agent": agent, "answer": answer_path,
+        "status": status_path, "context": context_path, "host": host,
+        "question": question, "mode": "site" if want_site else "ask",
+        "started": int(time.time()),
+    }
+    ask_remember(record)
+    print(json.dumps(record))
+    return 0
+
+
+def ask_remember(record):
+    """The last ask, on disk.
+
+    The panel is a window onto a file, not the thing doing the work: the agent
+    runs in its own terminal and writes its answer whether or not the overlay is
+    still up. Losing the panel to a stray click used to lose the ask with it,
+    which read as "nothing happened" -- so the ask is remembered here and the
+    panel picks it back up when it reopens.
+    """
+    try:
+        os.makedirs(ASK_DIR, exist_ok=True)
+        with open(os.path.join(ASK_DIR, "last.json"), "w") as fh:
+            json.dump(record, fh)
+    except OSError:
+        pass
+
+
+def read_status(path):
+    """The agent's own last word on what it is doing.
+
+    The last line rather than the whole file: the instruction says overwrite,
+    but an agent that appends instead should still read as progress rather than
+    as a log.
+    """
+    try:
+        with open(path or "", "r", errors="replace") as fh:
+            lines = [line.strip() for line in fh.read().splitlines() if line.strip()]
+    except OSError:
+        return ""
+    return lines[-1][:120] if lines else ""
+
+
+def ask_last():
+    """What the panel shows when it opens: the last ask, and its answer if it
+    has landed."""
+    try:
+        with open(os.path.join(ASK_DIR, "last.json"), "r") as fh:
+            record = json.load(fh)
+    except (OSError, ValueError):
+        print(json.dumps({"ok": True, "empty": True}))
+        return 0
+    answer = ""
+    try:
+        with open(record.get("answer") or "", "r", errors="replace") as fh:
+            answer = fh.read().strip()
+    except OSError:
+        answer = ""
+    record["answerText"] = answer
+    record["done"] = bool(answer)
+    record["statusText"] = read_status(record.get("status"))
+    print(json.dumps(record))
+    return 0
+
+
+AGENT_CLASS = "org.omarchy.agent"
+
+
+def agent_window():
+    """The agent's own terminal, if one is open.
+
+    Omarchy launches every agent with one app id, so this finds the terminal
+    whichever agent is set. The most recently focused one when there are
+    several: that is the one this ask started, or near enough that raising it
+    is what the user meant.
+    """
+    best = None
+    for client in hypr_json("clients") or []:
+        if (client.get("class") or "").lower() != AGENT_CLASS:
+            continue
+        if best is None or client.get("focusHistoryID", 99) < best.get("focusHistoryID", 99):
+            best = client
+    return best
+
+
+def agent_raise():
+    """Put the agent's terminal in front -- the panel's `watch` affordance.
+
+    Waits a moment for one to appear: the click usually comes seconds after the
+    ask, and a terminal that is still starting would otherwise look like a
+    button that does nothing.
+    """
+    for _ in range(12):
+        win = agent_window()
+        if win and win.get("address"):
+            return raise_window(win["address"])
+        time.sleep(0.2)
+    print("noren: no agent terminal open")
+    return 0
+
+
+def ask_sweep():
+    """Old questions and answers are clutter; they live in the runtime dir."""
+    try:
+        cutoff = time.time() - 6 * 3600
+        for name in os.listdir(ASK_DIR):
+            path = os.path.join(ASK_DIR, name)
+            if os.path.getmtime(path) < cutoff:
+                os.unlink(path)
+    except OSError:
+        pass
+
+
 def close_window():
     """Close the page in front of you.
 
@@ -1898,8 +2469,69 @@ def main(argv):
     if cmd == "doctor":
         return doctor()
 
+    if cmd == "log":
+        path = os.path.join(
+            os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+            "noren", "host.log",
+        )
+        count = 40
+        if "-n" in rest:
+            at = rest.index("-n")
+            if at + 1 < len(rest) and rest[at + 1].isdigit():
+                count = int(rest[at + 1])
+        try:
+            with open(path, "r", errors="replace") as fh:
+                lines = fh.read().splitlines()
+        except OSError:
+            print(f"noren: nothing logged yet ({path})")
+            return 0
+        for line in lines[-count:]:
+            print(line)
+        return 0
+
     if cmd == "close":
         return close_window()
+
+    if cmd == "ask":
+        if "--last" in rest:
+            return ask_last()
+        ask_sweep()
+        want_site = "--site" in rest
+        dry_run = "--dry-run" in rest
+        question = " ".join(a for a in rest
+                            if a not in ("--site", "--dry-run")).strip()
+        if not question:
+            sys.exit("noren ask: needs a question")
+        return ask(question, want_site=want_site, dry_run=dry_run)
+
+    if cmd == "agent":
+        if rest and rest[0] == "raise":
+            return agent_raise()
+        # What the overlay shows before anything is typed.
+        print(json.dumps({"agent": default_agent(),
+                          "window": bool(agent_window())}))
+        return 0
+
+    if cmd == "site":
+        sub = rest[0] if rest else "list"
+        arg = rest[1] if len(rest) > 1 else None
+        if sub == "add":
+            return site_add(arg, rest[2] if len(rest) > 2 else None)
+        if sub in ("list", "ls"):
+            return site_list(as_json="--json" in rest)
+        if sub == "on":
+            return site_toggle(arg, True)
+        if sub == "off":
+            return site_toggle(arg, False)
+        if sub in ("rm", "remove"):
+            return site_remove(arg)
+        if sub == "apply":
+            return site_apply(arg)
+        if sub == "inspect":
+            return site_inspect(arg)
+        if sub == "shot":
+            return site_shot(arg)
+        sys.exit(f"noren site: unknown subcommand '{sub}'")
 
     if cmd == "search":
         config = load_config()

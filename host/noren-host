@@ -38,6 +38,9 @@ SETS_FILE = os.path.join(
 )
 START_FILE = os.path.join(os.path.dirname(SETS_FILE), "start.json")
 CONFIG_FILE = os.path.join(os.path.dirname(SETS_FILE), "config.json")
+SITES_DIR = os.path.join(os.path.dirname(SETS_FILE), "sites")
+SITES_INDEX = os.path.join(SITES_DIR, "index.json")
+SITE_MAX_BYTES = 128 * 1024
 
 
 # Settings the CLI owns and the page-side UI may change. Each maps to the
@@ -86,8 +89,31 @@ _theme = None
 _theme_stamp = None
 
 
+# Stderr belongs to Chromium and is thrown away with it, which is no use the
+# morning after: "a window appeared and I have no idea how" needs a record that
+# outlives the browser. Small, capped, and local.
+LOG_FILE = os.path.join(
+    os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+    "noren", "host.log",
+)
+LOG_MAX_BYTES = 256 * 1024
+
+
 def log(*args):
-    print("noren-host:", *args, file=sys.stderr, flush=True)
+    line = " ".join(str(a) for a in args)
+    print("noren-host:", line, file=sys.stderr, flush=True)
+    try:
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > LOG_MAX_BYTES:
+            # Keep the second half rather than rotating: one file, no growth.
+            with open(LOG_FILE, "r", errors="replace") as fh:
+                kept = fh.read()[LOG_MAX_BYTES // 2:]
+            with open(LOG_FILE, "w") as fh:
+                fh.write(kept)
+        with open(LOG_FILE, "a") as fh:
+            fh.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), line))
+    except OSError:
+        pass
 
 
 # --------------------------------------------------------------- native messaging
@@ -284,10 +310,12 @@ def normalize_url(url):
 
 def spawn_window(url):
     """Open a URL as its own chrome-less Hyprland window."""
+    asked = url
     url = normalize_url(url)
     if not url:
-        log("refusing to open:", url)
+        log("refused to open (not a web address):", repr(asked))
         return
+    log("spawning window:", url)
     _spawn_app(url)
 
 
@@ -774,6 +802,60 @@ def set_op(msg):
     write_native({"type": "setOpResult", "id": msg.get("id"), "ok": ok, "error": error})
 
 
+def site_summary():
+    """The site scripts, for the start page's settings panel.
+
+    Summary only -- host, kinds, on or off, when it changed. The page has no
+    business with the source, and reading a file into an extension page would
+    put a script the agent wrote somewhere it could be pasted by accident.
+    """
+    try:
+        with open(SITES_INDEX, "r") as fh:
+            index = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(index, dict):
+        return []
+
+    out = []
+    for host in sorted(index):
+        entry = index[host] if isinstance(index[host], dict) else {}
+        kinds = [kind for kind in ("css", "js") if entry.get(kind)]
+        out.append({
+            "host": host,
+            "kinds": kinds,
+            "enabled": entry.get("enabled", True) is not False,
+            "updated": str(entry.get("updated") or ""),
+        })
+    return out
+
+
+def site_op(msg):
+    """Turn a site script on or off, or throw it away -- through the CLI.
+
+    The same shape as `set_op`: a fixed subcommand and a host, nothing from the
+    message used as a flag. Turning one on applies it to the open pages, which
+    the CLI does; turning one off cannot un-inject what a page already ran, so
+    the page says as much.
+    """
+    op = msg.get("op")
+    host = str(msg.get("host") or "")
+    if op not in ("on", "off", "rm") or not host or host.startswith("-"):
+        write_native({"type": "siteOpResult", "id": msg.get("id"),
+                      "ok": False, "error": "unknown site operation"})
+        return
+    try:
+        out = subprocess.run([NOREN_BIN, "site", op, host],
+                             capture_output=True, text=True, timeout=15)
+        ok = out.returncode == 0
+        error = "" if ok else (out.stderr.strip() or out.stdout.strip() or "failed")
+    except (OSError, subprocess.SubprocessError) as exc:
+        ok, error = False, str(exc)
+    error = error.replace("noren site: ", "").replace("noren: ", "")
+    write_native({"type": "siteOpResult", "id": msg.get("id"),
+                  "ok": ok, "error": error})
+
+
 def open_set(name, replace=False):
     """Open a set through the CLI, which owns grouping.
 
@@ -939,6 +1021,66 @@ def shatter_style_name(config):
     return value if value in ("curtain", "glass") else "curtain"
 
 
+_sites_stamp = None
+
+
+def read_sites():
+    """Per-site scripts, as the extension wants them: host -> {css, js, enabled}.
+
+    The CLI writes these files; this only reads. They are handed to the page's
+    own world, where nothing of Noren's is reachable, so the worst a bad one can
+    do is break the site it belongs to.
+    """
+    try:
+        with open(SITES_INDEX, "r") as fh:
+            index = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(index, dict):
+        return {}
+
+    out = {}
+    for host, entry in index.items():
+        if not isinstance(entry, dict) or entry.get("enabled") is False:
+            continue
+        bundle = {"enabled": True}
+        for kind in ("css", "js"):
+            name = entry.get(kind)
+            if not name:
+                continue
+            path = os.path.join(SITES_DIR, os.path.basename(str(name)))
+            try:
+                if os.path.getsize(path) > SITE_MAX_BYTES:
+                    log("site script too large, skipping:", path)
+                    continue
+                with open(path, "r", errors="replace") as fh:
+                    bundle[kind] = fh.read()
+            except OSError:
+                continue
+        if bundle.get("css") or bundle.get("js"):
+            out[host] = bundle
+    return out
+
+
+def sites_stamp():
+    """Something that changes when any site script does."""
+    try:
+        stamps = [os.path.getmtime(SITES_INDEX)]
+    except OSError:
+        return None
+    try:
+        for name in sorted(os.listdir(SITES_DIR)):
+            if name.endswith((".css", ".js")):
+                stamps.append(os.path.getmtime(os.path.join(SITES_DIR, name)))
+    except OSError:
+        pass
+    return tuple(stamps)
+
+
+def push_sites():
+    write_native({"type": "sites", "sites": read_sites()})
+
+
 def push_config():
     """Hand the extension the settings it needs to honour.
 
@@ -1066,13 +1208,18 @@ def watch_theme():
         if stamp != _config_stamp:
             _config_stamp = stamp
             push_config()
+        global _sites_stamp
+        current = sites_stamp()
+        if current != _sites_stamp:
+            _sites_stamp = current
+            push_sites()
 
 
 # ---------------------------------------------------------------- socket server
 
 
 def handle_client(conn):
-    global _last_state
+    global _last_state, _sites_stamp
     with conn:
         buf = b""
         while b"\n" not in buf:
@@ -1090,7 +1237,8 @@ def handle_client(conn):
         # Commands that act on "the window you're looking at" get a title hint
         # from Hyprland, since Chromium's own idea of focus is unreliable when
         # the call comes from a terminal or a keybind.
-        if cmd in ("navigate", "back", "forward", "reload", "peel", "saveBookmark"):
+        if cmd in ("navigate", "back", "forward", "reload", "peel", "saveBookmark",
+                   "extract", "inspect", "home", "toggleBar"):
             hint = hypr_target_title()
             if hint:
                 req["matchTitle"] = hint
@@ -1122,6 +1270,15 @@ def handle_client(conn):
             # Fire and forget: the extension dies mid-answer by design.
             write_native({"type": "command", "id": next(_ids), "cmd": "reloadSelf"})
             reply = {"ok": True}
+        elif cmd == "applySite":
+            # `noren site add` just wrote a file. The extension learns about
+            # site scripts from a push, and its poll is seconds away -- so push
+            # now, in front of the injection, or the page would be styled with
+            # the script it had before (usually none).
+            _sites_stamp = sites_stamp()
+            push_sites()
+            reply = ask_extension("applySite", host=req.get("host"))
+
         elif cmd == "bar":
             win = hypr_browser_window()
             if win and win.get("chromeless") and win.get("title"):
@@ -1228,6 +1385,7 @@ def main():
     load_theme(force=True)
     push_theme()
     push_config()
+    push_sites()
     # Before the watcher starts, so it does not race this first push.
     threading.Thread(target=lambda: (push_wallpaper(force=True),
                                      watch_theme()), daemon=True).start()
@@ -1287,6 +1445,13 @@ def main():
             # The start page lists sets but cannot read files; the worker asks
             # on its behalf.
             write_native({"type": "sets", "id": msg.get("id"), "sets": read_sets()})
+
+        elif kind == "getSites":
+            write_native({"type": "siteList", "id": msg.get("id"),
+                          "sites": site_summary()})
+
+        elif kind == "siteOp":
+            threading.Thread(target=site_op, args=(msg,), daemon=True).start()
 
         elif kind == "openSet":
             open_set(msg.get("name"), replace=bool(msg.get("replace")))

@@ -615,6 +615,21 @@ body.has-wallpaper .settings {
 }
 .setting input.text:focus { border-bottom-color: var(--noren-accent); }
 
+/* One line per site with a script: what it is, a switch, and a delete. The
+   switch is the reversible half; delete takes the file with it. */
+.sites { margin-top: 10px; display: flex; flex-direction: column; gap: 2px; }
+.site {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-top: 1px solid var(--noren-border);
+}
+.site .what { flex: 1; min-width: 0; }
+.site .name { font-size: 13px; }
+.site .why { margin-top: 2px; }
+
+
 /* The curtain the plugin is named after: a noren hangs in a shop doorway and
    you part it to go through. Opening settings parts it -- two halves sweep
    aside, the panel hangs down like cloth, and the rows settle in behind. */

@@ -29,6 +29,11 @@ function connect() {
       refreshBars();
       return;
     }
+    if (msg && msg.type === 'sites') {
+      siteScripts = (msg.sites && typeof msg.sites === 'object') ? msg.sites : {};
+      chrome.storage.local.set({ siteScripts }).catch(() => {});
+      return;
+    }
     if (msg && msg.type === 'config') {
       // Settings the CLI owns. Kept in storage as well as in memory: this
       // worker is torn down whenever the browser thinks it is idle, and a
@@ -49,7 +54,9 @@ function connect() {
       chrome.storage.local.set({ wallpaper: msg.data || null }).catch(() => {});
       return;
     }
-    if (msg && (msg.type === 'sets' || msg.type === 'setOpResult' || msg.type === 'group')) {
+    if (msg && (msg.type === 'sets' || msg.type === 'setOpResult'
+      || msg.type === 'siteList' || msg.type === 'siteOpResult'
+      || msg.type === 'group')) {
       const settle = pendingHost.get(msg.id);
       pendingHost.delete(msg.id);
       if (settle) settle(msg);
@@ -263,6 +270,76 @@ async function handleCommand(msg) {
       if ((tab.url || '').startsWith(START_URL)) return reply({ ok: true, already: true });
       await chrome.tabs.update(tab.id, { url: START_URL });
       return reply({ ok: true });
+    }
+
+    case 'extract': {
+      // The page as text, for handing to an agent. Read from the live document,
+      // which is the one the user is logged into -- a fetch of the same url
+      // gets a different page, or a wall.
+      const tab = await focusedTab(msg.matchTitle);
+      if (!tab) return reply({ ok: false, error: 'no page in front of you' });
+      try {
+        const [result] = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            const pick = document.querySelector('main, article, [role="main"]') || document.body;
+            const text = (pick.innerText || '').replace(/\n{3,}/g, '\n\n').trim();
+            return {
+              url: location.href,
+              title: document.title,
+              selection: String(getSelection() || '').trim().slice(0, 4000),
+              // Enough for an agent to work with, not so much that it is all
+              // the agent reads.
+              text: text.slice(0, 40000),
+              truncated: text.length > 40000,
+            };
+          },
+        });
+        return reply({ ok: true, page: (result && result.result) || {} });
+      } catch (e) {
+        return reply({ ok: false, error: 'cannot read that page' });
+      }
+    }
+
+    case 'inspect': {
+      // The page in front of you, read from the inside.
+      const tab = await focusedTab(msg.matchTitle);
+      if (!tab) return reply({ ok: false, error: 'no page in front of you' });
+      try {
+        const [result] = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: norenOutline,
+        });
+        return reply({ ok: true, outline: (result && result.result) || {} });
+      } catch (e) {
+        return reply({ ok: false, error: 'cannot read that page' });
+      }
+    }
+
+    case 'applySite': {
+      // A script that was just installed should be *running*, not waiting for
+      // the user to reload. The old flow ended with the agent saying "done"
+      // over a page that had not changed -- which reads as a broken feature,
+      // and is the one thing a site script must never do.
+      //
+      // The host pushes the new script before sending this, so `siteScripts`
+      // is already current. Both kinds go in: css so the page restyles, js
+      // because a well-written one guards its own re-entry (the skill says so)
+      // and the live page is what the user is looking at.
+      const wanted = String(msg.host || '').replace(/^www\./, '').toLowerCase();
+      if (!wanted) return reply({ ok: false, error: 'needs a site' });
+      let tabs = [];
+      try {
+        tabs = await chrome.tabs.query({});
+      } catch (e) {
+        tabs = [];
+      }
+      const hit = tabs.filter((tab) => tab.url && siteHostOf(tab.url) === wanted);
+      for (const tab of hit) {
+        await applySite(tab.id, tab.url, 'css');
+        await applySite(tab.id, tab.url, 'js');
+      }
+      return reply({ ok: true, applied: hit.length });
     }
 
     case 'toggleBar': {
@@ -619,6 +696,161 @@ async function startSuggestions(limit) {
     .slice(0, limit);
 }
 
+// ---------------------------------------------------------------- site scripts
+//
+// Per-site css and js, written by hand or by the user's agent, kept as files
+// the host reads and pushes here.
+//
+// They are injected into the page's OWN world (`world: 'MAIN'`), which is the
+// whole security model: there are no extension APIs there, so a site script
+// cannot reach this worker, the native host, the CLI, sets, bookmarks or any
+// other page. It can only affect the site it was installed for. Anything worse
+// than a broken layout is not reachable from where it runs.
+
+let siteScripts = {};   // host -> { css, js, enabled }
+chrome.storage.local
+  .get({ siteScripts: {} })
+  .then((got) => {
+    // The host pushes these on connect; this only covers the gap before it does.
+    if (got.siteScripts && typeof got.siteScripts === 'object') {
+      siteScripts = got.siteScripts;
+    }
+  })
+  .catch(() => {});
+
+function siteHostOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+  } catch (e) {
+    return '';
+  }
+}
+
+function siteFor(url) {
+  const host = siteHostOf(url);
+  if (!host) return null;
+  const entry = siteScripts[host];
+  if (!entry || entry.enabled === false) return null;
+  return entry;
+}
+
+// Navigation events rather than tab status: `status === 'complete'` is not
+// something to hang a feature on -- it can arrive late, or not at all, and the
+// shared tabs.onUpdated handler returns early when it peels a tab. onCommitted
+// is the earliest a document exists (styles go in before the first paint, so
+// there is no flash of the unstyled site); onCompleted is when a script should
+// find the page it was written against.
+chrome.webNavigation.onCommitted.addListener((details) => {
+  if (details.frameId !== 0) return;
+  applySite(details.tabId, details.url, 'css');
+});
+chrome.webNavigation.onCompleted.addListener((details) => {
+  if (details.frameId !== 0) return;
+  applySite(details.tabId, details.url, 'js');
+});
+
+async function applySite(tabId, url, what) {
+  const entry = siteFor(url);
+  if (!entry) return;
+  // Never on Noren's own pages: the start page is an extension page, where a
+  // site script has no business and Chromium would refuse anyway.
+  if (!/^https?:/i.test(url)) return;
+
+  if (entry.css && what !== 'js') {
+    try {
+      await chrome.scripting.insertCSS({ target: { tabId }, css: entry.css, origin: 'AUTHOR' });
+    } catch (e) {
+      // The page went away, or refuses injection.
+    }
+  }
+  if (entry.js && what !== 'css') {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        // Wrapped, so a stray `return` or a leaked name cannot collide with the
+        // page's own script.
+        func: (source, where) => {
+          try {
+            new Function(source)();
+          } catch (err) {
+            console.warn('noren site script for ' + where + ':', err);
+          }
+        },
+        args: [entry.js, siteHostOf(url)],
+      });
+    } catch (e) {
+      // Same.
+    }
+  }
+}
+
+// What a page is made of, for whoever is writing a script for it: landmarks,
+// the biggest blocks, and a usable selector for each. Read from the live page,
+// which is the one the user is logged into -- a fetch from outside sees a
+// different page, or a wall.
+function norenOutline() {
+  const selectorFor = (node) => {
+    if (node.id) return '#' + CSS.escape(node.id);
+    const parts = [];
+    let at = node;
+    for (let depth = 0; at && at.nodeType === 1 && depth < 4; depth++) {
+      let part = at.tagName.toLowerCase();
+      const classes = (at.className && typeof at.className === 'string')
+        ? at.className.trim().split(/\s+/).filter((c) => c && !/^\d/.test(c)).slice(0, 2)
+        : [];
+      if (classes.length) part += '.' + classes.map((c) => CSS.escape(c)).join('.');
+      parts.unshift(part);
+      if (at.id) {
+        parts[0] = '#' + CSS.escape(at.id);
+        break;
+      }
+      at = at.parentElement;
+    }
+    return parts.join(' > ');
+  };
+
+  const describe = (node) => {
+    const box = node.getBoundingClientRect();
+    return {
+      selector: selectorFor(node),
+      tag: node.tagName.toLowerCase(),
+      role: node.getAttribute('role') || '',
+      label: (node.getAttribute('aria-label') || '').slice(0, 60),
+      width: Math.round(box.width),
+      height: Math.round(box.height),
+      fixed: getComputedStyle(node).position === 'fixed',
+      text: (node.innerText || '').trim().slice(0, 80),
+    };
+  };
+
+  const landmarks = Array.from(
+    document.querySelectorAll('header, nav, main, aside, footer, [role="navigation"], [role="main"], [role="complementary"]'),
+  ).slice(0, 20).map(describe);
+
+  // The big blocks, which is usually what someone wants to hide or widen.
+  const blocks = Array.from(document.querySelectorAll('body *'))
+    .filter((node) => {
+      const box = node.getBoundingClientRect();
+      return box.width > 200 && box.height > 120 && node.children.length > 0;
+    })
+    .sort((a, b) => {
+      const ab = a.getBoundingClientRect();
+      const bb = b.getBoundingClientRect();
+      return bb.width * bb.height - ab.width * ab.height;
+    })
+    .slice(0, 25)
+    .map(describe);
+
+  return {
+    url: location.href,
+    title: document.title,
+    viewport: { width: innerWidth, height: innerHeight },
+    landmarks,
+    blocks,
+  };
+}
+
 // ---------------------------------------------------------------- start page
 //
 // The start page is an extension page, so it can read bookmarks and top sites
@@ -729,6 +961,16 @@ async function askSets() {
   return reply && Array.isArray(reply.sets) ? reply.sets : [];
 }
 
+async function askSiteList() {
+  // The index as the CLI keeps it: which sites have a script, what kind, and
+  // whether it is running. The page cannot read the files, and has no reason
+  // to -- it lists and toggles, it does not edit.
+  const reply = await askHost({ type: 'getSites' }, null, 3000);
+  return reply && Array.isArray(reply.sites) ? reply.sites : [];
+}
+
+const SITE_OPS = ['on', 'off', 'rm'];
+
 const SET_OPS = ['put', 'rm', 'save'];
 
 // A start page opened from a cold start loses a race it cannot see: Chromium
@@ -741,7 +983,35 @@ const SET_OPS = ['put', 'rm', 'save'];
 // tab has the url but no context. Checked twice, because at a cold start the
 // page may still be loading on the first look -- and reloading a healthy page is
 // never done, since a live one always has a context.
+// Windows Chromium parks on its new-tab page when the extension reloads.
+//
+// Reloading an unpacked extension orphans its pages: a start page window is
+// navigated to chrome://newtab/ and left there, keeping the app_id it was born
+// with. The result is a chrome-less window titled "New Tab" showing a search
+// page, appearing out of nowhere -- which is exactly what it looked like from
+// the outside, since nobody connects `noren reload-extension` with a window
+// changing under them minutes later.
+//
+// They are ours (an `app` window only exists because Noren made one), so put
+// them back to the page they were showing.
+const PARKED = ['chrome://newtab/', 'chrome://new-tab-page/'];
+
+async function restoreOrphans() {
+  try {
+    const windows = await chrome.windows.getAll({ populate: true });
+    for (const win of windows) {
+      if (win.type !== 'app') continue;
+      const tab = (win.tabs || [])[0];
+      if (!tab || !PARKED.includes(tab.url || '')) continue;
+      chrome.tabs.update(tab.id, { url: START_URL }).catch(() => {});
+    }
+  } catch (e) {
+    // Nothing open, or the browser is on its way down.
+  }
+}
+
 async function reviveStartPages() {
+  restoreOrphans();
   if (!chrome.runtime.getContexts) return;
   try {
     const tabs = await chrome.tabs.query({});
@@ -948,6 +1218,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .then((reply) => sendResponse({ ok: Boolean(reply.ok), error: reply.error || '' }));
       return true;
     }
+    case 'sites':
+      askSiteList().then((sites) => sendResponse({ ok: true, sites }));
+      return true;
+    case 'siteOp': {
+      // Turning one off or throwing it away, from the settings panel. The CLI
+      // owns the files; only a known operation and a host reach it.
+      if (!SITE_OPS.includes(msg.op)) {
+        sendResponse({ ok: false, error: 'unknown site operation' });
+        return false;
+      }
+      askHost({ type: 'siteOp', op: msg.op, host: String(msg.host || '') },
+        { ok: false, error: 'Noren did not answer' }, 15000)
+        .then((got) => sendResponse({ ok: Boolean(got.ok), error: got.error || '' }));
+      return true;
+    }
     case 'prefs':
       allPrefs().then((prefs) => sendResponse({ prefs }));
       return true;
@@ -1018,8 +1303,15 @@ function peelTrace(tabId, path, url) {
   console.log(`noren peel: ${path} ${ms}ms ${String(url).slice(0, 60)}`);
 }
 
+// Only a real web page is worth its own window. This used to be a list of
+// exceptions -- about:blank and `chrome://newtab/` -- which missed the page
+// Chromium actually opens (`chrome://new-tab-page/`, and `chrome-search://`
+// with some search settings), so a new tab became a chrome-less window titled
+// "New Tab" showing a search page. Asking what a page *is* instead of naming
+// what it is not leaves nothing to miss: the host refuses to spawn anything but
+// http(s) anyway, so peeling one could only ever destroy the tab.
 function peelable(url) {
-  return Boolean(url) && url !== 'about:blank' && url !== 'chrome://newtab/';
+  return /^(https?|file):/i.test(url || '');
 }
 
 // Only peel tabs born in an ordinary tabbed window. A chrome-less --app window

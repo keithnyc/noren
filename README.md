@@ -479,6 +479,60 @@ typed into a page window, and `noren open` all reach it. Before it existed,
 typing words and pressing Enter tried to open `https://two words`, which fails
 quietly.
 
+## Site scripts
+
+CSS or JS for one website — hide a sidebar, widen the comments, fix a site that
+only you care about:
+
+```bash
+noren site inspect            # the live page's structure, with real selectors
+noren site add x.example patch.css
+noren site list               # what is installed, and the file paths
+noren site apply x.example    # run it again after editing the file
+noren site off x.example      # keep it, stop running it
+noren site rm x.example
+```
+
+`add` and `on` **run the script on the pages that are already open** — there is
+no reload step. That is not a convenience: a script that changes nothing until
+you reload is indistinguishable from one that does not work, which is exactly
+how the first agent-written script looked. `off` and `rm` cannot un-run what a
+page already did, so those *do* want a reload to put the site back.
+
+Everything installed is listed on the start page under `S` → **Site scripts**,
+with a switch each and a delete, because a script that changes a site should
+never be invisible.
+
+They run in **the page's own world**, where there are no extension APIs: a site
+script cannot reach Noren's bridge, the host, your sets or any other site. The
+worst one can do is break the site it belongs to, which `off` undoes. One host
+each, never on Noren's own pages, 128KB limit, and `add` flags network calls,
+`eval` and storage access so you can read before trusting.
+
+That boundary is what makes it safe to let **your agent** write them. Noren
+ships a skill — [`skills/noren-site/SKILL.md`](skills/noren-site/SKILL.md),
+linked into `~/.claude/skills` by the installer — with the rules, the workflow
+and two commands that give an agent eyes: `noren site inspect` reads the page
+you are logged into, and `noren site shot` screenshots the window so it can
+check its own work. Omarchy picks the agent; Noren just hands it the page.
+
+`SUPER + M` → `A` is the way in without a terminal: type what you want, and the
+composer hands your agent the rendered page, its structure, and a file to write
+its answer to. The agent works in **its own terminal**, where its approvals and
+tool output belong — so the panel is a window onto a file, not the thing doing
+the work.
+
+The moment you send, the composer stands aside: the curtain closes over it and
+it reappears as a small card in the corner, the overlay stops holding the
+keyboard, and everything else on the desktop is usable again — including the
+page your agent is busy changing. The card shows what the agent says it is doing
+right now, one line at a time, and `watch it work →` brings its terminal to the
+front if you want the detail. When the answer lands the card grows to hold it.
+
+Nothing depends on the card staying up: close it and the ask carries on,
+reopening shows it, and an answer that arrives while it is shut comes in as an
+Omarchy OSD.
+
 ## Window identity
 
 Omarchy's webapp launchers carry an icon but no `StartupWMClass`, so the window
