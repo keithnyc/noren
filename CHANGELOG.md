@@ -55,6 +55,13 @@ machine; this is the point where that stops being the only evidence.
   the installer recorded it wrote.
 - `noren doctor` names the Omarchy and Hyprland versions, and says when Hyprland
   is not the one Noren's window handling was measured against.
+- **The url bar offered the wrong profile's bookmarks and history** when
+  Chromium ran with a non-default `--user-data-dir`. The offline reader assumed
+  `~/.config/<browser>/Default`; it now reads the flag off the running process.
+- **`noren doctor`'s helper-process filter never matched.** Chromium rewrites
+  its argv in place, so `/proc/<pid>/cmdline` comes back as one space-separated
+  blob rather than NUL-separated fields, and `--type=` was never found. The
+  instance count was right only by accident.
 - **`noren doctor` reported five failures on a working install** when run as
   `noren` rather than `./bin/noren`. The CLI derived its own location with
   `os.path.abspath`, which does not resolve a symlink — and install.sh puts a

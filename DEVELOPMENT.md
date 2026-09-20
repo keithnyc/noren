@@ -1032,6 +1032,40 @@ To cut a release: edit `VERSION`, match the two manifests, add a
 A tester's `noren doctor` names both the version and the checkout it came from,
 so a bug report cannot be about a Noren nobody can identify.
 
+## Chromium flattens its own /proc cmdline
+
+`/proc/<pid>/cmdline` is normally NUL-separated fields. Chromium rewrites its
+argv in place to set process titles, which collapses the NULs into spaces, so
+for exactly the processes Noren inspects the whole command line arrives as a
+*single* field. Anything of the shape
+
+```python
+args = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")
+any(a.startswith(b"--type=") for a in args)      # never true
+```
+
+silently never matches. `browser_instances()` used that to filter out helper
+processes; with 18 helpers running it excluded none of them, and only looked
+correct because helpers do not carry `--load-extension` and so failed the
+earlier test instead. `proc_cmdline()` flattens to one blob and every check is
+a substring test against it.
+
+## The url bar read the wrong profile's bookmarks
+
+`profile_dir()` assumed `~/.config/<browser>/Default`. Chromium keeps bookmarks
+and history inside whatever `--user-data-dir` it was launched with, so a browser
+started on another profile was offered the default profile's data. The bridge
+was always right -- `suggest` asks the extension, which sees the live profile --
+and only the offline fallback was wrong, which made it look like a leak rather
+than a bug: correct-looking results from one source, someone else's from the
+other. `running_profile_dir()` reads the flag off the live process, falls back
+to the default, and caches per invocation.
+
+Found while recording a demo: a throwaway `--user-data-dir` with no history at
+all still offered a full list. Worth remembering that the offline path and the
+bridge path can disagree, and that the offline one is the one on screen when
+the browser is closed.
+
 ## abspath does not resolve a symlink
 
 `install.sh` links `bin/noren` into `~/.local/bin`, so every invocation a user

@@ -168,26 +168,40 @@ def _row(status, label, detail=""):
     print(f"[{status}] {label}" + (f"  {detail}" if detail else ""))
 
 
+def proc_cmdline(pid):
+    """One flat bytes blob of a process's command line, or b"".
+
+    Chromium rewrites its own argv in place to set process titles, which
+    collapses the NUL separators into spaces -- so /proc/<pid>/cmdline comes
+    back as a single field for exactly the processes we care about here.
+    Splitting on NUL and testing `arg.startswith(b"--type=")` therefore never
+    matches, which silently broke the helper-process filter below. Flatten
+    first, then look for flags as substrings.
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            return b" ".join(x for x in fh.read().split(b"\0") if x)
+    except OSError:
+        return b""
+
+
 def browser_instances(ext_dir):
     """PIDs of browser processes (not helpers) that loaded Noren's extension."""
     pids = []
     try:
-        for entry in os.listdir("/proc"):
-            if not entry.isdigit():
-                continue
-            try:
-                with open(f"/proc/{entry}/cmdline", "rb") as fh:
-                    args = fh.read().split(b"\0")
-            except OSError:
-                continue
-            if not args or ext_dir.encode() not in b" ".join(args):
-                continue
-            # Helper processes carry --type=; the browser process does not.
-            if any(a.startswith(b"--type=") for a in args):
-                continue
-            pids.append(entry)
+        entries = os.listdir("/proc")
     except OSError:
         return []
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        line = proc_cmdline(entry)
+        if not line or ext_dir.encode() not in line:
+            continue
+        # Helper processes carry --type=; the browser process does not.
+        if b"--type=" in line:
+            continue
+        pids.append(entry)
     return sorted(pids, key=int)
 
 
@@ -486,7 +500,54 @@ def hypr_target():
 WEBKIT_EPOCH_OFFSET = 11644473600  # seconds between 1601-01-01 and 1970-01-01
 
 
+_running_profile = None
+
+
+def running_profile_dir():
+    """The profile directory of the browser that is actually running.
+
+    Chromium keeps bookmarks and history inside whatever `--user-data-dir` it
+    was launched with. Assuming the default one means a browser started on a
+    different profile is offered *another* profile's data -- wrong, and it
+    reads as a leak rather than a bug. Returns "" when the browser is not
+    running or did not override the directory.
+    """
+    global _running_profile
+    if _running_profile is not None:
+        return _running_profile
+    _running_profile = ""
+    name = default_browser()
+    if not name:
+        return ""
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return ""
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        line = proc_cmdline(entry)
+        if not line or b"--type=" in line:
+            continue
+        first = line.split(b" ", 1)[0]
+        if name.encode() not in os.path.basename(first):
+            continue
+        data = re.search(rb"--user-data-dir=(\S+)", line)
+        if not data:
+            continue
+        sub = re.search(rb"--profile-directory=(\S+)", line)
+        _running_profile = os.path.join(
+            data.group(1).decode("utf-8", "replace"),
+            sub.group(1).decode("utf-8", "replace") if sub else "Default")
+        break
+    return _running_profile
+
+
 def profile_dir():
+    """Where the browser's own bookmarks and history live."""
+    live = running_profile_dir()
+    if live and os.path.isdir(live):
+        return live
     cfg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     return os.path.join(cfg, default_browser(), "Default")
 
