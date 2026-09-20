@@ -244,7 +244,11 @@ def doctor():
              f"gather/scatter misbehave, say this in the bug report")
 
     name = default_browser()
-    _row(OK, "default browser", name)
+    if name == "chromium":
+        _row(OK, "default browser", name)
+    else:
+        _row(MEH, "default browser",
+             f"{name} - 0.01 is tested on Chromium only; say so in any bug report")
 
     running = browser_running(name)
     _row(OK if running else MEH, "browser running", "yes" if running else "no - start it")

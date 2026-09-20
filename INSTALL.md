@@ -48,11 +48,12 @@ command -v python3 openssl git
 
 - **Omarchy with Lua Hyprland config.** `~/.config/hypr/bindings.lua` must
   exist. Older Omarchy used `.conf` files; Noren's bindings are Lua.
-- **Default browser.** Noren installs into whichever browser this reports.
-  `chromium.desktop` (Omarchy's default) is the tested path. Brave works with a
-  caveat in the README (its flags file must stay one line). If it reports
-  something that is not Chromium-based, stop and tell the user: Noren needs a
-  Chromium-family browser.
+- **Default browser must be Chromium.** Noren installs into whichever browser
+  this reports, and 0.01 supports `chromium.desktop` only — Omarchy's default.
+  Other Chromium-family browsers are coming; if this reports one of those, say
+  so and let the user decide whether to switch their default or wait. If it
+  reports something that is not Chromium-based at all, stop: Noren cannot work
+  there.
 - `python3`, `openssl` and `git` ship with Omarchy; if one is missing, say so.
 
 ## 2. Get the code

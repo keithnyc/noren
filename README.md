@@ -6,49 +6,56 @@ An Omarchy plugin that drives Chromium from the shell. Every page can be its own
 chrome-less Hyprland window; navigation, tab search and browser state live in
 Omarchy rather than in browser furniture.
 
-## 0.01 alpha
+## Install
 
-This is the first release meant for anyone but its author. It has been driven
-daily on one machine, against Omarchy with Chromium; that is the whole of the
-evidence so far. Expect to find things.
+You need:
 
-- **Read [`SECURITY.md`](SECURITY.md) before installing.** Noren asks for a lot
-  of your browser, and `noren ask` hands the page you are reading to your agent.
-- **`noren doctor` first**, whenever something is off. It checks the chain end
-  to end and names the broken link, which beats guessing.
-- **Undo is one command**: `./install.sh --remove` puts everything back, and
-  `--purge` takes the saved state with it.
-- Bugs and what surprised you: [issues](https://github.com/keithnyc/noren/issues).
-  Attach `noren doctor`. Do not attach `noren log` without reading it — it has
-  urls you visited in it.
-
-[`CHANGELOG.md`](CHANGELOG.md) lists what works and what is known rough.
-
-## Trying Noren
-
-**With an agent:** point Claude (or any coding agent) at this repository and ask
-it to install Noren. [`INSTALL.md`](INSTALL.md) is written for it — the agent
-runs the steps and asks you before touching your browser, your shell or your
-key bindings.
-
-**By hand**, on Omarchy with Chromium as the default browser:
+- **Omarchy 4**, configured in Lua — `~/.config/hypr/bindings.lua` must exist
+- **Hyprland 0.56.x** — what Noren's window handling was measured against
+- **Chromium as your default browser** — Omarchy's default. Chromium only in
+  0.01; other Chromium-based browsers are coming
 
 ```bash
 omarchy plugin add https://github.com/keithnyc/noren.git --enable
 ~/.config/omarchy/plugins/io.github.keithnyc.noren/install.sh
 ```
 
-Then turn on **Developer mode** in `chrome://extensions`, quit and restart the
-browser, run `omarchy-restart-shell`, add the key bindings from
-`install.sh --print-binds` to `~/.config/hypr/bindings.lua`, and check with
-`noren doctor`. [`INSTALL.md`](INSTALL.md) has each step, and how to update and
-remove.
+Then, in order:
 
-First things to try: `SUPER + B` and a url · `SUPER + M` then `H` for the start
-page · `noren peel on` to make every new tab its own window.
+1. Turn on **Developer mode** in `chrome://extensions`. Chromium silently
+   disables an unpacked extension without it, and never says so.
+2. **Quit Chromium completely and start it again.** This closes your tabs.
+3. `omarchy-restart-shell`
+4. Add key bindings: `install.sh --print-binds` prints them for
+   `~/.config/hypr/bindings.lua`.
+5. `noren doctor` — checks the whole chain and names anything broken.
 
-Noren is early. Expect rough edges, and `noren doctor` when something is off.
-`noren version` says which one you have.
+Try: `SUPER + B` and a url · `SUPER + M` then `H` for the start page ·
+`noren peel on` to make every new tab its own window.
+
+**Prefer to let an agent do it?** Point Claude — or any coding agent — at this
+repository and ask it to install Noren. [`INSTALL.md`](INSTALL.md) is a runbook
+written for exactly that, and it stops to ask before touching your browser,
+your shell or your key bindings.
+
+To undo: `./install.sh --remove`, or `--purge` to take saved state with it.
+
+## 0.01 alpha
+
+This is the first release meant for anyone but its author. It has been driven
+daily on one machine, against Omarchy with Chromium; that is the whole of the
+evidence so far. Expect to find things. `noren version` says which one you have.
+
+- **[`SECURITY.md`](SECURITY.md) is worth the two minutes.** Noren asks for a
+  lot of your browser, Developer mode loosens Chromium generally, and
+  `noren ask` hands the page you are reading to your agent.
+- **`noren doctor` first**, whenever something is off. It checks the chain end
+  to end and names the broken link, which beats guessing.
+- Bugs and what surprised you: [issues](https://github.com/keithnyc/noren/issues).
+  Attach `noren doctor`. Do not attach `noren log` without reading it — it has
+  urls you visited in it.
+
+[`CHANGELOG.md`](CHANGELOG.md) lists what works and what is known rough.
 
 ## What it does today
 
@@ -167,7 +174,12 @@ It backs up the flags file to `.noren-backup` and appends to any existing
 `--load-extension` list rather than replacing it — Omarchy ships three
 extensions on that line.
 
-### Brave: one flag per file
+### Why Chromium only, for now
+
+The installer reads the browser's launcher to find its flags file, and every
+Chromium-family wrapper on Arch declares one. What differs is how the launcher
+*passes* that file to the browser, and at least one of them passes it in a way
+that silently discards every flag in it:
 
 Brave's launcher ends with:
 
@@ -180,12 +192,18 @@ argument**. One line works. Two or more lines reach the browser as one malformed
 switch and every flag in the file is silently ignored — no error, nothing in
 `chrome://version`.
 
-So `brave-origin-beta-flags.conf` must stay at one line. If you need more flags,
-put them in the `.desktop` Exec instead. The installer warns if it sees this.
+So a Brave flags file must stay at one line. If you need more flags, put them in
+the `.desktop` Exec instead. The installer detects this and warns.
 
-This is also why `brave-flags.conf` on this machine lists four flags that never
-reach Brave, including Omarchy's own three bundled extensions. Worth an upstream
+It is also why a Brave flags file can list several flags that never reach the
+browser at all, including Omarchy's own bundled extensions. Worth an upstream
 issue.
+
+`--browser NAME` will install into any Chromium-family browser on the machine
+and `--remove` will undo it, so nothing stops you trying. But 0.01 is tested on
+Chromium alone, and a trap like the one above is exactly what gets found by
+someone else testing properly. Support for the rest follows once each has been
+run for a while rather than merely installed.
 
 ### Hyprland binds
 

@@ -231,6 +231,13 @@ fi
 
 resolve_paths "$BROWSER"
 say "target browser: $BROWSER"
+# The docs promise Chromium and nothing else in 0.01. --browser still installs
+# anywhere, so the software says the same thing the README does rather than
+# letting someone find out from a bug that is really a browser difference.
+if [[ $BROWSER != chromium ]]; then
+  warn "0.01 is tested on Chromium only. $BROWSER will install, but is untested —"
+  warn "try Chromium before filing a bug. Other Chromium browsers are coming."
+fi
 say "  flags file:   $FLAGS_FILE"
 say "  host dir:     $NMH_DIR"
 

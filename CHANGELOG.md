@@ -36,11 +36,14 @@ machine; this is the point where that stops being the only evidence.
 
 - One browser at a time: the host owns a single socket, so a second instrumented
   browser silently has no extension. Doctor catches this.
-- Chromium family only. Firefox has no equivalent of the flags-file load.
+- **Chromium only.** Other Chromium-family browsers will install and run, but
+  are untested in 0.01 and support for them comes next; Firefox has no
+  equivalent of the flags-file load at all.
 - Developer mode must stay on in `chrome://extensions`, or Chromium disables the
   extension without saying why. Doctor decodes the reason.
 - Brave's launcher passes its flags file as one quoted argument, so a file with
-  more than one line drops every flag in it. The installer warns.
+  more than one line drops every flag in it, silently. The installer warns. This
+  is the kind of per-browser trap that keeps 0.01 to Chromium.
 - Site scripts and `noren ask` are as safe as what you install and what you
   browse. [`SECURITY.md`](SECURITY.md) is not boilerplate; read it.
 - Nothing here is API-stable. Settings, file layout and command names can move.
