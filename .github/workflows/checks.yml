@@ -68,9 +68,14 @@ jobs:
           for name in tracked:
               if name.endswith((".pem", ".key")) or name.endswith("extension/manifest.json"):
                   fail.append(f"{name} is tracked and must not be")
+          # Assembled at runtime, never written out whole: spelled literally,
+          # this file would contain the thing it is looking for and flag
+          # itself. (It did, on the first run.)
+          head = b"-" * 5 + b"BEGIN"
+          kind = b"PRIVATE" + b" KEY"
           for name in tracked:
               body = pathlib.Path(name).read_bytes()
-              if b"-----BEGIN" in body and b"PRIVATE KEY" in body:
+              if head in body and kind in body:
                   fail.append(f"{name} contains private key material")
           print("\n".join(fail) if fail else "clean")
           sys.exit(1 if fail else 0)
