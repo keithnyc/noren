@@ -16,7 +16,7 @@ import qs.Ui
 Item {
   id: root
 
-  // Each entry: { key, icon, label, hint, run, state }
+  // Each entry: { key, icon, label, hint, run, state, show }
   //
   // `state` is for the items that are settings rather than actions -- "on",
   // "off", "tint". It is drawn on the item itself: the hint in the middle only
@@ -24,6 +24,9 @@ Item {
   // keystroke never shows it, and a toggle you cannot read is a toggle you have
   // to try twice.
   property var actions: []
+  // Every action, shown or not. The ring only shows what applies to the
+  // window in front of you, but a letter you have learned keeps working.
+  property var shortcuts: []
   property bool active: false
   property string contextLabel: ""
   property int hovered: -1
@@ -36,6 +39,7 @@ Item {
   property string fontFamily: Style.font.menuFamily
 
   signal chose(int index)
+  signal shortcut(var action)
   signal dismissed()
 
   readonly property real itemSize: Style.space(96)
@@ -120,8 +124,17 @@ Item {
       // first would undo that. Falls through to ignored if the key is not one
       // of ours, so the compositor still sees it.
       var typed = root.indexForKey(event.text)
-      if (typed < 0) return
-      root.chose(typed)
+      if (typed >= 0) {
+        root.chose(typed)
+      } else {
+        var want = String(event.text || "").toUpperCase()
+        var hidden = null
+        for (var i = 0; want.length === 1 && i < root.shortcuts.length; i++) {
+          if (String(root.shortcuts[i].key || "").toUpperCase() === want) hidden = root.shortcuts[i]
+        }
+        if (!hidden) return
+        root.shortcut(hidden)
+      }
     }
     event.accepted = true
   }

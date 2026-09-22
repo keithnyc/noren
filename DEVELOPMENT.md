@@ -1061,6 +1061,66 @@ To cut a release: edit `VERSION`, match the two manifests, add a
 A tester's `noren doctor` names both the version and the checkout it came from,
 so a bug report cannot be about a Noren nobody can identify.
 
+## Pieces (experimental)
+
+A piece is a page window that shows one element of its page, live. The code is
+`piece` / `piecePick` / `norenPicker` / `norenIsolate` in the service worker and
+`piece` / `open_piece` / `place_piece` in the CLI. What cost time:
+
+**Hide, never delete.** Removing the rest of the page breaks every framework
+that expects its DOM. `body * { visibility: hidden }` plus `visible` on the
+piece and its descendants leaves the site's code untouched -- `visibility`
+inherits but a child can turn it back on. Ancestors get `transform`, `filter`
+and `contain` cleared, because any of them makes that ancestor the containing
+block for `position: fixed` and the piece would be pinned to it instead of the
+window.
+
+**A new window joins the focused group, and floating it floats the group.**
+Hyprland opens a window *into* the focused group, and `window.float` on a
+grouped window floats and resizes every member -- even with an explicit
+`window = "address:..."`. The first test did exactly that to two of the user's
+own pages. `place_piece` takes the window out of the group first, re-checks it
+is alone, and refuses to float otherwise. Focus verification alone does not
+catch this: the address is right, the damage is to its group-mates.
+
+**Positions alone are fragile.** A module with no id on a finance portal came
+back as a 13-level `nth-of-type` path, which pointed at a different module after
+the site reshuffled its right rail (ads, sign-in state). The picker now records
+the element's heading as well -- the first `h1`-`h6`, `[role=heading]` or
+`<header>` inside it (that portal titles modules with `<header>`, which the first
+version missed) -- and the re-finder checks it, searching by heading when the
+path has moved. Paths use a position only where the tag is ambiguous among its
+siblings. Class names are never used: generated ones change every deploy.
+
+**Measure in the window it was picked in; scale, don't stretch.** The new
+window opens at whatever size the tiler gives it, and a site can render a
+different layout there. So the picked width and height travel with the piece,
+and afterwards it keeps that layout and is `transform: scale`d to fit its
+window. Stretching it to `100vw` pulled a 343px module's rows apart at 1170px.
+Video is the exception -- it fills the window -- and is sized to the video's
+own aspect ratio, since a player's box is taller than its picture.
+
+**The picker must be restartable.** A pick left running (a second summon, or a
+page whose hydration threw the outline away) made every later pick a silent
+no-op. It now tears down any previous pick, puts its outline back if the page
+removes it, and gives up after 90s. A 100vmax `box-shadow` did not render as a
+dimmer on a real page; four plain panels do.
+
+Not done: saving pieces across a browser restart; a site's own menus drawn
+outside the element (portals) are hidden with the rest of the page; width
+media queries still see the real window, so a site can still restyle a piece at
+a breakpoint.
+
+## The radial shows what applies
+
+The ring had grown to 16 items. It now asks Hyprland directly (`hyprctl -j
+activewindow` and `clients`, ~20ms) when it opens -- not `noren target`, whose
+~120ms of Python startup made items pop in mid-animation -- and hides what does
+not apply: overview needs two pages on the workspace, pop out and scatter a
+group, gather something to gather, peel a tab in an ordinary window. `shortcuts`
+holds every action, so a hidden item's letter still works. Settings (tabbed,
+theme) live on the start page, not the ring.
+
 ## Tests
 
 `python3 -m unittest discover -s tests` runs in CI and needs nothing but python3

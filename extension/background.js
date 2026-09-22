@@ -342,6 +342,52 @@ async function handleCommand(msg) {
       return reply({ ok: true, applied: hit.length });
     }
 
+    case 'piece': {
+      // EXPERIMENTAL: open `url` as a page window that shows only `selector`.
+      // The picker (piecePick) arrives here too, with what was pointed at.
+      const url = String(msg.url || '');
+      const host = siteHostOf(url);
+      if (!host || !msg.selector) return reply({ ok: false, error: 'needs a url and a selector' });
+      let existing = [];
+      try {
+        existing = (await chrome.tabs.query({})).map((t) => t.id);
+      } catch (e) {
+        existing = [];
+      }
+      pendingPiece = {
+        host, selector: String(msg.selector), width: Number(msg.width) || 0,
+        heading: String(msg.heading || ''), tag: String(msg.tag || ''),
+        height: Number(msg.height) || 0,
+        existing: new Set(existing), at: Date.now(),
+      };
+      lastPiece = null;
+      send({ type: 'spawn', url });
+      return reply({ ok: true });
+    }
+
+    case 'pieceInfo':
+      return reply({ ok: true, piece: lastPiece });
+
+    case 'piecePick': {
+      // Point at part of the page in front of you; the CLI polls pickResult
+      // and opens what was picked as a piece.
+      const tab = await focusedTab(msg.matchTitle);
+      if (!tab || !/^https?:/i.test(tab.url || '')) {
+        return reply({ ok: false, error: 'no web page in front of you' });
+      }
+      lastPick = { waiting: true, tabId: tab.id };
+      try {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: norenPicker });
+      } catch (e) {
+        lastPick = null;
+        return reply({ ok: false, error: 'cannot pick on that page' });
+      }
+      return reply({ ok: true });
+    }
+
+    case 'pickResult':
+      return reply({ ok: true, pick: lastPick });
+
     case 'toggleBar': {
       // `noren bar`: show or hide the reveal bar on the page in front of you.
       // Same strict targeting as `home`.
@@ -724,6 +770,434 @@ function siteHostOf(url) {
   } catch (e) {
     return '';
   }
+}
+
+// ------------------------------------------------ pieces (experimental)
+//
+// A piece is a page window that shows one element of its page, live. The page
+// is left whole -- deleting the rest breaks every framework that expects its
+// DOM -- and only made invisible: `visibility` inherits but a child can turn it
+// back on, so hiding `body *` and showing the piece leaves the site's own code
+// none the wiser. The piece keeps the width it was picked at -- a responsive
+// site in a different-sized window would reflow it into something else -- and
+// is scaled to fit its window rather than stretched. A video is the exception:
+// it fills the window, because a picture stretches fine.
+
+let lastPick = null;       // { waiting } | { url, selector, width } | { cancelled }
+let pendingPiece = null;   // the window we are waiting for
+let lastPiece = null;      // what the newest piece reported, for the CLI
+const pieces = {};         // tabId -> { selector, width }
+
+chrome.storage.session.get('pieces').then((got) => {
+  Object.assign(pieces, (got && got.pieces) || {});
+}).catch(() => {});
+
+function sameSite(a, b) {
+  return a === b || a.endsWith('.' + b) || b.endsWith('.' + a);
+}
+
+chrome.webNavigation.onCompleted.addListener((details) => {
+  if (details.frameId !== 0) return;
+  const tabId = details.tabId;
+  const p = pendingPiece;
+  // Only a tab that did not exist when the piece was asked for, on the same
+  // site (a redirect may add or drop a subdomain), within a few seconds --
+  // so a page you already had open is never hijacked.
+  if (!pieces[tabId] && p && !p.existing.has(tabId) && Date.now() - p.at < 20000
+      && sameSite(siteHostOf(details.url), p.host)) {
+    pendingPiece = null;
+    pieces[tabId] = { selector: p.selector, width: p.width, heading: p.heading, tag: p.tag,
+                      height: p.height };
+    chrome.storage.session.set({ pieces }).catch(() => {});
+  }
+  const piece = pieces[tabId];
+  if (!piece) return;
+  chrome.scripting.executeScript({
+    target: { tabId },
+    func: norenIsolate,
+    args: [piece.selector, piece.width, piece.heading || '', piece.tag || '', piece.height || 0],
+  }).then(([res]) => {
+    if (res && res.result) lastPiece = Object.assign({ tabId }, res.result);
+  }).catch((e) => {
+    lastPiece = { tabId, found: false, error: String(e && e.message || e) };
+  });
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (!pieces[tabId]) return;
+  delete pieces[tabId];
+  chrome.storage.session.set({ pieces }).catch(() => {});
+});
+
+// The page reports back when the piece is found late (a framework renders it
+// after load) or found again after a re-render.
+chrome.runtime.onMessage.addListener((msg, sender) => {
+  if (!msg || !sender.tab) return;
+  if (msg.norenPiece === 'picked' || msg.norenPiece === 'cancelled') {
+    if (!lastPick || lastPick.tabId !== sender.tab.id) return;
+    lastPick = msg.norenPiece === 'picked'
+      ? { url: sender.tab.url, selector: msg.selector, width: msg.width, height: msg.height,
+          heading: msg.heading || '', tag: msg.tag || '' }
+      : { cancelled: true };
+    return;
+  }
+  if (msg.norenPiece !== 'painted') return;
+  if (!pieces[sender.tab.id]) return;
+  lastPiece = { tabId: sender.tab.id, found: true, width: msg.width, height: msg.height, late: true };
+});
+
+// Runs in the page: point at an element, pick it. The pointer chooses the
+// innermost thing under it, which is rarely what you want -- the wheel walks
+// out to the container and back in. Everything outside the outline is dimmed,
+// so what you get is what is lit.
+function norenPicker() {
+  // A pick left running -- a second SUPER+M I, or a page that threw the
+  // outline away -- used to make every later pick a silent no-op. Start over.
+  if (window.__norenPickerStop) window.__norenPickerStop();
+
+  const host = document.createElement('div');
+  host.style.cssText = 'all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none';
+  const root = host.attachShadow({ mode: 'closed' });
+  root.innerHTML = `
+    <style>
+      .box { position: fixed; border: 2px solid #7aa2f7; border-radius: 4px;
+             pointer-events: none; }
+      /* Four panels rather than a giant box-shadow: a 100vmax spread did not
+         render at all on a real page. */
+      .dim { position: fixed; background: rgba(0,0,0,.5); pointer-events: none; }
+      .tag { position: fixed; font: 12px/1.4 ui-monospace, monospace; color: #fff;
+             background: rgba(20,20,30,.92); padding: 4px 8px; border-radius: 4px;
+             white-space: nowrap; pointer-events: none; }
+      .tag b { color: #7aa2f7; font-weight: 600; }
+      .tag span { opacity: .65; }
+    </style>
+    <div class="dim"></div><div class="dim"></div><div class="dim"></div><div class="dim"></div>
+    <div class="box"></div><div class="tag"></div>`;
+  const box = root.querySelector('.box');
+  const tag = root.querySelector('.tag');
+  const [dimT, dimB, dimL, dimR] = root.querySelectorAll('.dim');
+  document.documentElement.appendChild(host);
+  // Pages that own <html> (hydration, SPA routers) drop nodes they did not
+  // make. Put the outline back rather than picking blind.
+  const keep = new MutationObserver(() => {
+    if (!host.isConnected) document.documentElement.appendChild(host);
+  });
+  keep.observe(document.documentElement, { childList: true });
+  const giveUp = setTimeout(() => done({ norenPiece: 'cancelled' }), 90000);
+
+  let target = null;
+  let inner = [];          // what the wheel walked out of, to walk back in
+
+  const name = (el) => {
+    let s = el.tagName.toLowerCase();
+    if (el.id) s += '#' + el.id;
+    else if (typeof el.className === 'string' && el.className.trim()) {
+      s += '.' + el.className.trim().split(/\s+/)[0];
+    }
+    return s.length > 40 ? s.slice(0, 39) + '\u2026' : s;
+  };
+
+  const show = (el) => {
+    target = el;
+    const r = el.getBoundingClientRect();
+    box.style.left = r.left - 2 + 'px';
+    box.style.top = r.top - 2 + 'px';
+    box.style.width = r.width + 'px';
+    box.style.height = r.height + 'px';
+    const place = (el, l, t, w, h) => Object.assign(el.style, {
+      left: l + 'px', top: t + 'px', width: Math.max(0, w) + 'px', height: Math.max(0, h) + 'px',
+    });
+    place(dimT, 0, 0, innerWidth, r.top);
+    place(dimB, 0, r.bottom, innerWidth, innerHeight - r.bottom);
+    place(dimL, 0, r.top, r.left, r.height);
+    place(dimR, r.right, r.top, innerWidth - r.right, r.height);
+    tag.innerHTML = '';
+    const b = document.createElement('b');
+    b.textContent = name(el);
+    const dims = document.createTextNode(`  ${Math.round(r.width)}\u00d7${Math.round(r.height)}  `);
+    const help = document.createElement('span');
+    help.textContent = 'scroll: bigger/smaller \u00b7 click: peel \u00b7 esc';
+    tag.append(b, dims, help);
+    const below = r.bottom + 30 < innerHeight;
+    tag.style.left = Math.max(4, Math.min(r.left, innerWidth - 420)) + 'px';
+    tag.style.top = (below ? Math.max(4, r.bottom + 6) : Math.max(4, r.top - 28)) + 'px';
+  };
+
+  // A stable way back to this element on a fresh load of the page. Ids and
+  // test hooks first; class names last and never -- generated ones
+  // (css-1x9fk2) change with every deploy of the site.
+  const q = (s) => { try { return document.querySelectorAll(s); } catch (e) { return []; } };
+  const stableId = (id) => id && !/\d{4,}|^[a-f0-9-]{16,}$|:/i.test(id);
+  // One node's own handle, if it has a unique one.
+  const handle = (n) => {
+    if (stableId(n.id) && q('#' + CSS.escape(n.id)).length === 1) return '#' + CSS.escape(n.id);
+    for (const attr of ['data-testid', 'data-test', 'data-qa', 'aria-label']) {
+      const v = n.getAttribute(attr);
+      if (!v || v.length > 60) continue;
+      const s = `${n.tagName.toLowerCase()}[${attr}="${CSS.escape(v)}"]`;
+      if (q(s).length === 1) return s;
+    }
+    return '';
+  };
+  const selectorFor = (el) => {
+    const own = handle(el);
+    if (own) return own;
+    const parts = [];
+    for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+      const h = n !== el && handle(n);
+      if (h) { parts.unshift(h); break; }
+      const tagName = n.tagName.toLowerCase();
+      // A position only where the tag alone is ambiguous among its siblings:
+      // every number in a path is one more thing an ad slot can shift.
+      const same = n.parentElement
+        ? [...n.parentElement.children].filter((c) => c.tagName === n.tagName) : [n];
+      parts.unshift(same.length > 1 ? `${tagName}:nth-of-type(${same.indexOf(n) + 1})` : tagName);
+    }
+    return parts.join(' > ');
+  };
+  // What the piece says about itself. A path breaks when a site reorders its
+  // modules; "Top gainers" does not.
+  const headingOf = (el) => {
+    // <header> too: some sites title their modules with it rather than an
+    // h-tag (a finance portal's "Top gainers" module is titled by a <header>).
+    const h = el.querySelector('h1,h2,h3,h4,h5,h6,[role="heading"],header');
+    const t = ((h && h.textContent) || el.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ');
+    return t.slice(0, 80);
+  };
+
+  const stop = (e) => { e.preventDefault(); e.stopImmediatePropagation(); };
+  const done = (message) => {
+    clearTimeout(giveUp);
+    keep.disconnect();
+    window.__norenPickerStop = null;
+    removeEventListener('mousemove', onMove, true);
+    removeEventListener('wheel', onWheel, { capture: true });
+    for (const t of ['pointerdown', 'mousedown', 'mouseup', 'pointerup']) removeEventListener(t, stop, true);
+    removeEventListener('click', onClick, true);
+    removeEventListener('keydown', onKey, true);
+    host.remove();
+    try { chrome.runtime.sendMessage(message); } catch (e) { /* worker gone */ }
+  };
+  window.__norenPickerStop = () => done({ norenPiece: 'cancelled' });
+
+  const onMove = (e) => {
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    if (!el || el === target || el === document.documentElement || el === document.body) return;
+    inner = [];
+    show(el);
+  };
+  const onWheel = (e) => {
+    stop(e);
+    if (!target) return;
+    if (e.deltaY < 0) {
+      const up = target.parentElement;
+      if (up && up !== document.documentElement && up !== document.body) {
+        inner.push(target);
+        show(up);
+      }
+    } else if (inner.length) {
+      show(inner.pop());
+    }
+  };
+  const onClick = (e) => {
+    stop(e);
+    if (!target) return;
+    const r = target.getBoundingClientRect();
+    done({ norenPiece: 'picked', selector: selectorFor(target),
+           heading: headingOf(target), tag: target.tagName.toLowerCase(),
+           width: Math.round(r.width), height: Math.round(r.height) });
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { stop(e); done({ norenPiece: 'cancelled' }); }
+  };
+
+  addEventListener('mousemove', onMove, true);
+  addEventListener('wheel', onWheel, { capture: true, passive: false });
+  for (const t of ['pointerdown', 'mousedown', 'mouseup', 'pointerup']) addEventListener(t, stop, true);
+  addEventListener('click', onClick, true);
+  addEventListener('keydown', onKey, true);
+}
+
+// Runs in the page. Idempotent: a second call re-targets and repaints.
+function norenIsolate(selector, width, heading, tag, pickedH) {
+  const S = window.__norenPiece || (window.__norenPiece = {});
+  if (pickedH) S.pickedH = pickedH;
+  S.selector = selector;
+  S.heading = heading || '';
+  S.tag = tag || '';
+  if (width) S.width = width;
+
+  const headingOf = (el) => {
+    // <header> too: some sites title their modules with it rather than an
+    // h-tag (a finance portal's "Top gainers" module is titled by a <header>).
+    const h = el.querySelector('h1,h2,h3,h4,h5,h6,[role="heading"],header');
+    const t = ((h && h.textContent) || el.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ');
+    return t.slice(0, 80);
+  };
+  const find = () => {
+    let el = null;
+    try {
+      el = document.querySelector(S.selector);
+    } catch (e) {
+      el = null;
+    }
+    if (!S.heading || (el && headingOf(el) === S.heading)) return el;
+    // The path points somewhere else now (a site reordered its modules) or at
+    // nothing. Find the element that still says what the picked one said; of
+    // several nested ones, the tightest.
+    let best = null;
+    let bestSize = Infinity;
+    for (const c of document.querySelectorAll(S.tag || '*')) {
+      if (headingOf(c) !== S.heading) continue;
+      const size = c.getElementsByTagName('*').length;
+      if (size < bestSize) { best = c; bestSize = size; }
+    }
+    return best;
+  };
+  const opaque = (c) => c && c !== 'transparent' && !/rgba\([^)]*,\s*0\)$/.test(c);
+
+  const paint = () => {
+    const el = find();
+    if (!el) return null;
+    if (S.el === el && document.getElementById('noren-piece-style')) return el;
+
+    if (S.el && S.el !== el) S.el.removeAttribute('data-noren-piece');
+    document.querySelectorAll('[data-noren-piece-up]')
+      .forEach((n) => n.removeAttribute('data-noren-piece-up'));
+
+    // Measured before anything moves: this is the size it was picked at.
+    const box = el.getBoundingClientRect();
+    if (!S.width) S.width = Math.round(box.width) || 480;
+    // A player is sized by its video, not its box. Players keep a box taller
+    // than the picture (a video site's was ~544 for a 360 video at 640 wide), and
+    // the difference is drawn as black bars. Hold the video's own shape.
+    const video = el.tagName === 'VIDEO' ? el : el.querySelector('video');
+    S.height = 0;
+    if (video) {
+      const ratio = video.videoWidth && video.videoHeight
+        ? video.videoHeight / video.videoWidth : 9 / 16;
+      S.height = Math.round(S.width * ratio);
+    }
+
+    // Whatever the piece is drawn on, so a transparent card does not end up on
+    // the desktop's black.
+    let ground = '';
+    for (let n = el; n; n = n.parentElement) {
+      const c = getComputedStyle(n).backgroundColor;
+      if (opaque(c)) { ground = c; break; }
+    }
+    ground = ground || '#ffffff';
+    const ownGround = opaque(getComputedStyle(el).backgroundColor);
+
+    el.setAttribute('data-noren-piece', '');
+    // An ancestor with a transform (or filter, or containment) becomes the
+    // containing block for position:fixed, and the piece would be pinned to
+    // it instead of to the window.
+    for (let n = el.parentElement; n && n !== document.documentElement; n = n.parentElement) {
+      n.setAttribute('data-noren-piece-up', '');
+    }
+
+    let style = document.getElementById('noren-piece-style');
+    if (!style) {
+      style = document.createElement('style');
+      style.id = 'noren-piece-style';
+    }
+    style.textContent = `
+      html, body { overflow: hidden !important; background: ${ground} !important; }
+      body * { visibility: hidden !important; }
+      [data-noren-piece], [data-noren-piece] * { visibility: visible !important; }
+      [data-noren-piece-up] {
+        transform: none !important; filter: none !important;
+        backdrop-filter: none !important; contain: none !important;
+        perspective: none !important; will-change: auto !important;
+      }
+      [data-noren-piece] {
+        position: fixed !important; inset: 0 auto auto 0 !important;
+        min-width: 0 !important; max-width: none !important;
+        max-height: 100vh !important; overflow: auto !important;
+        margin: 0 !important; transform: none !important;
+        box-sizing: border-box !important; z-index: 2147483647 !important;
+        ${ownGround ? '' : `background-color: ${ground} !important;`}
+      }
+      /* Measured at the size it was picked at; after that it fills whatever
+         the window becomes, so resizing or tiling a piece does not crop it. */
+      html:not([data-noren-fluid]) [data-noren-piece] {
+        width: ${S.width}px !important;
+        ${S.height ? `height: ${S.height}px !important;` : ''}
+      }
+      /* A video fills its window: a picture stretches fine. Anything else
+         keeps the layout it was picked at and is scaled to fit -- stretched,
+         a module built for 343px pulled its own rows apart at 1170. */
+      ${S.height ? `html[data-noren-fluid] [data-noren-piece] {
+        width: 100vw !important; height: 100vh !important;
+      }` : `html[data-noren-fluid] [data-noren-piece] {
+        width: ${S.width}px !important;
+        left: var(--noren-left, 0px) !important; top: var(--noren-top, 0px) !important;
+        transform: scale(var(--noren-zoom, 1)) !important; transform-origin: 0 0 !important;
+        max-height: calc(100vh / var(--noren-zoom, 1)) !important;
+      }`}
+      ${S.height ? '[data-noren-piece] { overflow: hidden !important; }' : ''}`;
+    // On <html>, not <head>: frameworks that manage <head> drop what they
+    // did not put there.
+    if (!style.isConnected) document.documentElement.appendChild(style);
+    S.el = el;
+    window.scrollTo(0, 0);
+    return el;
+  };
+
+  const report = (el) => {
+    const html = document.documentElement;
+    html.removeAttribute('data-noren-fluid');
+    const r = el.getBoundingClientRect();
+    const out = { found: true, width: Math.round(r.width), video: !!S.height,
+                  height: Math.ceil(S.height || el.scrollHeight || r.height) };
+    html.setAttribute('data-noren-fluid', '');
+    // The box it should fill at scale 1: the height it was picked at, else
+    // what it measures, capped the way the window is.
+    S.baseH = S.pickedH || Math.min(out.height, Math.round(screen.availHeight * 0.85));
+    fit();
+    return out;
+  };
+
+  // Scale to the window, keeping the picked shape, centred on the page's own
+  // ground. Grows as well as shrinks: a bigger window is a bigger widget.
+  function fit() {
+    if (!S.el || S.height || !S.width || !S.baseH) return;
+    const z = Math.max(0.3, Math.min(4, innerWidth / S.width, innerHeight / S.baseH));
+    const html = document.documentElement;
+    html.style.setProperty('--noren-zoom', String(z));
+    html.style.setProperty('--noren-left', Math.max(0, (innerWidth - S.width * z) / 2) + 'px');
+    html.style.setProperty('--noren-top', Math.max(0, (innerHeight - S.baseH * z) / 2) + 'px');
+  }
+  if (!S.onResize) {
+    S.onResize = () => fit();
+    addEventListener('resize', S.onResize);
+  }
+
+  if (!S.observer) {
+    // Frameworks replace nodes. When the piece goes, find it again.
+    let queued = false;
+    S.observer = new MutationObserver(() => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        const had = S.el && S.el.isConnected && document.getElementById('noren-piece-style');
+        if (had) return;
+        const el = paint();
+        if (el) {
+          try {
+            chrome.runtime.sendMessage(Object.assign({ norenPiece: 'painted' }, report(el)));
+          } catch (e) { /* worker asleep; the next repaint reports */ }
+        }
+      });
+    });
+    S.observer.observe(document.documentElement, { childList: true, subtree: true });
+  }
+
+  S.el = null;   // re-target, whatever was there before
+  const el = paint();
+  return el ? report(el) : { found: false };
 }
 
 function siteFor(url) {

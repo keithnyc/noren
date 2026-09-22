@@ -97,11 +97,14 @@ evidence so far. Expect to find things. `noren version` says which one you have.
   `chrome://bookmarks`, so without this a bookmark could only be read, never
   made. It saves silently to the default folder and will not duplicate a page
   you have already saved.
-- **Radial menu** — `SUPER + M` rings back, forward, reload, copy, url bar,
-  peel, gather and theme around the page in front of you. A chrome-less window
-  has no toolbar, so these have nowhere else to live. Every item carries a
-  mnemonic letter (`B` `F` `R` `C` `D` `U` `V` `P` `G` `O` `S` `T`) shown on the item, so the
-  ring can be summoned and used in one gesture without reaching for arrows.
+- **Radial menu** — `SUPER + M` rings back, forward, reload, copy, save, url
+  bar, home, piece and ask around the page in front of you. A chrome-less window
+  has no toolbar, so these have nowhere else to live. The ring shows only what
+  applies: overview when there are pages to switch between, pop out and scatter
+  in a group, gather when there is something to gather, peel for a tab in an
+  ordinary window. Every item carries a mnemonic letter (`B` `F` `R` `C` `D` `U`
+  `H` `I` `A` `V` `G` `O` `S` `P`), and a letter works even when its item is not
+  shown, so the ring can be summoned and used in one gesture.
 
 Back, forward and reload already work in a chrome-less window via Chromium's own
 `Alt+←` / `Alt+→` / `Ctrl+R`. The CLI versions exist so you can bind them to
@@ -235,7 +238,7 @@ noren tabbed off    # back to a window of its own
 noren tabbed        # report
 ```
 
-Or **`J`** in the radial, which shows whether it is on. With it on, a page
+Or the **Tabs** switch in the start page's settings. With it on, a page
 opened from a page — the url bar, a tile, a link that peels — folds into that
 page's group, making a group of the two if there was not one. The group bar is
 the tab strip, so `SUPER + ]` / `SUPER + [` step through them.
@@ -339,6 +342,30 @@ tiles beside the group rather than replacing it.
 It only touches `chrome-<host>-<profile>` windows, never an ordinary tabbed
 window, and it confirms each move against Hyprland rather than assuming —
 `into_group` takes a direction, not a target, so it tries each and checks.
+
+## Pieces (experimental)
+
+Keep one part of a page on your desktop, live: a price, a score, a build
+status, a video player, a dashboard panel.
+
+`SUPER + M` → `I`, then point at it. The page dims around what is under the
+pointer; **scroll up** to take the container around it, **scroll down** to go
+back in, **click** to keep it, **Esc** to cancel. It opens as a small floating
+window showing only that element, still the real page underneath, so it keeps
+updating and its links still work.
+
+Float it, tile it or resize it: a piece keeps the layout it was picked with and
+scales to fit its window (a video fills it instead). Reload it and it finds the
+same element again, by its heading if the page has moved things around.
+
+```bash
+noren piece                              # pick on the page in front of you
+noren piece <url> "<css selector>"       # or name it
+```
+
+Not done: pieces do not survive a browser restart yet, and menus that a site
+draws outside the element (dropdowns, tooltips) are hidden with the rest of the
+page.
 
 ## Closing a page
 

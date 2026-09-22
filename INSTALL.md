@@ -125,7 +125,7 @@ The suggested bindings:
 | keys | does |
 |---|---|
 | `SUPER + B` | url bar: type a url, or search tabs, bookmarks and history |
-| `SUPER + M` | radial menu: back, forward, reload, home, overview, gather, theme… |
+| `SUPER + M` | radial menu: back, forward, reload, home, piece, ask, overview, gather… |
 | `SUPER + ]` / `SUPER + [` | next / previous page in a group, like switching tabs |
 
 These are free on a stock Omarchy. Check this user's setup, since they may have

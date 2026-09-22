@@ -21,12 +21,9 @@ Item {
   //   omarchy-shell shell toggle io.github.keithnyc.noren '{"mode":"radial"}'
   property string mode: "url"
   // Filled from `noren status` when the radial opens: the ring needs the live
-  // url to copy, and the theme mode to cycle from where it actually is.
+  // url to copy.
   property string pageUrl: ""
   property string pageTitle: ""
-  property string themeMode: "tint"
-  // Whether new pages join the group in front, from `noren status`.
-  property bool tabbedMode: false
   // The window the overview asked for, kept across the close so it can be
   // raised again afterwards -- see onChosen.
   property string pendingRaise: ""
@@ -310,14 +307,18 @@ Item {
     // house with a wifi signal in it.
     { icon: "\udb80\udedc", key: "H", label: "Home", hint: "This page goes to your start page",
       run: function () { root.runNoren(["start"]) } },
-    { icon: "\udb81\udd6f", key: "P", label: "Peel", hint: "This tab into its own window",
+    { icon: "\udb81\udd6f", key: "P", label: "Peel", show: root.ctx !== null && root.ctx.tab, hint: "This tab into its own window",
       run: function () { root.runNoren(["peel"]) } },
+    // U+F019E: a crop mark. Rendered and looked at; its neighbour U+F019F is
+    // an empty dashed frame. EXPERIMENTAL -- see `noren piece`.
+    { icon: "\udb80\udd9e", key: "I", label: "Piece", hint: "Point at part of this page to keep it floating",
+      run: function () { root.runNoren(["piece"]) } },
     // U+F1400: a window with content panels. U+F00C5 was the first pick and is
     // a bookmark-plus -- all but identical to Save, two items along.
-    { icon: "\udb85\udc00", key: "V", label: "Overview", swaps: true,
+    { icon: "\udb85\udc00", key: "V", label: "Overview", show: root.ctx !== null && root.ctx.overview, swaps: true,
       hint: "See every page in the group",
       run: function () { root.showOverview() } },
-    { icon: "\udb81\udd70", key: "G", label: "Gather", hint: "Fold windows into one group",
+    { icon: "\udb81\udd70", key: "G", label: "Gather", show: root.ctx !== null && root.ctx.canGather, hint: "Fold windows into one group",
       run: function () { root.runNoren(["gather"]) } },
     // U+F1401: a window with a bar across its top. Rendered and looked at --
     // its neighbour U+F1400 is the panelled window Overview uses.
@@ -326,48 +327,74 @@ Item {
     { icon: "\udb85\udf19", key: "A", label: "Ask", swaps: true,
       hint: "Put this page to your Omarchy agent",
       run: function () { root.showAgent() } },
-    { icon: "\udb85\udc01", key: "J", label: "Tabs",
-      state: root.tabbedMode ? "on" : "off",
-      hint: root.tabbedMode
-        ? "New pages join this group \u2014 on"
-        : "New pages open as their own window \u2014 off",
-      run: function () { root.setTabbed(!root.tabbedMode) } },
     // U+F0207: an arrow leaving a box. Rendered and looked at, not guessed --
     // its neighbour U+F0342 is the same arrow pointing *into* the box.
-    { icon: "\udb80\ude07", key: "O", label: "Pop out", hint: "Lift this window out of the group",
+    { icon: "\udb80\ude07", key: "O", label: "Pop out", show: root.ctx !== null && root.ctx.grouped, hint: "Lift this window out of the group",
       run: function () { root.runNoren(["pop"]) } },
     // U+F0616: arrows pointing apart. Rendered and checked rather than guessed
     // from the codepoint -- the neighbours are an up-arrow, a superscript 2 and
     // a filled square.
-    { icon: "\udb81\ude16", key: "S", label: "Scatter", hint: "Break the group into tiled windows",
+    { icon: "\udb81\ude16", key: "S", label: "Scatter", show: root.ctx !== null && root.ctx.grouped, hint: "Break the group into tiled windows",
       run: function () { root.runNoren(["scatter"]) } },
-    { icon: "\udb80\udd0e", key: "T", label: "Theme", state: root.themeMode,
-      hint: "Page theming: " + root.themeMode,
-      run: function () { root.cycleTheme() } }
+    // Tabs and Theme were here. They are settings, not actions, and live on
+    // the start page with the others; the ring is for doing things.
   ]
+
+  // What the window in front of you is, so the ring shows only what applies
+  // to it: group actions for a grouped page, Peel for a tab in an ordinary
+  // window, Gather when there is something to gather. Null until known -- a
+  // conditional item then appears a frame late rather than one that does not
+  // apply appearing and vanishing.
+  property var ctx: null
+  readonly property var visibleRadial:
+    root.radialActions.filter(function (a) { return a.show !== false })
+
+  Process {
+    id: windowContext
+    // hyprctl directly, not `noren target`: that is ~120ms of Python startup,
+    // long enough for items to pop in while the ring is still opening. This
+    // is ~20ms -- about a frame.
+    command: ["sh", "-c", "hyprctl -j activewindow; echo '\x1e'; hyprctl -j clients"]
+    running: false
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var parts = this.text.split("\x1e")
+          var active = JSON.parse(parts[0]) || {}
+          var clients = JSON.parse(parts[1]) || []
+          var cls = String(active["class"] || "").toLowerCase()
+          var page = cls.indexOf("chrome-") === 0
+          var group = active.grouped || []
+          // Pages gather could fold in. Floating ones are left out: a piece,
+          // or a page someone set aside on purpose.
+          var loose = clients.filter(function (c) {
+            return String(c["class"] || "").toLowerCase().indexOf("chrome-") === 0
+              && !c.floating && c.address !== active.address
+              && group.indexOf(c.address) < 0
+          }).length
+          // The overview is a page switcher first and a group view second, so it
+          // is on whenever this workspace has pages to switch between.
+          var ws = (active.workspace || {}).id
+          var here = clients.filter(function (c) {
+            return String(c["class"] || "").toLowerCase().indexOf("chrome-") === 0
+              && !c.floating && (c.workspace || {}).id === ws
+          }).length
+          root.ctx = {
+            page: page,
+            overview: group.length >= 2 || here >= 2,
+            tab: !page && cls.indexOf("chrom") >= 0,
+            grouped: group.length >= 2,
+            canGather: page ? loose >= 1 : loose >= 2
+          }
+        } catch (e) {
+          root.ctx = { page: false, tab: false, grouped: false, canGather: false, overview: false }
+        }
+      }
+    }
+  }
 
   function copyUrl() {
     if (root.pageUrl.length > 0) Quickshell.execDetached(["wl-copy", "--", root.pageUrl])
-  }
-
-  // Both settings on the ring are set to a value, never "toggled", and the ring
-  // shows the new value at once rather than waiting to be told. Asking for the
-  // state back after writing it means a round trip through a CLI process, a
-  // socket and the host -- and if any part of that is late or does not re-run,
-  // the ring silently keeps showing the old value, which reads as a toggle that
-  // does nothing. `noren status` still reconciles on the next summon, so a
-  // setting changed elsewhere is not missed.
-  function setTabbed(on) {
-    root.tabbedMode = on
-    root.runNoren(["tabbed", on ? "on" : "off"])
-  }
-
-  function cycleTheme() {
-    var order = ["respect", "tint", "immerse"]
-    var at = order.indexOf(root.themeMode)
-    var next = order[(at + 1) % order.length]
-    root.themeMode = next
-    root.runNoren(["theme", next])
   }
 
   // Like the url bar, the overview swaps face rather than closing -- the ring
@@ -418,6 +445,9 @@ Item {
     root.selectionMoved = false
     root.suggestions = []
     targetLoader.running = true
+    root.ctx = null
+    windowContext.running = false
+    windowContext.running = true
     statusLoader.running = true
     setLoader.running = true
     pendingLoader.running = true
@@ -618,6 +648,15 @@ Item {
     onFileChanged: reload()
   }
 
+  // Some items swap the overlay's face rather than dismissing it. `swaps` is a
+  // property rather than a list of labels here: the list silently missed a new
+  // face (Ask), which then opened and closed in the same breath.
+  function runRadial(chosen) {
+    if (!chosen) return
+    if (chosen.run) chosen.run()
+    if (chosen.swaps !== true) root.close()
+  }
+
   function runNoren(args) {
     Quickshell.execDetached([root.binPath].concat(args))
   }
@@ -697,21 +736,6 @@ Item {
     }
   }
 
-  // A setting toggled from the ring is written by the CLI or the extension, so
-  // the new value is only readable a moment later.
-  Timer {
-    id: statusRefresh
-    interval: 220
-    repeat: false
-    // false first: a Process that has already run ignores `running = true`,
-    // so the ring kept showing the state it opened with and a toggle looked
-    // like it had done nothing.
-    onTriggered: {
-      statusLoader.running = false
-      statusLoader.running = true
-    }
-  }
-
   Process {
     id: statusLoader
     command: [root.binPath, "status"]
@@ -723,8 +747,6 @@ Item {
           var st = (res && res.state) ? res.state : {}
           root.pageUrl = st.url || ""
           root.pageTitle = st.title || ""
-          if (res && res.themeMode) root.themeMode = res.themeMode
-          root.tabbedMode = Boolean(res && res.tabbed)
         } catch (e) {
           root.pageUrl = ""
           root.pageTitle = ""
@@ -855,7 +877,8 @@ Item {
       anchors.fill: parent
       visible: root.mode === "radial"
       active: root.opened && root.mode === "radial"
-      actions: root.radialActions
+      actions: root.visibleRadial
+      shortcuts: root.radialActions
       contextLabel: root.pageTitle.length > 0
         ? root.pageTitle
         : (root.pageUrl.length > 0 ? root.pageUrl : "No page in front of you")
@@ -867,19 +890,8 @@ Item {
       selectedBackground: root.selectedBackground
       fontFamily: root.fontFamily
 
-      onChose: function (index) {
-        var chosen = root.radialActions[index]
-        // Some items swap the overlay's face rather than dismissing it, and a
-        // setting -- anything carrying a `state` -- stays so the ring can show
-        // what it just became. `swaps` is a property rather than a list of
-        // labels here: the list silently missed a new face (Ask), which then
-        // opened and closed in the same breath.
-        var staysOpen = chosen
-          && (chosen.swaps === true || chosen.state !== undefined)
-        if (chosen && chosen.run) chosen.run()
-        if (staysOpen && chosen.state !== undefined) statusRefresh.restart()
-        if (!staysOpen) root.close()
-      }
+      onShortcut: function (action) { root.runRadial(action) }
+      onChose: function (index) { root.runRadial(root.visibleRadial[index]) }
       onDismissed: root.close()
     }
 
