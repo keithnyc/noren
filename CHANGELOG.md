@@ -9,6 +9,11 @@
 - Updating no longer asks for a browser restart and a click in
   `chrome://extensions` -- `noren reload-extension` loads the new code.
 - Unit tests for site keys, contrast solving and answer reflow, run in CI.
+- The closing animation is **off by default**. It hears about a close only
+  after the window is gone, so it played 100–135 ms late, after Hyprland's own
+  close animation: a flick, then the panels. `noren shatter curtain` turns it
+  back on. Doing it properly means the panels go up before the window closes;
+  DEVELOPMENT.md has the measurements and the plan.
 
 ## 0.01 alpha — 2026-09-20
 

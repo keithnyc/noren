@@ -1013,7 +1013,7 @@ def load_theme(force=False):
 
 def shatter_style_name(config):
     """The CLI's own reading of the setting, for the page that shows it."""
-    value = config.get("shatter", "curtain")
+    value = config.get("shatter", False)   # off unless asked for; see the CLI
     if value is True:
         return "curtain"
     if value is False or value in ("off", "none", ""):

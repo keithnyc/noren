@@ -1915,8 +1915,12 @@ def shatter_style():
     A noren is a split curtain in a doorway, so a page parting into panels and
     falling is the house style; glass is the other one. Older configs stored a
     bool, when there was only one.
+
+    Off unless asked for. The animation hears about a close only after the
+    window is gone, so it arrives ~100-135ms late, behind Hyprland's own close
+    animation -- a visible flick, then the panels. See DEVELOPMENT.md.
     """
-    value = load_config().get("shatter", "curtain")
+    value = load_config().get("shatter", False)
     if value is True:
         return "curtain"
     if value is False or value in ("off", "none", ""):

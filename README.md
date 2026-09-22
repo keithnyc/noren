@@ -342,14 +342,20 @@ window, and it confirms each move against Hyprland rather than assuming —
 
 ## Closing a page
 
-A page window comes apart as it closes: the page splits into hanging panels
+A page window can come apart as it closes: the page splits into hanging panels
 that swing aside and drop — a noren is a split curtain in a doorway — or into
 small pieces, if you prefer glass.
 
+**Off by default in 0.01, and rough if you turn it on.** Noren hears about a
+close only after the window is gone, so the panels arrive 100–135 ms late,
+behind Hyprland's own close animation: the page flicks, then the panels appear.
+The fix is to put the panels up *before* the window closes, which means routing
+`SUPER + W` through Noren. That is planned, not done.
+
 ```bash
-noren shatter curtain   # panels part and fall (default)
+noren shatter curtain   # panels part and fall
 noren shatter glass     # breaks into pieces
-noren shatter off
+noren shatter off       # the default
 ```
 
 It needs no keybinding of its own. `SUPER + W` stays Hyprland's own close, a

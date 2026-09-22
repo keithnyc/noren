@@ -639,6 +639,35 @@ over 520ms; `glass` is a 10×7 grid thrown outward and down over 380ms. With no
 snapshot the panels are drawn from the theme instead, shaded down their length
 with lit cut edges — that path only happens when a snapshot is missing or stale.
 
+**And it is off by default, because the reactive design is always late.**
+Measured 2026-09-22 with a socket2 listener polling `hyprctl layers` every 4ms:
+`closewindow` → `noren-shatter` mapped took 102, 137, 99 and 121ms across four
+real closes (the last one the browser's final window, so the host was on its
+way out and still made it). Of that, `omarchy-shell -q` itself is 40–90ms. The
+shell side is not the problem and cannot be tuned away. Meanwhile Hyprland plays
+its own close on the window from the instant it goes -- Omarchy's is
+`windowsOut popin 87%` plus `fadeOut`, ~150ms -- so what the user sees is the
+page shrinking and fading, a beat of whatever is behind it, then the old page
+reappearing full size and coming apart. Two things were tried and did not fix
+it, so do not retry them alone:
+
+- `hl.layer_rule({ match = { namespace = "^noren-shatter$" }, no_anim = true,
+  animation = "none" })` -- Omarchy's own rule for its menus. It removes a
+  real ~180ms `fadeLayersIn` on the panels' surface, and it is in the printed
+  bindings block for when the animation is on, but the flick remains.
+- A sheet of the theme's ground under the panels, fading out, so a grouped
+  close's next tab arrives through them. Invisible next to the flick.
+
+The only fix is to put the panels up *before* the window closes -- which is
+owning the close key, the approach thrown out above. The version worth
+building: `SUPER + W` bound to a shell IPC call that, for a `chrome-*` window,
+bursts from the stored snapshot (its path is deterministic:
+`$XDG_RUNTIME_DIR/noren-snap-<address>.png`), waits one frame, verifies focus,
+then closes; any other window closes plainly; and the binding falls back to a
+plain close if the shell does not answer, so a dead shell never leaves the user
+without a close key. The host's reactive burst then has to skip the address the
+shell just did. Until that exists, off is the honest default.
+
 **Settings live where they are owned, and the page does not care.** The
 extension owns what only the browser knows (auto-peel, page theming, the reveal
 bar) in `storage.local`; the CLI owns what the shell and compositor act on

@@ -651,7 +651,7 @@ async function allPrefs() {
     revealBar: stored.revealBar !== false,
     themeMode: stored.themeMode || 'tint',
     tabbed: Boolean(host.tabbed),
-    shatter: host.shatter || 'curtain',
+    shatter: host.shatter || 'off',
     search: host.search || DEFAULT_SEARCH,
   };
 }

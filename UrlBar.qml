@@ -593,7 +593,7 @@ Item {
   // Noren's settings file, read directly. The overlay cannot reach the service
   // (its shell facade does not hand those out), and asking over the bridge would
   // make closing a page wait on the browser.
-  property bool shatterEnabled: true
+  property bool shatterEnabled: false
   property string shatterStyle: "curtain"
 
   FileView {
@@ -605,11 +605,13 @@ Item {
     onLoaded: {
       try {
         var how = JSON.parse(settingsFile.text() || "{}").shatter
-        if (how === undefined || how === true) how = "curtain"
+        // Off unless asked for: see shatter_style() in bin/noren.
+        if (how === undefined) how = "off"
+        if (how === true) how = "curtain"
         root.shatterEnabled = how !== false && how !== "off"
         root.shatterStyle = how === "glass" ? "glass" : "curtain"
       } catch (e) {
-        root.shatterEnabled = true
+        root.shatterEnabled = false
         root.shatterStyle = "curtain"
       }
     }

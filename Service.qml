@@ -81,7 +81,7 @@ Item {
   // The same settings file the CLI writes. Read directly rather than asked for
   // over the bridge: a window closing must not wait on the browser, and this
   // has to hold when the browser is not running at all.
-  property bool shatterEnabled: true
+  property bool shatterEnabled: false
   property string shatterStyle: "curtain"
 
   FileView {
@@ -98,11 +98,13 @@ Item {
     try {
       var config = JSON.parse(configFile.text() || "{}")
       var how = config.shatter
-      if (how === undefined || how === true) how = "curtain"
+      // Off unless asked for: see shatter_style() in bin/noren.
+      if (how === undefined) how = "off"
+      if (how === true) how = "curtain"
       root.shatterEnabled = how !== false && how !== "off"
       root.shatterStyle = how === "glass" ? "glass" : "curtain"
     } catch (e) {
-      root.shatterEnabled = true
+      root.shatterEnabled = false
       root.shatterStyle = "curtain"
     }
   }

@@ -151,6 +151,9 @@ o.bind("SUPER + M", "Noren radial menu", [[omarchy-shell shell toggle io.github.
 -- Step through the pages in a group, like switching tabs.
 o.bind("SUPER + BRACKETRIGHT", "Next window in group", hl.dsp.group.next())
 o.bind("SUPER + BRACKETLEFT", "Previous window in group", hl.dsp.group.prev())
+-- The closing animation draws its own picture; a compositor fade on top of it
+-- fades a ghost of the closed page back in first. Omarchy does this for its menus.
+hl.layer_rule({ match = { namespace = "^noren-shatter$" }, no_anim = true, animation = "none" })
 -- <<< noren bindings
 LUA
 }
