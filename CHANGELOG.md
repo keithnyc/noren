@@ -14,14 +14,14 @@
   close animation: a flick, then the panels. `noren shatter curtain` turns it
   back on. Doing it properly means the panels go up before the window closes;
   DEVELOPMENT.md has the measurements and the plan.
-- **Pieces (experimental).** `SUPER + M` → `I`: point at part of a page and it
+- **Clips (experimental).** `SUPER + M` → `L`: point at part of a page and it
   opens as a small floating window showing only that, live. It scales with its
   window, survives a reload, and finds its element by heading when the page
-  reorders itself. `noren piece` from a terminal.
+  reorders itself. `noren clip` from a terminal.
 - The radial shows only what applies to the window in front of you, and every
   letter still works when its item is hidden. Tabs and Theme moved to the start
   page's settings, where the other settings already were.
-- `gather` leaves floating windows alone -- a piece, or a page set aside on
+- `gather` leaves floating windows alone -- a clip, or a page set aside on
   purpose.
 
 ## 0.01 alpha — 2026-09-20

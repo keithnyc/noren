@@ -342,9 +342,9 @@ async function handleCommand(msg) {
       return reply({ ok: true, applied: hit.length });
     }
 
-    case 'piece': {
+    case 'clip': {
       // EXPERIMENTAL: open `url` as a page window that shows only `selector`.
-      // The picker (piecePick) arrives here too, with what was pointed at.
+      // The picker (clipPick) arrives here too, with what was pointed at.
       const url = String(msg.url || '');
       const host = siteHostOf(url);
       if (!host || !msg.selector) return reply({ ok: false, error: 'needs a url and a selector' });
@@ -354,23 +354,23 @@ async function handleCommand(msg) {
       } catch (e) {
         existing = [];
       }
-      pendingPiece = {
+      pendingClip = {
         host, selector: String(msg.selector), width: Number(msg.width) || 0,
         heading: String(msg.heading || ''), tag: String(msg.tag || ''),
         height: Number(msg.height) || 0,
         existing: new Set(existing), at: Date.now(),
       };
-      lastPiece = null;
+      lastClip = null;
       send({ type: 'spawn', url });
       return reply({ ok: true });
     }
 
-    case 'pieceInfo':
-      return reply({ ok: true, piece: lastPiece });
+    case 'clipInfo':
+      return reply({ ok: true, clip: lastClip });
 
-    case 'piecePick': {
+    case 'clipPick': {
       // Point at part of the page in front of you; the CLI polls pickResult
-      // and opens what was picked as a piece.
+      // and opens what was picked as a clip.
       const tab = await focusedTab(msg.matchTitle);
       if (!tab || !/^https?:/i.test(tab.url || '')) {
         return reply({ ok: false, error: 'no web page in front of you' });
@@ -772,24 +772,24 @@ function siteHostOf(url) {
   }
 }
 
-// ------------------------------------------------ pieces (experimental)
+// ------------------------------------------------ clips (experimental)
 //
-// A piece is a page window that shows one element of its page, live. The page
+// A clip is a page window that shows one element of its page, live. The page
 // is left whole -- deleting the rest breaks every framework that expects its
 // DOM -- and only made invisible: `visibility` inherits but a child can turn it
-// back on, so hiding `body *` and showing the piece leaves the site's own code
-// none the wiser. The piece keeps the width it was picked at -- a responsive
+// back on, so hiding `body *` and showing the clip leaves the site's own code
+// none the wiser. The clip keeps the width it was picked at -- a responsive
 // site in a different-sized window would reflow it into something else -- and
 // is scaled to fit its window rather than stretched. A video is the exception:
 // it fills the window, because a picture stretches fine.
 
 let lastPick = null;       // { waiting } | { url, selector, width } | { cancelled }
-let pendingPiece = null;   // the window we are waiting for
-let lastPiece = null;      // what the newest piece reported, for the CLI
-const pieces = {};         // tabId -> { selector, width }
+let pendingClip = null;   // the window we are waiting for
+let lastClip = null;      // what the newest clip reported, for the CLI
+const clips = {};         // tabId -> { selector, width }
 
-chrome.storage.session.get('pieces').then((got) => {
-  Object.assign(pieces, (got && got.pieces) || {});
+chrome.storage.session.get('clips').then((got) => {
+  Object.assign(clips, (got && got.clips) || {});
 }).catch(() => {});
 
 function sameSite(a, b) {
@@ -799,51 +799,51 @@ function sameSite(a, b) {
 chrome.webNavigation.onCompleted.addListener((details) => {
   if (details.frameId !== 0) return;
   const tabId = details.tabId;
-  const p = pendingPiece;
-  // Only a tab that did not exist when the piece was asked for, on the same
+  const p = pendingClip;
+  // Only a tab that did not exist when the clip was asked for, on the same
   // site (a redirect may add or drop a subdomain), within a few seconds --
   // so a page you already had open is never hijacked.
-  if (!pieces[tabId] && p && !p.existing.has(tabId) && Date.now() - p.at < 20000
+  if (!clips[tabId] && p && !p.existing.has(tabId) && Date.now() - p.at < 20000
       && sameSite(siteHostOf(details.url), p.host)) {
-    pendingPiece = null;
-    pieces[tabId] = { selector: p.selector, width: p.width, heading: p.heading, tag: p.tag,
+    pendingClip = null;
+    clips[tabId] = { selector: p.selector, width: p.width, heading: p.heading, tag: p.tag,
                       height: p.height };
-    chrome.storage.session.set({ pieces }).catch(() => {});
+    chrome.storage.session.set({ clips }).catch(() => {});
   }
-  const piece = pieces[tabId];
-  if (!piece) return;
+  const clip = clips[tabId];
+  if (!clip) return;
   chrome.scripting.executeScript({
     target: { tabId },
     func: norenIsolate,
-    args: [piece.selector, piece.width, piece.heading || '', piece.tag || '', piece.height || 0],
+    args: [clip.selector, clip.width, clip.heading || '', clip.tag || '', clip.height || 0],
   }).then(([res]) => {
-    if (res && res.result) lastPiece = Object.assign({ tabId }, res.result);
+    if (res && res.result) lastClip = Object.assign({ tabId }, res.result);
   }).catch((e) => {
-    lastPiece = { tabId, found: false, error: String(e && e.message || e) };
+    lastClip = { tabId, found: false, error: String(e && e.message || e) };
   });
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (!pieces[tabId]) return;
-  delete pieces[tabId];
-  chrome.storage.session.set({ pieces }).catch(() => {});
+  if (!clips[tabId]) return;
+  delete clips[tabId];
+  chrome.storage.session.set({ clips }).catch(() => {});
 });
 
-// The page reports back when the piece is found late (a framework renders it
+// The page reports back when the clip is found late (a framework renders it
 // after load) or found again after a re-render.
 chrome.runtime.onMessage.addListener((msg, sender) => {
   if (!msg || !sender.tab) return;
-  if (msg.norenPiece === 'picked' || msg.norenPiece === 'cancelled') {
+  if (msg.norenClip === 'picked' || msg.norenClip === 'cancelled') {
     if (!lastPick || lastPick.tabId !== sender.tab.id) return;
-    lastPick = msg.norenPiece === 'picked'
+    lastPick = msg.norenClip === 'picked'
       ? { url: sender.tab.url, selector: msg.selector, width: msg.width, height: msg.height,
           heading: msg.heading || '', tag: msg.tag || '' }
       : { cancelled: true };
     return;
   }
-  if (msg.norenPiece !== 'painted') return;
-  if (!pieces[sender.tab.id]) return;
-  lastPiece = { tabId: sender.tab.id, found: true, width: msg.width, height: msg.height, late: true };
+  if (msg.norenClip !== 'painted') return;
+  if (!clips[sender.tab.id]) return;
+  lastClip = { tabId: sender.tab.id, found: true, width: msg.width, height: msg.height, late: true };
 });
 
 // Runs in the page: point at an element, pick it. The pointer chooses the
@@ -883,7 +883,7 @@ function norenPicker() {
     if (!host.isConnected) document.documentElement.appendChild(host);
   });
   keep.observe(document.documentElement, { childList: true });
-  const giveUp = setTimeout(() => done({ norenPiece: 'cancelled' }), 90000);
+  const giveUp = setTimeout(() => done({ norenClip: 'cancelled' }), 90000);
 
   let target = null;
   let inner = [];          // what the wheel walked out of, to walk back in
@@ -916,7 +916,7 @@ function norenPicker() {
     b.textContent = name(el);
     const dims = document.createTextNode(`  ${Math.round(r.width)}\u00d7${Math.round(r.height)}  `);
     const help = document.createElement('span');
-    help.textContent = 'scroll: bigger/smaller \u00b7 click: peel \u00b7 esc';
+    help.textContent = 'scroll: bigger/smaller \u00b7 click: clip \u00b7 esc';
     tag.append(b, dims, help);
     const below = r.bottom + 30 < innerHeight;
     tag.style.left = Math.max(4, Math.min(r.left, innerWidth - 420)) + 'px';
@@ -955,7 +955,7 @@ function norenPicker() {
     }
     return parts.join(' > ');
   };
-  // What the piece says about itself. A path breaks when a site reorders its
+  // What the clip says about itself. A path breaks when a site reorders its
   // modules; "Top gainers" does not.
   const headingOf = (el) => {
     // <header> too: some sites title their modules with it rather than an
@@ -978,7 +978,7 @@ function norenPicker() {
     host.remove();
     try { chrome.runtime.sendMessage(message); } catch (e) { /* worker gone */ }
   };
-  window.__norenPickerStop = () => done({ norenPiece: 'cancelled' });
+  window.__norenPickerStop = () => done({ norenClip: 'cancelled' });
 
   const onMove = (e) => {
     const el = document.elementFromPoint(e.clientX, e.clientY);
@@ -1003,12 +1003,12 @@ function norenPicker() {
     stop(e);
     if (!target) return;
     const r = target.getBoundingClientRect();
-    done({ norenPiece: 'picked', selector: selectorFor(target),
+    done({ norenClip: 'picked', selector: selectorFor(target),
            heading: headingOf(target), tag: target.tagName.toLowerCase(),
            width: Math.round(r.width), height: Math.round(r.height) });
   };
   const onKey = (e) => {
-    if (e.key === 'Escape') { stop(e); done({ norenPiece: 'cancelled' }); }
+    if (e.key === 'Escape') { stop(e); done({ norenClip: 'cancelled' }); }
   };
 
   addEventListener('mousemove', onMove, true);
@@ -1020,7 +1020,7 @@ function norenPicker() {
 
 // Runs in the page. Idempotent: a second call re-targets and repaints.
 function norenIsolate(selector, width, heading, tag, pickedH) {
-  const S = window.__norenPiece || (window.__norenPiece = {});
+  const S = window.__norenClip || (window.__norenClip = {});
   if (pickedH) S.pickedH = pickedH;
   S.selector = selector;
   S.heading = heading || '';
@@ -1059,11 +1059,11 @@ function norenIsolate(selector, width, heading, tag, pickedH) {
   const paint = () => {
     const el = find();
     if (!el) return null;
-    if (S.el === el && document.getElementById('noren-piece-style')) return el;
+    if (S.el === el && document.getElementById('noren-clip-style')) return el;
 
-    if (S.el && S.el !== el) S.el.removeAttribute('data-noren-piece');
-    document.querySelectorAll('[data-noren-piece-up]')
-      .forEach((n) => n.removeAttribute('data-noren-piece-up'));
+    if (S.el && S.el !== el) S.el.removeAttribute('data-noren-clip');
+    document.querySelectorAll('[data-noren-clip-up]')
+      .forEach((n) => n.removeAttribute('data-noren-clip-up'));
 
     // Measured before anything moves: this is the size it was picked at.
     const box = el.getBoundingClientRect();
@@ -1079,7 +1079,7 @@ function norenIsolate(selector, width, heading, tag, pickedH) {
       S.height = Math.round(S.width * ratio);
     }
 
-    // Whatever the piece is drawn on, so a transparent card does not end up on
+    // Whatever the clip is drawn on, so a transparent card does not end up on
     // the desktop's black.
     let ground = '';
     for (let n = el; n; n = n.parentElement) {
@@ -1089,29 +1089,29 @@ function norenIsolate(selector, width, heading, tag, pickedH) {
     ground = ground || '#ffffff';
     const ownGround = opaque(getComputedStyle(el).backgroundColor);
 
-    el.setAttribute('data-noren-piece', '');
+    el.setAttribute('data-noren-clip', '');
     // An ancestor with a transform (or filter, or containment) becomes the
-    // containing block for position:fixed, and the piece would be pinned to
+    // containing block for position:fixed, and the clip would be pinned to
     // it instead of to the window.
     for (let n = el.parentElement; n && n !== document.documentElement; n = n.parentElement) {
-      n.setAttribute('data-noren-piece-up', '');
+      n.setAttribute('data-noren-clip-up', '');
     }
 
-    let style = document.getElementById('noren-piece-style');
+    let style = document.getElementById('noren-clip-style');
     if (!style) {
       style = document.createElement('style');
-      style.id = 'noren-piece-style';
+      style.id = 'noren-clip-style';
     }
     style.textContent = `
       html, body { overflow: hidden !important; background: ${ground} !important; }
       body * { visibility: hidden !important; }
-      [data-noren-piece], [data-noren-piece] * { visibility: visible !important; }
-      [data-noren-piece-up] {
+      [data-noren-clip], [data-noren-clip] * { visibility: visible !important; }
+      [data-noren-clip-up] {
         transform: none !important; filter: none !important;
         backdrop-filter: none !important; contain: none !important;
         perspective: none !important; will-change: auto !important;
       }
-      [data-noren-piece] {
+      [data-noren-clip] {
         position: fixed !important; inset: 0 auto auto 0 !important;
         min-width: 0 !important; max-width: none !important;
         max-height: 100vh !important; overflow: auto !important;
@@ -1120,23 +1120,23 @@ function norenIsolate(selector, width, heading, tag, pickedH) {
         ${ownGround ? '' : `background-color: ${ground} !important;`}
       }
       /* Measured at the size it was picked at; after that it fills whatever
-         the window becomes, so resizing or tiling a piece does not crop it. */
-      html:not([data-noren-fluid]) [data-noren-piece] {
+         the window becomes, so resizing or tiling a clip does not crop it. */
+      html:not([data-noren-fluid]) [data-noren-clip] {
         width: ${S.width}px !important;
         ${S.height ? `height: ${S.height}px !important;` : ''}
       }
       /* A video fills its window: a picture stretches fine. Anything else
          keeps the layout it was picked at and is scaled to fit -- stretched,
          a module built for 343px pulled its own rows apart at 1170. */
-      ${S.height ? `html[data-noren-fluid] [data-noren-piece] {
+      ${S.height ? `html[data-noren-fluid] [data-noren-clip] {
         width: 100vw !important; height: 100vh !important;
-      }` : `html[data-noren-fluid] [data-noren-piece] {
+      }` : `html[data-noren-fluid] [data-noren-clip] {
         width: ${S.width}px !important;
         left: var(--noren-left, 0px) !important; top: var(--noren-top, 0px) !important;
         transform: scale(var(--noren-zoom, 1)) !important; transform-origin: 0 0 !important;
         max-height: calc(100vh / var(--noren-zoom, 1)) !important;
       }`}
-      ${S.height ? '[data-noren-piece] { overflow: hidden !important; }' : ''}`;
+      ${S.height ? '[data-noren-clip] { overflow: hidden !important; }' : ''}`;
     // On <html>, not <head>: frameworks that manage <head> drop what they
     // did not put there.
     if (!style.isConnected) document.documentElement.appendChild(style);
@@ -1175,19 +1175,19 @@ function norenIsolate(selector, width, heading, tag, pickedH) {
   }
 
   if (!S.observer) {
-    // Frameworks replace nodes. When the piece goes, find it again.
+    // Frameworks replace nodes. When the clip goes, find it again.
     let queued = false;
     S.observer = new MutationObserver(() => {
       if (queued) return;
       queued = true;
       requestAnimationFrame(() => {
         queued = false;
-        const had = S.el && S.el.isConnected && document.getElementById('noren-piece-style');
+        const had = S.el && S.el.isConnected && document.getElementById('noren-clip-style');
         if (had) return;
         const el = paint();
         if (el) {
           try {
-            chrome.runtime.sendMessage(Object.assign({ norenPiece: 'painted' }, report(el)));
+            chrome.runtime.sendMessage(Object.assign({ norenClip: 'painted' }, report(el)));
           } catch (e) { /* worker asleep; the next repaint reports */ }
         }
       });

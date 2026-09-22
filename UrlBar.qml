@@ -310,9 +310,10 @@ Item {
     { icon: "\udb81\udd6f", key: "P", label: "Peel", show: root.ctx !== null && root.ctx.tab, hint: "This tab into its own window",
       run: function () { root.runNoren(["peel"]) } },
     // U+F019E: a crop mark. Rendered and looked at; its neighbour U+F019F is
-    // an empty dashed frame. EXPERIMENTAL -- see `noren piece`.
-    { icon: "\udb80\udd9e", key: "I", label: "Piece", hint: "Point at part of this page to keep it floating",
-      run: function () { root.runNoren(["piece"]) } },
+    // an empty dashed frame. EXPERIMENTAL -- see `noren clip`. L, because
+    // C is Copy.
+    { icon: "\udb80\udd9e", key: "L", label: "Clip", hint: "Point at part of this page to keep it floating",
+      run: function () { root.runNoren(["clip"]) } },
     // U+F1400: a window with content panels. U+F00C5 was the first pick and is
     // a bookmark-plus -- all but identical to Save, two items along.
     { icon: "\udb85\udc00", key: "V", label: "Overview", show: root.ctx !== null && root.ctx.overview, swaps: true,
@@ -365,7 +366,7 @@ Item {
           var cls = String(active["class"] || "").toLowerCase()
           var page = cls.indexOf("chrome-") === 0
           var group = active.grouped || []
-          // Pages gather could fold in. Floating ones are left out: a piece,
+          // Pages gather could fold in. Floating ones are left out: a clip,
           // or a page someone set aside on purpose.
           var loose = clients.filter(function (c) {
             return String(c["class"] || "").toLowerCase().indexOf("chrome-") === 0

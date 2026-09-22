@@ -37,9 +37,9 @@ usage: noren <command> [args]
   open <url>...     open each url as its own chrome-less window
   open --group ...  open them and fold them into one Hyprland group
   open --tiled ...  one window, even in tabbed mode
-  piece             EXPERIMENTAL: point at part of the page in front of you;
+  clip              EXPERIMENTAL: point at part of the page in front of you;
                     it opens as a floating window showing only that, live
-  piece <url> <css selector> [--width N]
+  clip <url> <css selector> [--width N]
                     the same, for an element you name
   tabbed on|off     new pages join the group in front, like tabs (persists)
   tabbed toggle     flip it; `tabbed` alone reports
@@ -1359,7 +1359,7 @@ def gather(pattern=None, only=None, anchor_address=None):
     if only is not None:
         wanted = set(only)
         wins = [w for w in wins if w.get("address") in wanted]
-    # Floating windows stay where they are: a piece is a widget, and grouping
+    # Floating windows stay where they are: a clip is a widget, and grouping
     # one turns it back into a page; any other floated page was set aside on
     # purpose. The radial's Gather count skips them for the same reason.
     floating = [w for w in wins if w.get("floating")]
@@ -1746,7 +1746,7 @@ def spawn_and_join(spawn, tabbed=None):
     return result
 
 
-def piece(args):
+def clip(args):
     """EXPERIMENTAL: a floating window that shows one element of a page, live.
 
     With no arguments, point at it on the page in front of you. With a url and
@@ -1758,20 +1758,20 @@ def piece(args):
         try:
             width = int(args[i + 1])
         except (IndexError, ValueError):
-            sys.exit("noren piece: --width needs a number")
+            sys.exit("noren clip: --width needs a number")
         args = args[:i] + args[i + 2:]
     if not args or args == ["pick"]:
-        return pick_piece()
+        return pick_clip()
     if len(args) < 2:
-        sys.exit("usage: noren piece [<url> <css selector> [--width N]]")
-    return open_piece(args[0], " ".join(args[1:]), width)
+        sys.exit("usage: noren clip [<url> <css selector> [--width N]]")
+    return open_clip(args[0], " ".join(args[1:]), width)
 
 
-def pick_piece():
-    """Point at part of the page in front of you, then open it as a piece."""
-    res = call({"cmd": "piecePick"})
+def pick_clip():
+    """Point at part of the page in front of you, then open it as a clip."""
+    res = call({"cmd": "clipPick"})
     if res.get("ok") is False:
-        sys.exit(f"noren piece: {res.get('error', 'failed')}")
+        sys.exit(f"noren clip: {res.get('error', 'failed')}")
     # The pick is the user's to take their time over. Poll rather than hold one
     # call open: the bridge times a call out in seconds.
     deadline = time.monotonic() + 120
@@ -1781,72 +1781,72 @@ def pick_piece():
         if got.get("cancelled"):
             return 0
         if got.get("selector"):
-            return open_piece(got["url"], got["selector"], int(got.get("width") or 0),
+            return open_clip(got["url"], got["selector"], int(got.get("width") or 0),
                               heading=got.get("heading", ""), tag=got.get("tag", ""),
                               height=int(got.get("height") or 0))
-    print("noren piece: nothing picked")
+    print("noren clip: nothing picked")
     return 1
 
 
-def open_piece(url, selector, width=0, heading="", tag="", height=0):
+def open_clip(url, selector, width=0, heading="", tag="", height=0):
     if not re.match(r"^https?://", url, re.I):
         url = "https://" + url
-    print(f"noren piece: {selector}" + (f"  ('{heading}')" if heading else ""))
+    print(f"noren clip: {selector}" + (f"  ('{heading}')" if heading else ""))
 
     before = chromeless_addresses()
     events = hypr_event_socket()
     try:
-        res = call({"cmd": "piece", "url": url, "selector": selector, "width": width,
+        res = call({"cmd": "clip", "url": url, "selector": selector, "width": width,
                     "heading": heading, "tag": tag, "height": height})
         if res.get("ok") is False:
-            sys.exit(f"noren piece: {res.get('error', 'failed')}")
+            sys.exit(f"noren clip: {res.get('error', 'failed')}")
         fresh = wait_for_chromeless(before, count=1, timeout=10, events=events)
     finally:
         if events:
             events.close()
     if not fresh:
-        sys.exit("noren piece: the window did not appear")
+        sys.exit("noren clip: the window did not appear")
     address = sorted(fresh)[0]
     wait_mapped(address, timeout=3)
 
-    # Wait for the page to find its piece. A framework may render it late.
+    # Wait for the page to find its clip. A framework may render it late.
     info = None
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
-        got = (call({"cmd": "pieceInfo"}) or {}).get("piece")
+        got = (call({"cmd": "clipInfo"}) or {}).get("clip")
         if got and got.get("found"):
             info = got
             break
         time.sleep(0.25)
     if not info:
-        print(f"noren piece: '{selector}' not found on the page -- left it as a plain window")
+        print(f"noren clip: '{selector}' not found on the page -- left it as a plain window")
         return 1
 
     # The height it was picked at, when there is one: the new window measures
     # while the page is still filling in (a list of five measured as three).
     # A video's own shape wins over both.
     tall = info["height"] if info.get("video") or not height else height
-    place_piece(address, info["width"], tall)
-    print(f"noren piece: {info['width']}x{info['height']} from {url}")
+    place_clip(address, info["width"], tall)
+    print(f"noren clip: {info['width']}x{info['height']} from {url}")
     return 0
 
 
-def place_piece(address, width, height):
+def place_clip(address, width, height):
     """Float, size and centre one window -- checked before anything is sent."""
     client = next((c for c in hypr_json("clients") or [] if c.get("address") == address), None)
     if not client or not (client.get("class") or "").lower().startswith("chrome-"):
-        print("noren piece: the window went away before it could be placed")
+        print("noren clip: the window went away before it could be placed")
         return
     # Every dispatch below names its window, but the rule here is to confirm
     # the target anyway: a wrong address must never land on the terminal.
     hypr_focus(address)
     if (hypr_json("activewindow") or {}).get("address") != address:
-        print("noren piece: could not focus the new window; left it where it is")
+        print("noren clip: could not focus the new window; left it where it is")
         return
 
     # Hyprland opens a new window *into* the focused group, and floating a
     # grouped window floats the whole group -- the first test of this floated
-    # and shrank two of the user's own pages along with the piece. So the piece
+    # and shrank two of the user's own pages along with the clip. So the clip
     # leaves the group first, and nothing is floated unless it is alone.
     if len(client.get("grouped") or []) >= 2:
         hypr_do("hl.dsp.window.move({ out_of_group = true })")
@@ -1854,12 +1854,12 @@ def place_piece(address, width, height):
         client = next((c for c in hypr_json("clients") or []
                        if c.get("address") == address), None) or {}
         if len(client.get("grouped") or []) >= 2:
-            print("noren piece: the window opened inside a group and would not leave it;"
+            print("noren clip: the window opened inside a group and would not leave it;"
                   " left it there rather than float the whole group")
             return
         hypr_focus(address)
         if (hypr_json("activewindow") or {}).get("address") != address:
-            print("noren piece: lost focus leaving the group; left it where it is")
+            print("noren clip: lost focus leaving the group; left it where it is")
             return
 
     mon = next((m for m in hypr_json("monitors") or [] if m.get("id") == client.get("monitor")), {})
@@ -2916,8 +2916,10 @@ def main(argv):
             sys.exit(f"noren: {res.get('error', 'failed')}")
         return 0
 
-    if cmd == "piece":
-        return piece(rest)
+    # `piece` was its name in the first commit, which is public; kept as an
+    # alias for a release.
+    if cmd in ("clip", "piece"):
+        return clip(rest)
 
     if cmd == "open":
         group = "--group" in rest
