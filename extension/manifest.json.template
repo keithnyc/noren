@@ -15,7 +15,7 @@
     "favicon"
   ],
   "background": {
-    "service_worker": "background-34.js"
+    "service_worker": "background.js"
   },
   "host_permissions": [
     "http://*/*",

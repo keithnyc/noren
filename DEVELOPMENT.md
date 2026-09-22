@@ -1032,6 +1032,28 @@ To cut a release: edit `VERSION`, match the two manifests, add a
 A tester's `noren doctor` names both the version and the checkout it came from,
 so a bug report cannot be about a Noren nobody can identify.
 
+## Tests
+
+`python3 -m unittest discover -s tests` runs in CI and needs nothing but python3
+and node. It covers the functions that are pure and easy to break without
+noticing: `site_host()`, `solve_contrast()` / `derive()`, and the answer card's
+`reflow()`.
+
+The JS functions are **not copied** into the tests. `tests/_load.py` cuts
+`reflow` out of `AgentPanel.qml` and `siteHostOf` out of the service worker by
+brace matching and runs them under node, so a test cannot pass against a stale
+copy while the real function drifts. If you rename either, the loader fails
+loudly, which is the point.
+
+The one test that is not about a single function: **the CLI and the extension
+must agree on a site's key.** `noren site add` saves a script under
+`site_host()`; the extension looks it up under `siteHostOf()`. If they disagree
+the script installs cleanly and never runs, and nothing anywhere says why.
+
+Every test was checked by breaking the function it covers and watching it fail.
+Do the same for a new one -- a test that has never failed has not been shown to
+test anything.
+
 ## Chromium flattens its own /proc cmdline
 
 `/proc/<pid>/cmdline` is normally NUL-separated fields. Chromium rewrites its

@@ -30,6 +30,11 @@ jobs:
               print("ok", f)
           PY
 
+      - name: Unit tests
+        # Pure functions only: site keys, contrast solving, answer reflow. The
+        # JS ones are pulled out of the real files and run under node.
+        run: python3 -m unittest discover -s tests -v
+
       - name: Manifests are valid JSON, and agree with VERSION
         run: |
           python3 - <<'PY'

@@ -494,7 +494,7 @@ widget   ─ BarWidget.qml   title, load state          ┘
                     ▲
                     │  4-byte LE length + JSON
                     │
-       extension/background-3.js    chrome.tabs.* , onCreated, onUpdated
+       extension/background.js      chrome.tabs.* , onCreated, onUpdated
                     ▲
                     ▼
               chromium --app windows
@@ -655,6 +655,7 @@ hl.animation({ leaf = "fadeSwitch", enabled = true, speed = 2.6, bezier = "almos
 ```bash
 omarchy-plugin-validate .     # manifest against the shell's schema
 omarchy-restart-shell         # reload QML — not rescan
+python3 -m unittest discover -s tests   # the pure functions; CI runs this too
 ```
 
 **Three separate reload paths, and forgetting one wastes a debugging round:**
@@ -662,14 +663,14 @@ omarchy-restart-shell         # reload QML — not rescan
 | changed | needs |
 |---|---|
 | `*.qml` | `omarchy-restart-shell` |
-| `host/noren-host` | cycle the host (kill it; the extension reconnects) |
-| `extension/*.js` | bump the filename, restart the browser, **and** Reload in `chrome://extensions` |
+| `host/noren-host` | `noren reload-extension` (it restarts the host too) |
+| `extension/*` | `noren reload-extension` |
 
-Changing the background script requires bumping its filename (currently
-`background-3.js`; rename it and update `extension/manifest.json`). Chromium caches service
-workers for extensions loaded via `--load-extension`, so a new URL is what forces
-new code to register. This is the same reason Omarchy's own `copy-url` extension
-ships as `background-4.js`.
+`noren reload-extension` re-reads the unpacked extension from disk, manifest
+included. **Starting the browser is not a reload:** Chromium keeps serving the
+cached service worker until something reloads the extension, so edit, then
+reload, whether or not the browser was running. `noren ping` says how long ago
+the extension loaded, which is the honest answer to "did my reload take?".
 
 `host/noren-extension.pem` is the key that pins the extension ID. Keep it — the
 native host manifest's `allowed_origins` is derived from it, and regenerating it

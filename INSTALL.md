@@ -210,9 +210,10 @@ omarchy plugin update io.github.keithnyc.noren
 "$NOREN/install.sh"
 ```
 
-Then restart the browser (asking first) and `omarchy-restart-shell`. If the
-update changed the extension, also press **Reload** on Noren in
-`chrome://extensions`.
+Then load the new code: `noren reload-extension` (the extension and the host;
+no browser restart needed) and `omarchy-restart-shell` (the overlay). If the
+browser is closed, start it first -- starting it alone does not load new
+extension code, the reload does. `noren doctor` should be all `ok` afterwards.
 
 ## Removing
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- The service worker is plain `background.js` now. The filename used to be
+  bumped to force Chromium to load new code; `noren reload-extension` does that,
+  so the number only confused people. `install.sh` regenerates the manifest, so
+  updating the documented way picks it up.
+- Updating no longer asks for a browser restart and a click in
+  `chrome://extensions` -- `noren reload-extension` loads the new code.
+- Unit tests for site keys, contrast solving and answer reflow, run in CI.
+
 ## 0.01 alpha — 2026-09-20
 
 First release anyone else can install. Noren has been driven daily on one
