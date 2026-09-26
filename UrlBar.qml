@@ -337,6 +337,11 @@ Item {
     // a filled square.
     { icon: "\udb81\ude16", key: "S", label: "Scatter", show: root.ctx !== null && root.ctx.grouped, hint: "Break the group into tiled windows",
       run: function () { root.runNoren(["scatter"]) } },
+    // U+F03D8: a painter's palette. Rendered and looked at; its neighbours
+    // are a parcel and a fill-colour swatch. EXPERIMENTAL -- see `noren steal`.
+    { icon: "\udb80\udfd8", key: "T", label: "Steal theme", swaps: true,
+      hint: "Make an Omarchy theme from this page's colours",
+      run: function () { root.showSteal() } },
     // Tabs and Theme were here. They are settings, not actions, and live on
     // the start page with the others; the ring is for doing things.
   ]
@@ -413,6 +418,11 @@ Item {
     Qt.callLater(function () { agentPanel.forceActiveFocus() })
   }
 
+  function showSteal() {
+    root.mode = "steal"
+    Qt.callLater(function () { stealPanel.forceActiveFocus() })
+  }
+
   // The ring's own way back to the url bar: swap face instead of closing, so
   // it is one gesture rather than dismiss-and-summon.
   function showUrlBar() {
@@ -432,6 +442,7 @@ Item {
       if (payload && payload.mode === "radial") wanted = "radial"
       if (payload && payload.mode === "overview") wanted = "overview"
       if (payload && payload.mode === "agent") wanted = "agent"
+      if (payload && payload.mode === "steal") wanted = "steal"
     } catch (e) {
       // A malformed payload is a url bar, not an error worth surfacing.
     }
@@ -460,6 +471,8 @@ Item {
       Qt.callLater(function () { overview.forceActiveFocus() })
     } else if (root.mode === "agent") {
       Qt.callLater(function () { agentPanel.forceActiveFocus() })
+    } else if (root.mode === "steal") {
+      Qt.callLater(function () { stealPanel.forceActiveFocus() })
     } else {
       Qt.callLater(function () { radial.forceActiveFocus() })
     }
@@ -859,7 +872,10 @@ Item {
       // The composer gets no scrim at all. A ring or a url bar is a moment;
       // an agent working is minutes, and dimming every window on every
       // workspace for that long says the desktop is busy when it is not.
-      opacity: (root.mode === "agent"
+      //
+      // Nor does steal: its whole point is the desktop behind it changing
+      // colour when you try a theme.
+      opacity: (root.mode === "agent" || root.mode === "steal"
         || (root.mode === "overview" && overview.launching)) ? 0 : 1
       Behavior on opacity { NumberAnimation { duration: 240 } }
       MouseArea {
@@ -869,7 +885,9 @@ Item {
         // to take away a question that was already on its way, and the
         // panel looked like the thing doing the work rather than a window onto
         // it.
-        onClicked: if (root.mode !== "agent") root.close()
+        //
+        // Nor steal, where a click outside would leave a tried theme half-kept.
+        onClicked: if (root.mode !== "agent" && root.mode !== "steal") root.close()
       }
     }
 
@@ -922,6 +940,23 @@ Item {
 
       // The corner card's own ✕, which is the only way out of a click-through
       // overlay: there is no keyboard focus left to press Escape with.
+      onCloseRequested: root.close()
+    }
+
+    StealPanel {
+      id: stealPanel
+      anchors.fill: parent
+      visible: root.mode === "steal"
+      active: root.opened && root.mode === "steal"
+      binPath: root.binPath
+
+      background: root.background
+      foreground: root.foreground
+      borderColor: root.borderColor
+      accent: root.selectedText
+      surface: root.selectedBackground
+      fontFamily: root.fontFamily
+
       onCloseRequested: root.close()
     }
 

@@ -41,6 +41,11 @@ usage: noren <command> [args]
                     it opens as a floating window showing only that, live
   clip <url> <css selector> [--width N]
                     the same, for an element you name
+  steal             EXPERIMENTAL: make an Omarchy theme from the colours of the
+                    page in front of you, and switch to it
+                    --dark | --light: flip the page's lightness
+                    --wallpaper glow|dusk|solid|current (current is the default)
+                    --name <n>, --print (change nothing), --undo
   tabbed on|off     new pages join the group in front, like tabs (persists)
   tabbed toggle     flip it; `tabbed` alone reports
   go <url>          navigate the focused window (force)
@@ -1788,6 +1793,264 @@ def pick_clip():
     return 1
 
 
+OMARCHY_THEMES = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+    "omarchy", "themes",
+)
+OMARCHY_STOCK_THEMES = os.path.join(os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy", "themes")
+OMARCHY_CURRENT = os.path.expanduser("~/.local/state/omarchy/current")
+# First line of every colors.toml steal writes. It is how steal knows a theme is
+# its own to overwrite -- and never anyone else's.
+STEAL_MARK = "# Made by noren steal"
+STEAL_CACHE = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "noren-steal.json")
+# Wallpaper candidates for the adjust window. Runtime dir: gone at logout, and
+# only a theme you keep gets a copy of the one you chose.
+STEAL_WALLS = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "noren-steal-walls")
+IMAGE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+
+
+def fetch_wallpaper(url, dest, referer):
+    """Download one page image into `dest` (no extension); returns the path or None."""
+    import urllib.request
+
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) noren",
+        "Referer": referer,
+        # Not avif: Qt may not show it, and Omarchy does not list it.
+        "Accept": "image/webp,image/png,image/jpeg;q=0.9,*/*;q=0.5",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=6) as reply:
+            kind = reply.headers.get_content_type()
+            data = reply.read(25 * 1024 * 1024 + 1)
+    except Exception:
+        return None
+    if len(data) > 25 * 1024 * 1024 or len(data) < 10 * 1024:
+        return None
+    if kind in IMAGE_TYPES:
+        path = dest + IMAGE_TYPES[kind]
+        with open(path, "wb") as fh:
+            fh.write(data)
+        return path
+    if kind == "image/avif" and shutil.which("magick"):
+        raw = dest + ".avif"
+        with open(raw, "wb") as fh:
+            fh.write(data)
+        done = subprocess.run(["magick", raw, dest + ".jpg"], capture_output=True, timeout=20)
+        os.unlink(raw)
+        return dest + ".jpg" if done.returncode == 0 else None
+    return None
+
+
+def steal_wallpapers(res):
+    """Your current wallpaper and the page's big images, as local files.
+
+    The current one is copied now, while it is still the current one -- after a
+    Try it, "current" would be the one you tried.
+    """
+    shutil.rmtree(STEAL_WALLS, ignore_errors=True)
+    os.makedirs(STEAL_WALLS, mode=0o700)
+    out = []
+    wallpaper = os.path.realpath(os.path.join(OMARCHY_CURRENT, "background"))
+    if os.path.isfile(wallpaper):
+        ext = os.path.splitext(wallpaper)[1].lower()
+        copy = os.path.join(STEAL_WALLS, "current" + ext)
+        shutil.copy2(wallpaper, copy)
+        out.append({"kind": "current", "path": copy,
+                    "video": ext in (".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi")})
+
+    host = res.get("host") or ""
+    images = (res.get("palette") or {}).get("images") or []
+    found = [None] * len(images)
+
+    def one(i, url):
+        found[i] = fetch_wallpaper(url, os.path.join(STEAL_WALLS, f"page-{i}"), f"https://{host}/")
+
+    workers = [threading.Thread(target=one, args=(i, img.get("url", ""))) for i, img in enumerate(images)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
+    out.extend({"kind": "page", "path": p} for p in found if p)
+    return out
+
+
+def made_by_steal(name):
+    try:
+        with open(os.path.join(OMARCHY_THEMES, name, "colors.toml")) as fh:
+            return fh.readline().startswith(STEAL_MARK)
+    except OSError:
+        return False
+
+
+def current_theme():
+    try:
+        with open(os.path.join(OMARCHY_CURRENT, "theme.name")) as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def theme_slug(text):
+    """A name omarchy-theme-set accepts as-is: lowercase, hyphens, no slashes."""
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40].strip("-")
+    return slug or "stolen"
+
+
+def set_theme(name):
+    try:
+        done = subprocess.run(["omarchy-theme-set", name], capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        sys.exit(f"noren steal: omarchy-theme-set failed: {exc}")
+    if done.returncode != 0:
+        sys.exit(f"noren steal: omarchy-theme-set: {(done.stdout + done.stderr).strip()}")
+
+
+def steal(args):
+    """Turn the colours of the page in front of you into an Omarchy theme.
+
+    Saves it under ~/.config/omarchy/themes/ and switches to it. --print shows
+    it instead and changes nothing; --undo goes back to the theme you had.
+    """
+    if "--undo" in args:
+        config = load_config()
+        previous = config.pop("stealUndo", "")
+        if not previous:
+            sys.exit("noren steal: nothing to undo")
+        set_theme(previous)
+        save_config(config)
+        print(f"noren steal: back to {previous}")
+        return 0
+
+    def value(flag):
+        i = args.index(flag)
+        if i + 1 >= len(args):
+            sys.exit(f"noren steal: {flag} needs a value")
+        return args[i + 1]
+
+    mode = "dark" if "--dark" in args else "light" if "--light" in args else None
+    if "--mode" in args:
+        mode = {"dark": "dark", "light": "light"}.get(value("--mode"))
+    name = theme_slug(value("--name")) if "--name" in args else ""
+    vividness = 1.0
+    if "--vivid" in args:
+        try:
+            vividness = max(0.0, min(2.0, float(value("--vivid"))))
+        except ValueError:
+            sys.exit("noren steal: --vivid needs a number")
+    overrides = {}
+    for i, arg in enumerate(args):
+        if arg == "--set" and i + 1 < len(args) and "=" in args[i + 1]:
+            role, colour = args[i + 1].split("=", 1)
+            overrides[role] = colour
+
+    # The adjust window rebuilds on every change. It reads the page once and
+    # works from this copy after, so dragging a slider never touches the
+    # browser -- and the page can change or close without the window caring.
+    if "--cached" in args:
+        try:
+            with open(STEAL_CACHE) as fh:
+                res = json.load(fh)
+        except (OSError, ValueError):
+            sys.exit("noren steal: nothing read yet; run it without --cached first")
+    else:
+        res = call({"cmd": "steal"})
+        if res.get("ok") is False:
+            sys.exit(f"noren steal: {res.get('error', 'failed')}")
+        try:
+            with open(STEAL_CACHE, "w") as fh:
+                json.dump({"palette": res.get("palette") or {}, "host": res.get("host") or ""}, fh)
+        except OSError:
+            pass
+    samples = res.get("palette") or {}
+    if "--raw" in args:
+        print(json.dumps(samples, indent=2))
+        return 0
+    sys.path.insert(0, os.path.join(NOREN_ROOT, "host"))
+    import noren_steal
+
+    if "--wallpapers" in args:
+        print(json.dumps(steal_wallpapers(res)))
+        return 0
+
+    host = res.get("host") or ""
+    theme = noren_steal.build(samples, mode=mode, vividness=vividness, overrides=overrides)
+    toml = noren_steal.to_toml(theme, host)
+    if "--json" in args:
+        suggested = theme_slug(host)
+        if os.path.isdir(os.path.join(OMARCHY_STOCK_THEMES, suggested)):
+            suggested += "-stolen"
+        # Never suggest the theme you are on: trying would overwrite the very
+        # thing Cancel has to put back.
+        if suggested == current_theme():
+            suggested += "-2"
+        print(json.dumps({
+            "host": host, "name": suggested, "theme": theme,
+            "pageColours": noren_steal.page_colours(samples),
+            "editable": noren_steal.EDITABLE, "current": current_theme(),
+        }))
+        return 0
+    if "--print" in args:
+        print(toml, end="")
+        return 0
+
+    if not name:
+        name = theme_slug(host)
+        # A stock theme of the same name would be copied in underneath ours.
+        if os.path.isdir(os.path.join(OMARCHY_STOCK_THEMES, name)):
+            name += "-stolen"
+    folder = os.path.join(OMARCHY_THEMES, name)
+    if os.path.exists(folder) and not made_by_steal(name):
+        sys.exit(f"noren steal: there is already a theme called {name}, and noren did not "
+                 "make it; pick another with --name")
+
+    # Omarchy wants a wallpaper with every theme and complains without one.
+    # Yours by default. Read into memory before the folder is touched: the
+    # current one may live inside it, or inside the staged theme the switch is
+    # about to replace.
+    wall = value("--wallpaper") if "--wallpaper" in args else "current"
+    if wall in noren_steal.GRADIENTS:
+        picture, picture_name = noren_steal.wallpaper(theme, wall), f"noren-{wall}.png"
+    else:
+        source = os.path.realpath(os.path.join(OMARCHY_CURRENT, "background")) if wall == "current" \
+            else os.path.realpath(wall)
+        # Only your own wallpaper or one steal downloaded -- not any path at all.
+        if wall != "current" and os.path.dirname(source) != os.path.realpath(STEAL_WALLS):
+            sys.exit("noren steal: --wallpaper takes glow, dusk, solid, current, or a file "
+                     "from the adjust window")
+        try:
+            with open(source, "rb") as fh:
+                picture = fh.read()
+        except OSError:
+            picture = None
+        picture_name = os.path.basename(source)
+        if not picture_name.startswith("noren-"):
+            picture_name = "noren-" + picture_name
+
+    backgrounds = os.path.join(folder, "backgrounds")
+    os.makedirs(backgrounds, exist_ok=True)
+    with open(os.path.join(folder, "colors.toml"), "w") as fh:
+        fh.write(toml)
+    if picture:
+        # Steal made this folder, so its wallpapers are steal's to replace.
+        for old in os.listdir(backgrounds):
+            os.unlink(os.path.join(backgrounds, old))
+        with open(os.path.join(backgrounds, picture_name), "wb") as fh:
+            fh.write(picture)
+
+    # Undo returns to the theme you had before you started stealing, not to the
+    # previous steal.
+    config = load_config()
+    was = current_theme()
+    if was and was != name and not (made_by_steal(was) and config.get("stealUndo")):
+        config["stealUndo"] = was
+        save_config(config)
+
+    set_theme(name)
+    print(f"noren steal: switched to {name} ({theme['mode']})  -- undo: noren steal --undo")
+    return 0
+
+
 def open_clip(url, selector, width=0, heading="", tag="", height=0):
     if not re.match(r"^https?://", url, re.I):
         url = "https://" + url
@@ -1985,7 +2248,7 @@ def watch_files(root):
             watched = (
                 name.endswith(WATCH_SHELL)
                 or (folder.endswith("extension") and name.endswith(WATCH_BROWSER))
-                or name in ("noren-host", "noren_theme.py")
+                or name in ("noren-host", "noren_theme.py", "noren_steal.py")
                 or (folder == root and name == "manifest.json")
             )
             if not watched:
@@ -2920,6 +3183,9 @@ def main(argv):
     # alias for a release.
     if cmd in ("clip", "piece"):
         return clip(rest)
+
+    if cmd == "steal":
+        return steal(rest)
 
     if cmd == "open":
         group = "--group" in rest

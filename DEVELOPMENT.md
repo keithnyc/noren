@@ -1112,6 +1112,57 @@ outside the element (portals) are hidden with the rest of the page; width
 media queries still see the real window, so a site can still restyle a clip at
 a breakpoint.
 
+## Steal a theme (experimental)
+
+`noren steal` turns the colours of a page into an Omarchy theme. The pieces:
+`norenPalette` (service worker) reads the page; `host/noren_steal.py` is pure
+and does all the colour thinking; `steal()` in the CLI saves, applies and
+undoes; `StealPanel.qml` is the adjust window, which only holds choices and
+calls `noren steal --cached --json` again whenever one changes. Omarchy derives
+every app's colours from one `colors.toml`, so that file (plus a wallpaper) is
+all steal writes. What cost time:
+
+**Take Noren's own tint off first.** Page theming is on by default, so reading
+a page's colours read back the *current* Omarchy theme. The `steal` command
+removes the injected CSS and unwinds the surface pass, reads, and restyles.
+
+**A page that is not on screen gets no animation frames.** Waiting two
+`requestAnimationFrame`s for the untint to land hung forever when the page was
+on another workspace -- which is exactly where it is when steal runs from a
+terminal. It races a 150ms timeout now.
+
+**Weights in different units cannot be added.** Backgrounds are grid cells,
+text is characters, buttons are area. Summed raw, a page's blue link text
+outweighed its orange brand buttons. Each kind is normalised to proportions
+(`share()`) before they meet.
+
+**Body text is not a terminal colour.** A dark site with peach body text put the
+peach into the orange slot, so "orange" in the terminal looked exactly like
+plain text. The page's own text and background are excluded from the hue
+slots, and each page colour fills only the one slot nearest its hue.
+
+**Cancel is not undo.** `--undo` returns to the theme from before you started
+stealing; the window's Cancel has to return to the theme that was on when *it*
+opened, so it calls `omarchy-theme-set` with that directly. For the same reason
+the window never suggests the name of the theme you are on: trying would
+overwrite what Cancel needs to put back.
+
+**Wallpapers.** The current one is copied into the runtime dir when the window
+opens -- after a Try it, "current" is the one you tried. Gradients are written
+by `wallpaper()` in plain Python (no PIL, no ImageMagick) at 640x360; the
+desktop scales them, and a gradient has no detail to lose. `--wallpaper` takes
+only a gradient name, `current`, or a file the window downloaded. Page images
+are fetched without AVIF in `Accept`, since Qt may not show it.
+
+**`clip` is square.** Qt Quick clips to the bounding box, not the radius, so the
+preview's wallpaper and bar covered its rounded corners and its border. It is
+masked with a `MultiEffect` in its own shape and the border is drawn last.
+
+Every colour, including one you picked, goes through `solve_contrast`: you pick
+the hue, the theme keeps it readable. Applying a theme is slow on slow
+machines, so the window's preview is drawn in QML and Omarchy is only switched
+on Try it.
+
 ## The radial shows what applies
 
 The ring had grown to 16 items. It now asks Hyprland directly (`hyprctl -j
@@ -1126,8 +1177,8 @@ theme) live on the start page, not the ring.
 
 `python3 -m unittest discover -s tests` runs in CI and needs nothing but python3
 and node. It covers the functions that are pure and easy to break without
-noticing: `site_host()`, `solve_contrast()` / `derive()`, and the answer card's
-`reflow()`.
+noticing: `site_host()`, `solve_contrast()` / `derive()`, the answer card's
+`reflow()`, and steal's colour picking and wallpaper PNGs (`test_steal.py`).
 
 The JS functions are **not copied** into the tests. `tests/_load.py` cuts
 `reflow` out of `AgentPanel.qml` and `siteHostOf` out of the service worker by

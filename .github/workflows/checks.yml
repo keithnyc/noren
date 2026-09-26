@@ -25,7 +25,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import ast, pathlib
-          for f in ["bin/noren", "host/noren-host", "host/noren_theme.py"]:
+          for f in ["bin/noren", "host/noren-host", "host/noren_theme.py", "host/noren_steal.py"]:
               ast.parse(pathlib.Path(f).read_text(), f)
               print("ok", f)
           PY

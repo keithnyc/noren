@@ -388,6 +388,31 @@ async function handleCommand(msg) {
     case 'pickResult':
       return reply({ ok: true, pick: lastPick });
 
+    case 'steal': {
+      // The page's own colours, for turning into an Omarchy theme. Noren's tint
+      // has to come off first or we would be reading the current theme back.
+      const tab = await focusedTab(msg.matchTitle);
+      if (!tab || !injectable(tab.url)) return reply({ ok: false, error: 'no web page in front of you' });
+      const tinted = injected.has(tab.id) || surfaced.has(tab.id);
+      try {
+        if (tinted) {
+          const css = injected.get(tab.id);
+          injected.delete(tab.id);
+          if (css) await chrome.scripting.removeCSS({ target: { tabId: tab.id }, css, origin: 'USER' });
+          if (surfaced.has(tab.id)) await runSurfacePass(tab.id, null);
+        }
+        const [result] = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: norenPalette,
+        });
+        return reply({ ok: true, palette: (result && result.result) || {}, host: siteHostOf(tab.url) });
+      } catch (e) {
+        return reply({ ok: false, error: 'cannot read that page' });
+      } finally {
+        if (tinted) await styleTab(tab.id, tab.url);
+      }
+    }
+
     case 'toggleBar': {
       // `noren bar`: show or hide the reveal bar on the page in front of you.
       // Same strict targeting as `home`.
@@ -845,6 +870,144 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   if (!clips[sender.tab.id]) return;
   lastClip = { tabId: sender.tab.id, found: true, width: msg.width, height: msg.height, late: true };
 });
+
+// Runs in the page: what colours it is made of, weighted by how much each is
+// seen. Backgrounds are sampled on a grid through elementFromPoint, so a colour
+// weighs what it covers on screen, not the sum of every nested box painted in
+// it. Returns hex strings only; the host (noren_steal.py) does the thinking.
+async function norenPalette() {
+  // Let the untint land before reading anything. A page that is not on screen
+  // gets no animation frames at all, so the timeout is not optional.
+  await new Promise((r) => {
+    requestAnimationFrame(() => requestAnimationFrame(r));
+    setTimeout(r, 150);
+  });
+
+  // Any CSS colour -- rgb(), oklch(), color(srgb ...) -- through a canvas, which
+  // is the one thing that speaks all of them. Transparent-ish means "look behind".
+  const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  const seen = new Map();
+  const hex = (css) => {
+    if (!css || css === 'transparent' || css === 'none') return null;
+    if (seen.has(css)) return seen.get(css);
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillStyle = '#000';
+    ctx.fillStyle = css;
+    ctx.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+    const out = a < 128 ? null : '#' + [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('');
+    seen.set(css, out);
+    return out;
+  };
+  const tally = (map, colour, weight) => {
+    if (colour && weight > 0) map.set(colour, (map.get(colour) || 0) + weight);
+  };
+  const W = innerWidth;
+  const H = innerHeight;
+  const MEDIA = /^(IMG|VIDEO|CANVAS|PICTURE|IFRAME|EMBED|OBJECT)$/;
+  const OURS = /^NOREN-/;
+
+  const root = getComputedStyle(document.documentElement);
+  const canvasColour = hex(root.backgroundColor)
+    || (document.body && hex(getComputedStyle(document.body).backgroundColor))
+    || (/dark/.test(root.colorScheme) ? '#121212' : '#ffffff');
+
+  const bg = new Map();
+  const COLS = 40;
+  const ROWS = 24;
+  for (let i = 0; i < COLS; i++) {
+    for (let j = 0; j < ROWS; j++) {
+      let el = document.elementFromPoint((i + 0.5) * W / COLS, (j + 0.5) * H / ROWS);
+      if (el && OURS.test(el.tagName)) continue;
+      if (el && MEDIA.test(el.tagName)) continue;
+      let colour = null;
+      while (el && !colour) {
+        colour = hex(getComputedStyle(el).backgroundColor);
+        el = el.parentElement;
+      }
+      tally(bg, colour || canvasColour, 1);
+    }
+  }
+
+  const inView = (r) => r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < H && r.left < W;
+
+  const text = new Map();
+  const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+  let visited = 0;
+  for (let node = walker.nextNode(); node && visited < 4000; node = walker.nextNode()) {
+    const words = node.nodeValue.trim();
+    const el = node.parentElement;
+    if (!words || !el || OURS.test(el.tagName)) continue;
+    visited++;
+    if (!inView(el.getBoundingClientRect())) continue;
+    const cs = getComputedStyle(el);
+    if (cs.visibility !== 'visible' || Number(cs.opacity) === 0) continue;
+    tally(text, hex(cs.color), Math.min(words.length, 400));
+  }
+
+  // What you press. Filled buttons count by area; links and icons by presence.
+  const accent = new Map();
+  const PRESSABLE = 'a, button, [role="button"], [role="tab"], input[type="submit"], '
+    + '[aria-current], [aria-selected="true"], [aria-pressed="true"], svg';
+  for (const el of Array.from(document.querySelectorAll(PRESSABLE)).slice(0, 1500)) {
+    const r = el.getBoundingClientRect();
+    if (!inView(r)) continue;
+    const cs = getComputedStyle(el);
+    if (cs.visibility !== 'visible') continue;
+    const area = Math.min(r.width * r.height, 20000) / 1000;
+    if (el.tagName === 'svg' || el instanceof SVGElement) {
+      tally(accent, hex(cs.fill), 1);
+      tally(accent, hex(cs.stroke), 1);
+      continue;
+    }
+    tally(accent, hex(cs.backgroundColor), area);
+    tally(accent, hex(cs.color), 1);
+    tally(accent, hex(cs.borderBottomColor), cs.borderBottomWidth !== '0px' ? 0.5 : 0);
+  }
+
+  // Wallpaper candidates: the picture the site shares itself with, then big
+  // landscape photos and wide background images. Only addresses -- the host
+  // fetches them, and only when the adjust window asks.
+  const images = [];
+  const addImage = (src, width, height) => {
+    let url;
+    try {
+      url = new URL(src, location.href).href;
+    } catch (e) {
+      return;
+    }
+    if (!/^https?:/.test(url) || images.some((i) => i.url === url)) return;
+    images.push({ url, width, height });
+  };
+  for (const sel of ['meta[property="og:image"]', 'meta[name="og:image"]',
+    'meta[name="twitter:image"]', 'meta[property="twitter:image"]']) {
+    const m = document.querySelector(sel);
+    if (m && m.content) addImage(m.content, 0, 0);
+  }
+  Array.from(document.images)
+    .filter((i) => i.naturalWidth >= 1000 && i.naturalWidth >= i.naturalHeight * 1.2)
+    .sort((a, b) => b.naturalWidth * b.naturalHeight - a.naturalWidth * a.naturalHeight)
+    .slice(0, 6)
+    .forEach((i) => addImage(i.currentSrc || i.src, i.naturalWidth, i.naturalHeight));
+  let looked = 0;
+  for (const el of document.querySelectorAll('body, body *')) {
+    if (images.length >= 8 || looked++ > 1500) break;
+    const r = el.getBoundingClientRect();
+    if (r.width < W * 0.6 || r.height < 200) continue;
+    const m = /url\(["']?([^"')]+)["']?\)/.exec(getComputedStyle(el).backgroundImage || '');
+    if (m && !/^data:/.test(m[1])) addImage(m[1], Math.round(r.width), Math.round(r.height));
+  }
+
+  const meta = document.querySelector('meta[name="theme-color"]:not([media]), meta[name="theme-color"]');
+  const pairs = (map) => Array.from(map.entries()).sort((a, b) => b[1] - a[1]).slice(0, 60);
+  return {
+    bg: pairs(bg),
+    text: pairs(text),
+    accent: pairs(accent),
+    themeColor: meta ? hex(meta.content) : null,
+    images: images.slice(0, 6),
+  };
+}
 
 // Runs in the page: point at an element, pick it. The pointer chooses the
 // innermost thing under it, which is rarely what you want -- the wheel walks

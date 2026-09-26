@@ -1238,7 +1238,7 @@ def handle_client(conn):
         # from Hyprland, since Chromium's own idea of focus is unreliable when
         # the call comes from a terminal or a keybind.
         if cmd in ("navigate", "back", "forward", "reload", "peel", "saveBookmark",
-                   "extract", "inspect", "home", "toggleBar", "clipPick"):
+                   "extract", "inspect", "home", "toggleBar", "clipPick", "steal"):
             hint = hypr_target_title()
             if hint:
                 req["matchTitle"] = hint

@@ -23,6 +23,12 @@
   page's settings, where the other settings already were.
 - `gather` leaves floating windows alone -- a clip, or a page set aside on
   purpose.
+- **Steal a theme (experimental).** `SUPER + M` → `T` turns the colours of the
+  page in front of you into an Omarchy theme, in a window with a live preview:
+  repaint any colour from the page's own, flip it dark or light, turn the
+  vividness up or down, and pick a wallpaper (yours, one of the page's
+  pictures, or a gradient in the new colours, with a full-screen peek). Try it,
+  put it back, or keep it. `noren steal` from a terminal.
 
 ## 0.01 alpha — 2026-09-20
 

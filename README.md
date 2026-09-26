@@ -98,12 +98,12 @@ evidence so far. Expect to find things. `noren version` says which one you have.
   made. It saves silently to the default folder and will not duplicate a page
   you have already saved.
 - **Radial menu** — `SUPER + M` rings back, forward, reload, copy, save, url
-  bar, home, clip and ask around the page in front of you. A chrome-less window
+  bar, home, clip, ask and steal theme around the page in front of you. A chrome-less window
   has no toolbar, so these have nowhere else to live. The ring shows only what
   applies: overview when there are pages to switch between, pop out and scatter
   in a group, gather when there is something to gather, peel for a tab in an
   ordinary window. Every item carries a mnemonic letter (`B` `F` `R` `C` `D` `U`
-  `H` `L` `A` `V` `G` `O` `S` `P`), and a letter works even when its item is not
+  `H` `L` `A` `T` `V` `G` `O` `S` `P`), and a letter works even when its item is not
   shown, so the ring can be summoned and used in one gesture.
 
 Back, forward and reload already work in a chrome-less window via Chromium's own
@@ -366,6 +366,42 @@ noren clip <url> "<css selector>"       # or name it
 Not done: clips do not survive a browser restart yet, and menus that a site
 draws outside the element (dropdowns, tooltips) are hidden with the rest of the
 page.
+
+## Steal a theme (experimental)
+
+Like the look of a site? Make it your desktop.
+
+`SUPER + M` → `T` reads the colours of the page in front of you and turns them
+into a complete Omarchy theme: terminal, bar, borders, the lot. A window opens
+with a live preview (a small desktop in the new colours), and you can adjust
+before anything changes:
+
+- **Click a colour** (background, text, accent, red … magenta), then pick one of
+  the page's own colours for it, or nudge it darker or lighter.
+- **As the page / Dark / Light.** Most of the web is white; Dark keeps the
+  site's hues and moves only lightness, so a white site with a red brand becomes
+  a dark theme with red accents.
+- **Vividness** calms every colour down or turns it up.
+- **Wallpaper:** keep yours, use one of the page's big pictures, or a glow,
+  dusk or solid gradient made from the new colours. **Hold to peek** (or hold
+  Space) to see it full screen.
+- **Try it** switches Omarchy for real and leaves the window open; **Put back**
+  undoes that. **Keep** keeps it; **Cancel** or Esc puts back the theme you had.
+
+Whatever you pick stays readable: every colour is checked against the theme's
+background the same way page theming does, and moved only as far as it must.
+
+```bash
+noren steal                  # make it from the page in front of you and switch
+noren steal --dark           # the same, flipped dark (or --light)
+noren steal --print          # show the colors.toml, change nothing
+noren steal --wallpaper glow # glow | dusk | solid | current (the default)
+noren steal --undo           # back to the theme you had before you started
+```
+
+A stolen theme is an ordinary Omarchy theme in `~/.config/omarchy/themes/`, so
+it shows up in Omarchy's own theme picker too. Steal only ever overwrites themes
+it made itself.
 
 ## Closing a page
 
