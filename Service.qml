@@ -109,6 +109,138 @@ Item {
     }
   }
 
+  // -------------------------------------------------------------------- stash
+  //
+  // The stash file, read directly for the same reason as the settings: the
+  // count in the bar has to be right with the browser closed. Only summaries
+  // are kept -- the file also holds what was typed into the page's forms, and
+  // nothing in the shell has any use for that.
+  property var stashItems: []
+  readonly property int stashCount: stashItems.length
+
+  // What the badge shows, which is not always stashCount. The CLI writes the
+  // file before it starts the flight, so the true count is up before the card
+  // has left the window; shown straight away, the number would tick over while
+  // the page is still visibly there. An increase waits for the flight to land.
+  property int stashCountShown: 0
+  property bool stashInFlight: false
+  property bool stashRead: false
+  signal stashLanded()
+
+  onStashCountChanged: {
+    if (!root.stashRead || root.stashInFlight) return
+    if (root.stashCount > root.stashCountShown) {
+      // Every stash flies, so an increase with no flight is one whose IPC call
+      // is still on its way. Give it a moment; if it never comes, show it anyway.
+      stashGrace.restart()
+    } else {
+      stashGrace.stop()
+      root.stashCountShown = root.stashCount
+    }
+  }
+
+  Timer {
+    id: stashGrace
+    interval: 1500
+    repeat: false
+    onTriggered: if (!root.stashInFlight) root.stashCountShown = root.stashCount
+  }
+
+  FileView {
+    id: stashFile
+    path: (Quickshell.env("XDG_DATA_HOME") || (Quickshell.env("HOME") + "/.local/share"))
+      + "/noren/stash.json"
+    watchChanges: true
+    // Never print: an error message about this file could carry a piece of it.
+    printErrors: false
+    onLoaded: root.readStash()
+    onLoadFailed: root.readStash()
+    onFileChanged: reload()
+  }
+
+  function readStash() {
+    var out = []
+    try {
+      var raw = JSON.parse(stashFile.text() || "{}")
+      var items = (raw && Array.isArray(raw.items)) ? raw.items : []
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i] || {}
+        if (!/^s_[0-9a-f]{12}$/.test(String(it.id || ""))) continue
+        out.push({
+          id: it.id,
+          url: String(it.url || ""),
+          title: String(it.title || ""),
+          icon: String(it.icon || ""),
+          stashedAt: Number(it.stashedAt) || 0,
+          hasFields: Array.isArray(it.fields) && it.fields.length > 0
+        })
+      }
+    } catch (e) {
+      // Missing or corrupt reads as an empty stash, the same as the CLI.
+      out = []
+    }
+    root.stashItems = out
+    if (!root.stashRead) {
+      // The first read is the state of things, not news: no waiting.
+      root.stashRead = true
+      root.stashCountShown = root.stashCount
+    }
+  }
+
+  // Where each bar widget's badge is. A bar exists per monitor, so there can
+  // be several; the flight picks the one on the window's own screen.
+  property var stashTargets: []
+
+  function registerStashTarget(item) {
+    if (!item || root.stashTargets.indexOf(item) >= 0) return
+    root.stashTargets = root.stashTargets.concat([item])
+  }
+
+  function unregisterStashTarget(item) {
+    root.stashTargets = root.stashTargets.filter(function (t) { return t !== item })
+  }
+
+  // Asked at launch rather than kept up to date: the badge moves whenever the
+  // bar relays out, and a position is only needed about once a day.
+  function stashLandings() {
+    var out = []
+    for (var i = 0; i < root.stashTargets.length; i++) {
+      var t = root.stashTargets[i]
+      try {
+        var spot = t && typeof t.stashLanding === "function" ? t.stashLanding() : null
+        if (spot) out.push(spot)
+      } catch (e) {
+        // A widget torn down mid-relayout; the others will do.
+      }
+    }
+    return out
+  }
+
+  function flyStash(it) {
+    // The file changed a moment ago, or is about to; either way, read it now
+    // rather than trust the watcher to have caught an atomic replace.
+    stashFile.reload()
+    stashGrace.stop()
+    stashFlight.launch(Number(it.x), Number(it.y), Number(it.w), Number(it.h),
+                       it.image ? "file://" + it.image : "",
+                       Number(it.count) || 0, root.stashLandings())
+    // Set after launch: a flight still in the air lands inside launch(), and
+    // that landing must not end this one's hold on the count.
+    root.stashInFlight = stashFlight.pendingLanding
+  }
+
+  StashFlight {
+    id: stashFlight
+    onLanded: function (count) {
+      root.stashInFlight = false
+      root.stashCountShown = count
+      root.stashLanded()
+      // The payload's count and the file can disagree -- a url stashed twice
+      // replaces itself -- and the file is the truth.
+      if (root.stashCount !== count) stashGrace.restart()
+    }
+  }
+
   IpcHandler {
     target: "io.github.keithnyc.noren"
 
@@ -139,6 +271,22 @@ Item {
     }
 
     function ping(): string { return "ok" }
+
+    // `noren stash` calls this after photographing the window and before
+    // closing it: { x, y, w, h, address, image, count }, the same geometry as
+    // the shatter's, and count is the stash's new size.
+    function stashed(payloadJson: string): string {
+      try {
+        root.flyStash(JSON.parse(payloadJson))
+      } catch (e) {
+        return "bad payload"
+      }
+      return "ok"
+    }
+
+    // Not needed while the file watcher keeps up; a cheap way to make sure if
+    // it ever does not.
+    function stashChanged(): string { stashFile.reload(); return "ok" }
 
     // The host calls this when a page window closes, whoever closed it: it
     // keeps a recent snapshot of each page window, so there is a picture to

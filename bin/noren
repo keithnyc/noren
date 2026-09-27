@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """noren — drive the browser from the terminal, Hyprland binds, or the shell."""
 
+import contextlib
 import json
 import os
 import math
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -65,6 +67,12 @@ usage: noren <command> [args]
                     --replace: in place of the page in front of you
   set rm <name>     forget a set
   set put           create, edit or rename a set from JSON on stdin
+  stash             close the page in front of you, keeping your place in it
+  stash list        what is stashed   (--json for the overlay; no field text)
+  stash open <id>   bring one back, then forget it
+                    --replace: in place of the page in front of you
+  stash drop <id>   forget one without opening it
+  stash count       how many pages are stashed
   apps              report webapp launchers and their window identity
   apps adopt [name] give webapp windows their app identity in alt-tab
   apps revert [name] undo that
@@ -404,6 +412,20 @@ def doctor():
          if tabbed_mode() else "off - new pages open as their own window")
     style = shatter_style()
     _row(OK, "shatter", f"{style} - how a closing page leaves" if style else "off")
+
+    # The count and the file's mode, never what is in it: it is your browsing.
+    stashed = len(load_stash())
+    try:
+        mode = os.stat(STASH_FILE).st_mode & 0o777
+    except OSError:
+        mode = None
+    if mode is None:
+        _row(OK, "stash", f"{stashed} pages")
+    elif mode & 0o077:
+        _row(MEH, "stash", f"{stashed} pages - mode {mode:o}, readable by others; "
+             f"chmod 600 {STASH_FILE}")
+    else:
+        _row(OK, "stash", f"{stashed} pages (mode {mode:o})")
 
     # The two symlinks the installer makes. Both are invisible until something
     # needs them, and both were missing on a machine installed before they
@@ -1037,6 +1059,346 @@ def set_remove(name):
     del sets[name]
     save_sets(sets)
     print(f"noren: removed set '{name}'")
+    return 0
+
+
+# ------------------------------------------------------------------------ stash
+#
+# Close the page in front of you and keep your place in it: url, title, scroll
+# position and whatever was typed into its fields. Private by design -- one
+# local file, never synced, never written into the browser's history,
+# bookmarks or storage. It lives under XDG_DATA_HOME rather than beside
+# config.json because it is data about your browsing, not a setting.
+#
+# The CLI is the only writer. The host and the shell read the file; the host
+# changes it only by running this.
+
+STASH_FILE = os.path.join(
+    os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"),
+    "noren", "stash.json",
+)
+STASH_ID = re.compile(r"^s_[0-9a-f]{12}$")
+STASH_ICON_MAX = 16 * 1024
+STASH_FIELDS_MAX = 50
+STASH_FIELD_CHARS = 20000
+STASH_FLIGHT = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp",
+                            "noren-stash-flight.png")
+PLUGIN_ID = "io.github.keithnyc.noren"
+
+
+def _stash_number(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0
+    return number if math.isfinite(number) else 0
+
+
+def stash_entry(page, entry_id=None, stashed_at=None):
+    """A stash entry from what the page reported, with the caps applied, or None.
+
+    Everything here came from a renderer, so it is shaped rather than trusted:
+    an http(s) url or nothing, an icon only if it is a data URL small enough to
+    keep, and at most so many fields and so much text. The excess is dropped
+    rather than refused -- the url alone is still worth keeping.
+    """
+    if not isinstance(page, dict):
+        return None
+    url = str(page.get("url") or "")
+    if not re.match(r"^https?://", url, re.I):
+        return None
+    icon = page.get("icon")
+    if not isinstance(icon, str) or not icon.startswith("data:") or len(icon) > STASH_ICON_MAX:
+        icon = ""
+    scroll = page.get("scroll") if isinstance(page.get("scroll"), dict) else {}
+    ratio = min(max(_stash_number(scroll.get("ratio")), 0), 1)
+
+    fields, budget = [], STASH_FIELD_CHARS
+    for field in page.get("fields") or []:
+        if len(fields) >= STASH_FIELDS_MAX:
+            break
+        if not isinstance(field, dict):
+            continue
+        sel, value = field.get("sel"), field.get("value")
+        if not isinstance(sel, str) or not sel or not isinstance(value, str) or not value:
+            continue
+        if len(value) > budget:
+            break
+        budget -= len(value)
+        fields.append({"sel": sel, "value": value})
+
+    # The block you were reading, so a page that lays itself out differently on
+    # the way back -- a feed, lazy images -- can still be put back on it. A
+    # pixel offset only survives on a page that renders the same every time.
+    anchor = scroll.get("anchor") if isinstance(scroll.get("anchor"), dict) else {}
+    anchor = {
+        "href": str(anchor.get("href") or "")[:2048],
+        "text": str(anchor.get("text") or "")[:200],
+        "src": str(anchor.get("src") or "")[:2048],
+        "top": _stash_number(anchor.get("top")),
+    }
+
+    entry_id = entry_id if STASH_ID.fullmatch(str(entry_id or "")) else None
+    return {
+        "id": entry_id or "s_" + secrets.token_hex(6),
+        "url": url,
+        "title": str(page.get("title") or ""),
+        "icon": icon,
+        "stashedAt": int(_stash_number(stashed_at) or time.time()),
+        "scroll": {"x": _stash_number(scroll.get("x")),
+                   "y": _stash_number(scroll.get("y")),
+                   "ratio": ratio,
+                   **({"anchor": anchor} if anchor["href"] or anchor["text"] or anchor["src"]
+                      else {})},
+        "fields": fields,
+    }
+
+
+def load_stash():
+    """The stash, newest first. A missing or corrupt file is an empty stash.
+
+    Each entry goes back through `stash_entry`, so a hand-edited file cannot
+    carry anything the caps would have dropped, or an id the host would refuse.
+    """
+    try:
+        with open(STASH_FILE, "r") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    raw = data.get("items") if isinstance(data, dict) else None
+    items = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not STASH_ID.fullmatch(str(item.get("id") or "")):
+            continue
+        entry = stash_entry(item, entry_id=item["id"], stashed_at=item.get("stashedAt"))
+        if entry:
+            items.append(entry)
+    return items
+
+
+def save_stash(items):
+    """Write the stash atomically, readable by nobody else.
+
+    The temporary file is created 0600 rather than chmodded afterwards, so
+    there is no moment where someone else's `cat` could win.
+    """
+    os.makedirs(os.path.dirname(STASH_FILE), exist_ok=True)
+    tmp = STASH_FILE + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        json.dump({"version": 1, "items": items}, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, STASH_FILE)
+
+
+@contextlib.contextmanager
+def stash_lock():
+    """Hold the stash for one read-modify-write.
+
+    Every change is a separate process -- the ring's Z, a click on the bar's ×,
+    Shift+Delete in the url bar -- and two drops a moment apart would each read
+    the same file and the second write would bring the first page back.
+    """
+    import fcntl
+
+    os.makedirs(os.path.dirname(STASH_FILE), exist_ok=True)
+    with open(STASH_FILE + ".lock", "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
+
+
+def stash_upsert(items, entry):
+    """Put `entry` on top. The same url stashed again replaces the old one."""
+    return [entry] + [item for item in items if item.get("url") != entry["url"]]
+
+
+def stash_remove(items, entry_id):
+    """(the stash without `entry_id`, the removed entry or None)."""
+    kept = [item for item in items if item.get("id") != entry_id]
+    gone = next((item for item in items if item.get("id") == entry_id), None)
+    return kept, gone
+
+
+def stash_summary(item):
+    """What a list may show: never the field values."""
+    return {
+        "id": item["id"],
+        "url": item["url"],
+        "title": item["title"],
+        "icon": item["icon"],
+        "stashedAt": item["stashedAt"],
+        "hasFields": bool(item.get("fields")),
+    }
+
+
+def stash_changed():
+    """Tell the page bars the count moved. Best effort: the shell watches the file."""
+    if not bridge_up():
+        return
+    try:
+        call({"cmd": "stashChanged"}, fallback=lambda: {"ok": False})
+    except SystemExit:
+        pass
+
+
+def stash_page():
+    """Close the page in front of you, keeping your place in it.
+
+    The order matters. Everything that can fail -- no page, no browser -- comes
+    before the entry is written, so a refusal leaves the window open and the
+    stash as it was. The close comes last, after the flight has started from
+    the window's own picture, and only once the window it is about to close is
+    confirmed as the focused one: `window.close()` closes whatever is focused.
+    """
+    def refuse(reason):
+        sys.exit(f"noren stash: {reason}")
+
+    target = front_window()
+    address = (target or {}).get("address") or ""
+    if not address or not (target.get("class") or "").lower().startswith("chrome-"):
+        refuse("no page in front of you")
+
+    if not bridge_up():
+        refuse("the browser isn't answering")
+    try:
+        page = call({"cmd": "stashCapture"},
+                    fallback=lambda: {"ok": False, "error": "the browser isn't answering"})
+    except SystemExit:
+        refuse("the browser isn't answering")
+    if page.get("ok") is False:
+        refuse(page.get("error") or "the browser isn't answering")
+    entry = stash_entry(page)
+    if not entry:
+        refuse("only web pages can be stashed")
+
+    with stash_lock():
+        items = stash_upsert(load_stash(), entry)
+        save_stash(items)
+
+    # The picture the flight is drawn from. A window that cannot be grabbed
+    # still flies, as a plain card.
+    at, size = target.get("at") or [0, 0], target.get("size") or [0, 0]
+    image = ""
+    if len(at) >= 2 and len(size) >= 2 and size[0] > 0 and size[1] > 0:
+        try:
+            done = subprocess.run(
+                ["grim", "-g", f"{at[0]},{at[1]} {size[0]}x{size[1]}", STASH_FLIGHT],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+            image = STASH_FLIGHT if done.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            image = ""
+
+    # The host plays a shatter for every close it sees. This one flies instead.
+    try:
+        call({"cmd": "stashMark", "address": address, "image": image},
+             fallback=lambda: {"ok": False})
+    except SystemExit:
+        pass
+
+    payload = json.dumps({
+        "x": at[0] if len(at) >= 2 else 0, "y": at[1] if len(at) >= 2 else 0,
+        "w": size[0] if len(size) >= 2 else 0, "h": size[1] if len(size) >= 2 else 0,
+        "address": address, "image": image, "count": len(items),
+    }, separators=(",", ":"))
+    try:
+        subprocess.run(["omarchy-shell", "-q", PLUGIN_ID, "stashed", payload],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    hypr_focus(address)
+    if (hypr_json("activewindow") or {}).get("address") != address:
+        stash_changed()
+        print(f"noren stash: stashed {entry['title'] or 'the page'}, but its window "
+              "would not take focus, so it was left open", file=sys.stderr)
+        return 1
+    hypr_do("hl.dsp.window.close()")
+
+    stash_changed()
+    print(f"stashed: {entry['title'] or host_of(entry['url'])}")
+    return 0
+
+
+def stash_list(as_json=False):
+    items = load_stash()
+    if as_json:
+        print(json.dumps({"ok": True, "items": [stash_summary(i) for i in items]}))
+        return 0
+    if not items:
+        print("noren: nothing stashed — press Z on a page's ring, or run `noren stash`")
+        return 0
+    now = time.time()
+    for item in items:
+        age = max(0, now - item["stashedAt"])
+        age = (f"{int(age // 86400)}d" if age >= 86400 else
+               f"{int(age // 3600)}h" if age >= 3600 else f"{int(age // 60)}m")
+        print(f"{item['id']}  {age:>4}  {host_of(item['url']):<24} {item['title'][:60]}")
+    return 0
+
+
+def stash_find(entry_id, verb):
+    if not STASH_ID.fullmatch(str(entry_id or "")):
+        sys.exit(f"noren stash {verb}: needs a stash id (see `noren stash list`)")
+    entry = next((i for i in load_stash() if i["id"] == entry_id), None)
+    if not entry:
+        sys.exit(f"noren stash {verb}: nothing stashed as {entry_id}")
+    return entry
+
+
+def stash_open(entry_id, replace=False):
+    """Bring a stashed page back, then forget it.
+
+    The restore is sent first so the extension is already waiting when the
+    page finishes loading; sent afterwards, a fast page could beat it. With no
+    bridge the page still opens, just at the top and with its fields empty.
+    The entry is removed only once the open went through: `open_one` exits on
+    failure, and a page that did not open should still be in the stash.
+    """
+    entry = stash_find(entry_id, "open")
+
+    def send_restore(late=False):
+        try:
+            call({"cmd": "stashRestore", "url": entry["url"], "late": late,
+                  "scroll": entry["scroll"], "fields": entry["fields"]},
+                 fallback=lambda: {"ok": False})
+        except SystemExit:
+            pass
+
+    # Stashing the last page window closes the browser with it, so the open
+    # below is often what starts it again. Then there is no bridge to tell
+    # beforehand, and the restore follows once there is one -- the extension
+    # applies it to a page that has already finished loading as well as to one
+    # that is still on its way.
+    was_up = bridge_up()
+    if was_up:
+        send_restore()
+
+    if replace:
+        url = entry["url"]
+        res = call({"cmd": "goto", "url": url}, fallback=lambda: spawn_direct(url))
+        if res.get("ok") is False:
+            sys.exit(f"noren stash open: {res.get('error', 'failed')}")
+    else:
+        open_one(entry["url"])
+
+    if not was_up and wait_for_bridge():
+        send_restore(late=True)
+
+    with stash_lock():
+        items, _ = stash_remove(load_stash(), entry_id)
+        save_stash(items)
+    stash_changed()
+    return 0
+
+
+def stash_drop(entry_id):
+    stash_find(entry_id, "drop")
+    with stash_lock():
+        items, gone = stash_remove(load_stash(), entry_id)
+        if not gone:
+            sys.exit(f"noren stash drop: nothing stashed as {entry_id}")
+        save_stash(items)
+    stash_changed()
     return 0
 
 
@@ -3186,6 +3548,22 @@ def main(argv):
 
     if cmd == "steal":
         return steal(rest)
+
+    if cmd == "stash":
+        sub = rest[0] if rest else None
+        arg = rest[1] if len(rest) > 1 else None
+        if sub is None:
+            return stash_page()
+        if sub in ("list", "ls"):
+            return stash_list(as_json="--json" in rest)
+        if sub == "open":
+            return stash_open(arg, replace="--replace" in rest)
+        if sub in ("drop", "rm"):
+            return stash_drop(arg)
+        if sub == "count":
+            print(len(load_stash()))
+            return 0
+        sys.exit(f"noren stash: unknown subcommand '{sub}'")
 
     if cmd == "open":
         group = "--group" in rest

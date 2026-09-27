@@ -44,6 +44,9 @@ Item {
   property var suggestions: []
   // Named sets of pages, from `noren set list --json`.
   property var sets: []
+  // Stashed pages, newest first, from `noren stash list --json` -- summaries
+  // only; what was typed into them never leaves the CLI.
+  property var stash: []
   // What `set save` would capture right now, so the save row can show what it
   // is about to save instead of a bare count.
   property var pending: ({ urls: [], grouped: false })
@@ -74,6 +77,7 @@ Item {
   // A leading sigil scopes the search. Blended ranking is right by default and
   // imprecise when you already know what you are looking for, so:
   //   *term  bookmarks      %term  history      #term  open tabs
+  //   @term  sets           ~term  stashed pages
   // `*` alone lists your bookmarks, which is as close to a bookmark manager as
   // a chrome-less browser gets.
   readonly property string scope: {
@@ -84,6 +88,7 @@ Item {
     if (c === "%") return "history"
     if (c === "#") return "tab"
     if (c === "@") return "set"
+    if (c === "~") return "stash"
     return ""
   }
 
@@ -96,7 +101,8 @@ Item {
     root.scope === "bookmark" ? "bookmarks"
       : root.scope === "history" ? "history"
       : root.scope === "tab" ? "open tabs"
-      : root.scope === "set" ? "your sets" : ""
+      : root.scope === "set" ? "your sets"
+      : root.scope === "stash" ? "your stash" : ""
 
   // Several destinations typed at once: `social.example, search.example, video.example`.
   // The comma only counts as a separator when *every* part is itself a
@@ -104,7 +110,8 @@ Item {
   // `noren open`, which does the actual splitting; this copy only decides what
   // the footer promises and what Ctrl+Enter means.
   readonly property var destinations: splitDestinations(query)
-  readonly property bool multiUrl: destinations.length > 1
+  // Not in the stash: `~a, b` is a search of it, and nothing there opens a url.
+  readonly property bool multiUrl: destinations.length > 1 && root.scope !== "stash"
 
   function isDestination(text) {
     var raw = String(text || "").trim()
@@ -161,6 +168,38 @@ Item {
     return rows
   }
 
+  // Stashed pages, matched on title and host. The second line is the host and
+  // how long ago, which is usually enough to tell two stashes of one site apart.
+  function stashRows(needle) {
+    var rows = []
+    var now = Date.now() / 1000
+    for (var i = 0; i < root.stash.length; i++) {
+      var entry = root.stash[i]
+      var host = root.hostOf(entry.url)
+      var title = entry.title || host
+      if (needle.length > 0 && title.toLowerCase().indexOf(needle) < 0
+          && host.toLowerCase().indexOf(needle) < 0) continue
+      rows.push({
+        kind: "stash",
+        id: -1,
+        stashId: entry.id,
+        title: title,
+        url: host + "  \u00B7  " + root.ageOf(now - (entry.stashedAt || 0))
+      })
+    }
+    return rows
+  }
+
+  // "2h", as the in-page bar says it. No expiry, so weeks are expected.
+  function ageOf(seconds) {
+    var s = Math.max(0, Math.floor(seconds))
+    if (s < 60) return "just now"
+    if (s < 3600) return Math.floor(s / 60) + "m"
+    if (s < 86400) return Math.floor(s / 3600) + "h"
+    if (s < 86400 * 14) return Math.floor(s / 86400) + "d"
+    return Math.floor(s / (86400 * 7)) + "w"
+  }
+
   function hostOf(url) {
     var m = String(url || "").match(/^[a-z][a-z0-9+.-]*:\/\/([^\/?#]+)/i)
     return m ? m[1].replace(/^www\./, "") : String(url || "")
@@ -201,6 +240,9 @@ Item {
         }
       }
       out = out.concat(root.setRows(""))
+      // The latest few stashes only: the guide is a page of places, and a long
+      // stash would push every open tab off it. `~` has the rest.
+      out = out.concat(root.stashRows("").slice(0, 3))
       for (var r = 0; r < root.tabs.length; r++) {
         if (used[root.tabs[r].id]) continue
         out.push({ kind: "tab", id: root.tabs[r].id, title: root.tabs[r].title, url: root.tabs[r].url })
@@ -208,10 +250,30 @@ Item {
       return out.slice(0, root.maxRows)
     }
 
+    // `~`: the stash and nothing else. Its empty state says how to fill it,
+    // for the same reason a bare `@` does below.
+    if (root.scope === "stash") {
+      out = root.stashRows(needle)
+      if (out.length === 0) {
+        out.push({
+          kind: "hint",
+          id: -1,
+          name: "",
+          title: root.stash.length > 0 ? "No stashed page matches" : "Nothing stashed \u00B7 press Z on a page's ring",
+          url: root.stash.length > 0 ? "" : "It closes the page and keeps your place: scroll and anything typed"
+        })
+      }
+      return out.slice(0, root.maxRows)
+    }
+
     // Sets first, and also when no sigil was typed: a set named `news` should
-    // turn up for someone who typed `news` and has never heard of `@`.
+    // turn up for someone who typed `news` and has never heard of `@`. The
+    // stash follows, for the same reason.
     if (root.scope === "set" || root.scope === "") {
       out = out.concat(root.setRows(needle))
+    }
+    if (root.scope === "" && needle.length > 0) {
+      out = out.concat(root.stashRows(needle))
     }
     if (root.scope === "set") {
       // Saving lives here rather than in the radial: a name is the only input a
@@ -312,6 +374,12 @@ Item {
     // U+F019E: a crop mark. Rendered and looked at; its neighbour U+F019F is
     // an empty dashed frame. EXPERIMENTAL -- see `noren clip`. L, because
     // C is Copy.
+    // U+F03D4: a box with an arrow going into it. Rendered and looked at; its
+    // neighbour U+F03D5 is the same box with the arrow coming out. Z, because
+    // S is Scatter.
+    { icon: "\udb80\udfd4", key: "Z", label: "Stash", show: root.ctx !== null && root.ctx.page,
+      hint: "Close this page, keep your place",
+      run: function () { root.runNoren(["stash"]) } },
     { icon: "\udb80\udd9e", key: "L", label: "Clip", hint: "Point at part of this page to keep it floating",
       run: function () { root.runNoren(["clip"]) } },
     // U+F1400: a window with content panels. U+F00C5 was the first pick and is
@@ -437,12 +505,16 @@ Item {
 
   function open(payloadJson) {
     var wanted = "url"
+    // Text to start with, so a caller can open the bar already scoped -- the
+    // bar widget's stash badge opens it on `~`.
+    var startText = ""
     try {
       var payload = payloadJson ? JSON.parse(payloadJson) : null
       if (payload && payload.mode === "radial") wanted = "radial"
       if (payload && payload.mode === "overview") wanted = "overview"
       if (payload && payload.mode === "agent") wanted = "agent"
       if (payload && payload.mode === "steal") wanted = "steal"
+      if (payload && typeof payload.text === "string") startText = payload.text
     } catch (e) {
       // A malformed payload is a url bar, not an error worth surfacing.
     }
@@ -452,7 +524,7 @@ Item {
     // as it disappears would take the keyboard back for a frame, which is the
     // very thing the hand-off avoids.
     root.handingOff = false
-    root.filterText = ""
+    root.filterText = wanted === "url" ? startText : ""
     root.selectedIndex = 0
     root.selectionMoved = false
     root.suggestions = []
@@ -462,6 +534,7 @@ Item {
     windowContext.running = true
     statusLoader.running = true
     setLoader.running = true
+    stashLoader.running = true
     pendingLoader.running = true
     if (root.mode === "url") {
       tabLoader.running = true
@@ -507,14 +580,27 @@ Item {
   // keys and deliberately not a confirmation dialog: a set costs seconds to
   // rebuild (gather, `@name`, Enter) and a modal inside an overlay is worse than
   // the mistake it prevents.
-  function deleteHighlightedSet() {
+  //
+  // The same gesture drops a stashed page without opening it. That one cannot
+  // be rebuilt -- its scroll and typed text go with it -- but it is still the
+  // gesture people already know for "not this one", and it is two keys.
+  function deleteHighlighted() {
     var row = root.currentRow()
-    if (!row || row.kind !== "set") return false
-    runNoren(["set", "rm", row.name])
-    // Stay open and reload, so the row visibly goes away.
-    root.selectedIndex = 0
-    setRefresh.restart()
-    return true
+    if (!row) return false
+    if (row.kind === "set") {
+      runNoren(["set", "rm", row.name])
+      // Stay open and reload, so the row visibly goes away.
+      root.selectedIndex = 0
+      setRefresh.restart()
+      return true
+    }
+    if (row.kind === "stash") {
+      runNoren(["stash", "drop", row.stashId])
+      root.selectedIndex = 0
+      stashRefresh.restart()
+      return true
+    }
+    return false
   }
 
   // Debounced: a process per keystroke would spawn faster than it can answer.
@@ -543,6 +629,15 @@ Item {
       if (chosen.kind === "hint") return   // nothing to act on; keep typing
       if (chosen.kind === "save") runNoren(["set", "save", chosen.name])
       else runNoren(["set", "open", chosen.name])
+      root.close()
+      return
+    }
+
+    // `~` is the stash and only the stash, so its rows win outright the same
+    // way: `~example.com` is a search of the stash, not a url.
+    if (root.scope === "stash") {
+      if (!pick || pick.kind !== "stash") return   // a hint; keep typing
+      runNoren(["stash", "open", pick.stashId])
       root.close()
       return
     }
@@ -576,6 +671,14 @@ Item {
       return
     }
 
+    // Opens beside what is there, like any Enter; the CLI restores the scroll
+    // and the typed text once the page has loaded.
+    if (honourPick && pick.kind === "stash") {
+      runNoren(["stash", "open", pick.stashId])
+      root.close()
+      return
+    }
+
     if (honourPick && pick.kind === "tab") {
       runNoren(["focus", String(pick.id)])
     } else if (honourPick) {
@@ -605,6 +708,15 @@ Item {
     // nothing at all, since nothing had been typed.
     var pick = root.currentRow()
     var honourPick = pick && (root.selectionMoved || !root.looksLikeUrl)
+    if (pick && pick.kind === "stash" && (honourPick || root.scope === "stash")) {
+      // In place of the page in front, when there is one to replace; without
+      // one, Ctrl+Enter falls back to opening, the same as for a typed url.
+      if (root.canReplace) runNoren(["stash", "open", pick.stashId, "--replace"])
+      else runNoren(["stash", "open", pick.stashId])
+      root.close()
+      return
+    }
+    if (pick && pick.kind === "hint" && root.scope === "stash") return
     if (honourPick && pick.kind === "home") {
       // The page in front goes home -- or, with none, the start page opens.
       runNoren(["start"])
@@ -705,6 +817,47 @@ Item {
     }
   }
 
+  Timer {
+    id: stashRefresh
+    interval: 260
+    repeat: false
+    onTriggered: {
+      if (!root.opened) return
+      stashLoader.running = false
+      stashLoader.running = true
+    }
+  }
+
+  Process {
+    id: stashLoader
+    command: [root.binPath, "stash", "list", "--json"]
+    running: false
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var out = []
+        try {
+          var res = JSON.parse(this.text)
+          var items = (res && res.ok && Array.isArray(res.items)) ? res.items : []
+          for (var i = 0; i < items.length; i++) {
+            var it = items[i] || {}
+            // Ids go straight back to the CLI as arguments, so only ever the
+            // shape it hands out.
+            if (!/^s_[0-9a-f]{12}$/.test(String(it.id || ""))) continue
+            out.push({
+              id: it.id,
+              url: String(it.url || ""),
+              title: String(it.title || ""),
+              stashedAt: Number(it.stashedAt) || 0
+            })
+          }
+        } catch (e) {
+          out = []
+        }
+        root.stash = out
+      }
+    }
+  }
+
   Process {
     id: pendingLoader
     command: [root.binPath, "set", "preview", "--json"]
@@ -791,7 +944,9 @@ Item {
     repeat: false
     onTriggered: {
       if (!root.opened) return
-      if (root.scope === "tab") { root.suggestions = []; return }
+      // Neither has anything to ask the browser: tabs are already here, and the
+      // stash is Noren's own file.
+      if (root.scope === "tab" || root.scope === "stash") { root.suggestions = []; return }
       var args = [root.binPath, "suggest"]
       var q = root.query.trim()
       if (root.scope.length > 0) args = args.concat(["--kind", root.scope])
@@ -1028,8 +1183,8 @@ Item {
           placeholderText: root.scope.length > 0
             ? "Searching " + root.scopeLabel
             : (root.tabs.length > 0
-               ? "Go to a url, or search " + root.tabs.length + " tabs, bookmarks and history   (@ sets, * bookmarks, % history, # tabs)"
-               : "Go to a url, or search bookmarks and history   (@ sets, * bookmarks, % history, # tabs)")
+               ? "Go to a url, or search " + root.tabs.length + " tabs, bookmarks and history   (@ sets, ~ stash, * bookmarks, % history, # tabs)"
+               : "Go to a url, or search bookmarks and history   (@ sets, ~ stash, * bookmarks, % history, # tabs)")
           text: root.filterText
           color: root.foreground
           font.family: root.fontFamily
@@ -1059,7 +1214,7 @@ Item {
                        && (event.modifiers & Qt.ShiftModifier)) {
               // Only consumed when it actually removed something, so
               // Shift+Delete still edits text everywhere else.
-              event.accepted = root.deleteHighlightedSet()
+              event.accepted = root.deleteHighlighted()
             } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
               if (event.modifiers & Qt.ControlModifier) root.replaceCurrent()
               else root.activate()
@@ -1102,6 +1257,7 @@ Item {
                 : modelData.kind === "tab" ? "tab"
                 : modelData.kind === "save" ? "save"
                 : modelData.kind === "set" ? "set"
+                : modelData.kind === "stash" ? "stashed"
                 : modelData.kind === "home" ? "home"
                 : modelData.kind === "bookmark" ? "saved" : "visited"
               color: index === root.selectedIndex ? root.selectedText : root.foreground
@@ -1160,8 +1316,10 @@ Item {
           Text {
             text: {
               var row = root.currentRow()
-              if (row && row.kind === "hint") return "type a name to save a set"
+              if (row && row.kind === "hint") return root.scope === "stash"
+                ? "stashed pages come back from here" : "type a name to save a set"
               if (row && row.kind === "set") return "\u21B5 open set  \u00B7  Shift+Del delete"
+              if (row && row.kind === "stash") return "\u21B5 restore  \u00B7  Shift+Del drop"
               if (row && row.kind === "home") return root.canReplace
                 ? "\u21B5 start page  \u00B7  Ctrl+\u21B5 this page goes home"
                 : "\u21B5 start page"

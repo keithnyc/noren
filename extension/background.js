@@ -54,9 +54,15 @@ function connect() {
       chrome.storage.local.set({ wallpaper: msg.data || null }).catch(() => {});
       return;
     }
+    if (msg && msg.type === 'stashChanged') {
+      // Something was stashed, opened or dropped. Every bar's count is a
+      // picture of the stash file, which only the host can read.
+      pushStashChanged();
+      return;
+    }
     if (msg && (msg.type === 'sets' || msg.type === 'setOpResult'
       || msg.type === 'siteList' || msg.type === 'siteOpResult'
-      || msg.type === 'group')) {
+      || msg.type === 'group' || msg.type === 'stash')) {
       const settle = pendingHost.get(msg.id);
       pendingHost.delete(msg.id);
       if (settle) settle(msg);
@@ -411,6 +417,73 @@ async function handleCommand(msg) {
       } finally {
         if (tinted) await styleTab(tab.id, tab.url);
       }
+    }
+
+    case 'stashCapture': {
+      // Everything needed to put the page in front of you back later: where
+      // it is, how far down you were, and what you had typed. Only a Noren
+      // window -- stashing closes it, and a tabbed window is not ours to close.
+      const tab = await focusedTab(msg.matchTitle);
+      if (!tab || !/^https?:/i.test(tab.url || '')) {
+        return reply({ ok: false, error: 'no web page in front of you' });
+      }
+      const win = await chrome.windows.get(tab.windowId).catch(() => null);
+      if (!win || win.type !== 'app') return reply({ ok: false, error: 'not a Noren page' });
+      let state = null;
+      try {
+        const [result] = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: norenStashCapture,
+        });
+        state = result && result.result;
+      } catch (e) {
+        // The Web Store and a few others refuse injection. The address alone
+        // is still worth keeping.
+        state = null;
+      }
+      return reply({
+        ok: true,
+        url: tab.url,
+        title: tab.title || '',
+        icon: (await faviconData(tab.url)) || '',
+        scroll: (state && state.scroll) || { x: 0, y: 0, ratio: 0 },
+        fields: (state && state.fields) || [],
+      });
+    }
+
+    case 'stashRestore': {
+      // Sent before the page is opened, so it is waiting when the page loads.
+      // Held in session storage rather than memory: the worker may be torn
+      // down between this message and the page finishing.
+      const key = stashKey(msg.url);
+      if (!key) return reply({ ok: false, error: 'needs a url' });
+      await withStashRestores((all) => {
+        all[key] = {
+          scroll: msg.scroll && typeof msg.scroll === 'object' ? msg.scroll : null,
+          fields: Array.isArray(msg.fields) ? msg.fields : [],
+          at: Date.now(),
+        };
+        return [null, true];
+      });
+      reply({ ok: true });
+      // From a cold start the CLI opens the page first and only sends this
+      // once the bridge is up, so the page may have finished loading already
+      // and onCompleted will not come again. One still loading is left to it.
+      // Only then: with the browser already running, a copy of the same page
+      // open in another window would otherwise take the place meant for the
+      // one being opened.
+      if (!msg.late) return;
+      try {
+        const windows = await chrome.windows.getAll({ populate: true });
+        const ready = windows
+          .filter((w) => w.type === 'app')
+          .flatMap((w) => w.tabs || [])
+          .find((t) => t.status === 'complete' && stashKey(t.url) === key);
+        if (ready) await applyStashRestore(ready.id, key);
+      } catch (e) {
+        // The browser is on its way down; the entry expires on its own.
+      }
+      return;
     }
 
     case 'toggleBar': {
@@ -1488,6 +1561,475 @@ function norenOutline() {
   };
 }
 
+// --------------------------------------------------------------------- stash
+//
+// Stash closes a page and keeps your place in it. The CLI owns the file and
+// the host reads it; the worker only takes the page's state on the way out and
+// puts it back on the way in. Nothing about a stashed page is kept here beyond
+// the minute it takes to reopen one, and never in `storage.local`: stashed
+// pages are private, and session storage lives in memory only.
+
+const STASH_ID = /^s_[0-9a-f]{12}$/;
+const STASH_RESTORE_TTL = 60000;
+
+// What a restore is filed under: the address without its fragment, which a
+// page is free to rewrite as it loads.
+function stashKey(url) {
+  try {
+    const u = new URL(String(url || ''));
+    if (!/^https?:$/.test(u.protocol)) return '';
+    u.hash = '';
+    return u.href;
+  } catch (e) {
+    return '';
+  }
+}
+
+// Read-modify-write on the pending restores, one at a time: two restores
+// arriving together must not each write back a copy without the other.
+// `change` returns [value, changed]; storage is written only when something
+// changed or an entry expired, since every finished page load asks.
+let stashRestoreChain = Promise.resolve();
+
+function withStashRestores(change) {
+  const run = stashRestoreChain.then(async () => {
+    let all = {};
+    try {
+      const got = await chrome.storage.session.get({ stashRestores: {} });
+      all = (got && got.stashRestores) || {};
+    } catch (e) {
+      all = {};
+    }
+    let dirty = false;
+    const now = Date.now();
+    for (const key of Object.keys(all)) {
+      if (!(now - (all[key] && all[key].at) < STASH_RESTORE_TTL)) {
+        delete all[key];
+        dirty = true;
+      }
+    }
+    const [value, changed] = change(all);
+    if (dirty || changed) await chrome.storage.session.set({ stashRestores: all }).catch(() => {});
+    return value;
+  });
+  stashRestoreChain = run.catch(() => {});
+  return run;
+}
+
+// A restored page is put back once it has loaded. Navigation events rather
+// than tab status, for the reason given above applySite.
+chrome.webNavigation.onCompleted.addListener(async (details) => {
+  if (details.frameId !== 0) return;
+  const key = stashKey(details.url);
+  if (!key) return;
+  const pending = await withStashRestores((all) => {
+    const hit = all[key];
+    return [hit || null, false];
+  });
+  if (pending) applyStashRestore(details.tabId, key);
+});
+
+// Take the pending restore for `key` and put it into the tab. Taken and
+// deleted in one step, so the two ways here -- a page finishing its load, and
+// a restore arriving for a page that already had -- never both apply it.
+async function applyStashRestore(tabId, key) {
+  // Only into a Noren window: that is where `stash open` puts it, and a tabbed
+  // window that happens to load the same address has not asked for anything.
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  const win = tab && (await chrome.windows.get(tab.windowId).catch(() => null));
+  if (!win || win.type !== 'app') return;
+  const taken = await withStashRestores((all) => {
+    const hit = all[key];
+    delete all[key];
+    return [hit || null, Boolean(hit)];
+  });
+  if (!taken) return;
+  chrome.scripting.executeScript({
+    target: { tabId },
+    func: norenStashRestore,
+    args: [taken.scroll || null, taken.fields || []],
+  }).catch(() => {});
+}
+
+// The bars' stash count is only right if every bar is told. Best effort, like
+// refreshBars: a page with no bar has no listener.
+async function pushStashChanged() {
+  try {
+    const windows = await chrome.windows.getAll({ populate: true });
+    for (const win of windows) {
+      if (win.type !== 'app') continue;
+      for (const tab of win.tabs || []) {
+        chrome.tabs.sendMessage(tab.id, { norenBar: 'stashChanged' }).catch(() => {});
+      }
+    }
+  } catch (e) {
+    // The browser is shutting down.
+  }
+}
+
+// The stash as the bar's menu shows it. The host sends summaries with no field
+// values; this drops the url too, since a menu row shows a host and opens by
+// id. An icon is passed on only if it really is a picture.
+async function askStash() {
+  const reply = await askHost({ type: 'getStash' }, null, 3000);
+  const items = reply && Array.isArray(reply.items) ? reply.items : [];
+  return items
+    .filter((item) => item && STASH_ID.test(item.id || ''))
+    .map((item) => ({
+      id: item.id,
+      title: String(item.title || ''),
+      host: placeHost(item.url || ''),
+      icon: /^data:image\//.test(item.icon || '') ? item.icon : '',
+      stashedAt: Number(item.stashedAt) || 0,
+    }));
+}
+
+// Runs in the page: where you were and what you had typed. Only the kinds of
+// field someone writes prose or an address into -- never a password, a hidden
+// or file input, a card number or a one-time code, whatever the page calls it.
+function norenStashCapture() {
+  const scroller = document.scrollingElement || document.documentElement;
+  const x = Math.round(window.scrollX);
+  const y = Math.round(window.scrollY);
+  const room = scroller.scrollHeight - window.innerHeight;
+  const scroll = { x, y, ratio: room > 0 ? Math.min(1, y / room) : 0 };
+
+  const KINDS = /^(text|search|email|url|tel|number)$/;
+  const secret = (el) => (el.getAttribute('autocomplete') || '')
+    .toLowerCase()
+    .split(/\s+/)
+    .some((token) => token.startsWith('cc-') || token === 'one-time-code');
+
+  const unique = (sel, el) => {
+    try {
+      const hits = document.querySelectorAll(sel);
+      return hits.length === 1 && hits[0] === el;
+    } catch (e) {
+      return false;
+    }
+  };
+  // getAttribute rather than the properties: a form's `.id` is whatever input
+  // inside it is named "id".
+  const byId = (el) => {
+    const id = el.getAttribute('id');
+    const sel = id ? '#' + CSS.escape(id) : '';
+    return sel && unique(sel, el) ? sel : '';
+  };
+  const path = (el) => {
+    const parts = [];
+    for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+      const tag = n.tagName.toLowerCase();
+      const same = n.parentElement
+        ? [...n.parentElement.children].filter((c) => c.tagName === n.tagName) : [n];
+      parts.unshift(same.length > 1 ? `${tag}:nth-of-type(${same.indexOf(n) + 1})` : tag);
+    }
+    return parts.join(' > ');
+  };
+  const selectorFor = (el) => {
+    const own = byId(el);
+    if (own) return own;
+    const name = el.getAttribute('name');
+    if (name) {
+      const byName = `${el.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`;
+      const form = el.form;
+      const sel = form ? `${byId(form) || path(form)} ${byName}` : byName;
+      if (unique(sel, el)) return sel;
+    }
+    return path(el);
+  };
+
+  // The same caps the CLI enforces, so a huge form is not carried across the
+  // bridge only to be thrown away.
+  const fields = [];
+  let total = 0;
+  for (const el of document.querySelectorAll('input, textarea')) {
+    if (fields.length >= 50) break;
+    if (el.disabled || el.readOnly || secret(el)) continue;
+    if (el.tagName === 'INPUT' && !KINDS.test(el.type)) continue;
+    const value = el.value;
+    if (!value || total + value.length > 20000) continue;
+    total += value.length;
+    fields.push({ sel: selectorFor(el), value });
+  }
+  // A pixel offset is not a place on a feed: it re-renders and lazy-loads, so
+  // the same y lands on a different post. So also remember what was being
+  // read -- the block near the top of the window, by its permalink and its
+  // opening words -- and where on screen it sat. Kept inside `scroll`, which
+  // is where the CLI keeps position.
+  const anchor = stashAnchor();
+  if (anchor) scroll.anchor = anchor;
+  return { scroll, fields };
+
+  function stashAnchor() {
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+    // A header pinned to the window is in front of every post in turn; it
+    // says nothing about where you were.
+    const pinned = (el) => {
+      for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+        const p = getComputedStyle(n).position;
+        if (p === 'fixed' || p === 'sticky') return true;
+      }
+      return false;
+    };
+    const blockOf = (el) => {
+      const post = el.closest('article, [role="article"]');
+      const small = el.closest('li, section, p, h1, h2, h3, h4, h5, h6');
+      let wide = null;
+      for (let n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+        if (n.getBoundingClientRect().width >= W * 0.4) { wide = n; break; }
+      }
+      // A block taller than a couple of screens is the feed, not a post in it.
+      const fits = (n) => n && n.getBoundingClientRect().height <= H * 2;
+      return [post, small, wide].find(fits) || null;
+    };
+    const permalinkOf = (block) => {
+      const links = Array.from(block.querySelectorAll('a[href]')).filter((a) => {
+        const raw = a.getAttribute('href') || '';
+        return raw && !raw.startsWith('#') && !/^javascript:/i.test(raw) && /^https?:/i.test(a.href);
+      });
+      const strong = links.find((a) => /\/(status|comments|p)\//.test(a.pathname));
+      const long = links.find((a) => a.pathname.length >= 16);
+      return ((strong || long) || { href: '' }).href.slice(0, 2048);
+    };
+    // A picture has no words to be found by, but it has an address. Only for
+    // a block that is nothing but media: anywhere else the words are better.
+    const mediaOf = (block, text) => {
+      if (/^(IMG|VIDEO)$/.test(block.tagName)) return block;
+      return text ? null : block.querySelector('img, video');
+    };
+    const describe = (block) => {
+      const text = norm(block.innerText).slice(0, 120);
+      const href = permalinkOf(block);
+      const media = mediaOf(block, text);
+      const raw = media ? media.currentSrc || media.src || '' : '';
+      const src = /^https?:/i.test(raw) ? raw.slice(0, 2048) : '';
+      if (!text && !href && !src) return null;
+      // For media the top is the picture's own, which is what restore finds.
+      const top = (src ? media : block).getBoundingClientRect().top;
+      const anchor = { href, text, top: Math.round(top) };
+      if (src) anchor.src = src;
+      return anchor;
+    };
+
+    for (const at of [0.25, 0.3, 0.2, 0.4]) {
+      const stack = document.elementsFromPoint(W / 2, H * at);
+      const el = stack.find((n) => n.getRootNode() === document && n.tagName !== 'NOREN-BAR'
+        && n !== document.body && n !== document.documentElement && !pinned(n));
+      const block = el && blockOf(el);
+      const anchor = block && describe(block);
+      if (anchor) return anchor;
+    }
+
+    // Long-form pages defeat the probe: the point lands on one container
+    // many screens tall, or on a picture inside it. Take the first
+    // reading-sized thing that is on screen instead, in document order.
+    const candidates = Array.from(document.querySelectorAll(
+      'p, h1, h2, h3, h4, h5, h6, li, pre, blockquote, figure, img, video, table')).slice(0, 3000);
+    for (const el of candidates) {
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.top < -r.height / 2 || r.top > H * 0.6) continue;
+      if (pinned(el)) continue;
+      const anchor = describe(el);
+      if (anchor) return anchor;
+    }
+    return null;
+  }
+}
+
+// Runs in the page: put back what norenStashCapture took. A page is often
+// still building itself when it reports loaded, so this keeps trying -- for the
+// fields to exist, and for the block you were reading to turn up. That block,
+// found by its permalink, its picture or its opening words, is put back where it sat on
+// screen. The pixel offset (or, until the page is that tall, the same fraction
+// of the way down) is where it waits meanwhile: a virtualized feed only renders
+// posts near the viewport, so waiting at the top would mean the anchor never
+// appears. That is the fallback position anyway -- it never scrolls further to
+// go looking.
+function norenStashRestore(scroll, fields) {
+  const KINDS = /^(text|search|email|url|tel|number)$/;
+  const pending = new Map();
+  for (const f of fields || []) {
+    if (f && typeof f.sel === 'string' && typeof f.value === 'string') pending.set(f.sel, f.value);
+  }
+  const x = Math.max(0, Number(scroll && scroll.x) || 0);
+  const y = Math.max(0, Number(scroll && scroll.y) || 0);
+  const ratio = Math.max(0, Math.min(1, Number(scroll && scroll.ratio) || 0));
+  let scrolled = x === 0 && y === 0;
+  const started = Date.now();
+
+  const fill = () => {
+    for (const [sel, value] of pending) {
+      let el = null;
+      try {
+        el = document.querySelector(sel);
+      } catch (e) {
+        pending.delete(sel);
+        continue;
+      }
+      if (!el) continue;
+      pending.delete(sel);
+      // The selector may point somewhere else on today's page. Only ever into
+      // the kind of field the value came out of.
+      const fits = el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && KINDS.test(el.type));
+      if (!fits || el.value === value) continue;
+      el.value = value;
+      // Frameworks keep their own copy of a field's value and only hear about
+      // a change through these.
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  };
+
+  const anchor = scroll && scroll.anchor && typeof scroll.anchor === 'object' ? scroll.anchor : null;
+  const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+  const wantText = anchor ? norm(anchor.text) : '';
+  const wantTop = anchor ? Number(anchor.top) || 0 : 0;
+  const bare = (u) => String(u || '').replace(/[?#].*$/, '').replace(/\/+$/, '');
+  const wantHref = anchor && typeof anchor.href === 'string' ? anchor.href : '';
+  const wantSrc = anchor && typeof anchor.src === 'string' ? anchor.src : '';
+  // With an anchor to look for, give the page longer to render it.
+  const patience = wantHref || wantSrc || wantText ? 4000 : 2000;
+
+  // The same rule the capture used to pick a block, so the top that is
+  // restored is the top of the same box.
+  const blockOf = (el) => {
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const post = el.closest('article, [role="article"]');
+    const small = el.closest('li, section, p, h1, h2, h3, h4, h5, h6');
+    let wide = null;
+    for (let n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+      if (n.getBoundingClientRect().width >= W * 0.4) { wide = n; break; }
+    }
+    const fits = (n) => n && n.getBoundingClientRect().height <= H * 2;
+    return [post, small, wide].find(fits) || null;
+  };
+
+  const findAnchor = () => {
+    if (wantHref) {
+      let link = null;
+      try {
+        link = document.querySelector(`a[href="${CSS.escape(wantHref)}"]`);
+      } catch (e) {
+        link = null;
+      }
+      // Most pages write their links relative, and some add or drop a
+      // trailing slash or a tracking query.
+      if (!link) {
+        const want = bare(wantHref);
+        link = Array.from(document.links).find((a) => a.href === wantHref)
+          || Array.from(document.links).find((a) => bare(a.href) === want);
+      }
+      const block = link && blockOf(link);
+      if (block) return block;
+    }
+    if (wantSrc) {
+      // A picture, by its address without the query: image hosts put sizes
+      // and signatures there. The picture itself is what was measured.
+      const want = bare(wantSrc);
+      const media = Array.from(document.querySelectorAll('img, video'))
+        .find((m) => bare(m.currentSrc || m.src) === want);
+      if (media) return media;
+    }
+    if (wantText) {
+      // Numbers in a post's first line move ("2h" becomes "3h"), so a shorter
+      // prefix is the second chance.
+      const short = wantText.length >= 40 ? wantText.slice(0, 40) : '';
+      const blocks = Array.from(document.querySelectorAll(
+        'article, [role="article"], li, section, p, h1, h2, h3, h4, h5, h6')).slice(0, 2000);
+      let loose = null;
+      for (const b of blocks) {
+        const text = norm(b.innerText).slice(0, 120);
+        if (!text) continue;
+        if (text.startsWith(wantText)) return b;
+        if (!loose && short && text.startsWith(short)) loose = b;
+      }
+      if (loose) return loose;
+    }
+    return null;
+  };
+
+  // Once found, it is held in place for a moment: images above it are still
+  // arriving and pushing it down. Anything the user does ends that.
+  let found = null;
+  let foundAt = 0;
+  // Where it waits for the anchor: '' not yet, 'ratio' until the page is
+  // tall enough, 'y' once it is.
+  let parked = '';
+  // Where it was finally put, and when. A site's own router may scroll to
+  // the top on load, and late layout can move it, so for a moment afterwards
+  // it is put back if it drifts.
+  let target = null;
+  let placedAt = 0;
+  const HOLD_MS = 1500;
+  const settle = (top) => {
+    target = Math.round(top);
+    placedAt = Date.now();
+  };
+  // Always instant: a page with `scroll-behavior: smooth` turns a plain
+  // scrollTo into an animation, which the page's own scripts can cancel
+  // before it has moved anywhere.
+  const jump = (top) => window.scrollTo({ left: x, top: Math.round(top), behavior: 'instant' });
+  const nudge = (off) => window.scrollBy({ top: off, behavior: 'instant' });
+  let touched = false;
+  const hands = () => { touched = true; };
+  for (const t of ['wheel', 'keydown', 'pointerdown', 'touchstart']) {
+    window.addEventListener(t, hands, { capture: true, once: true, passive: true });
+  }
+
+  const step = () => {
+    fill();
+    const scroller = document.scrollingElement || document.documentElement;
+    const room = scroller.scrollHeight - window.innerHeight;
+    const elapsed = Date.now() - started;
+    if (!scrolled && (wantHref || wantSrc || wantText)) {
+      if (!found || !found.isConnected) found = findAnchor();
+      if (!found && !touched) {
+        if (parked !== 'y' && room >= y) {
+          jump(y);
+          parked = 'y';
+        } else if (!parked && room > 0) {
+          jump(ratio * room);
+          parked = 'ratio';
+        } else if (parked === 'y' && Math.abs(window.scrollY - y) > 40) {
+          jump(y);
+        }
+      }
+      if (found) {
+        if (!foundAt) foundAt = Date.now();
+        const off = found.getBoundingClientRect().top - wantTop;
+        if (!touched && Math.abs(off) > 2) nudge(off);
+        if (touched || Date.now() - foundAt > 1000) {
+          scrolled = true;
+          if (!touched) settle(window.scrollY);
+        }
+      }
+    } else if (!scrolled && room >= y) {
+      jump(y);
+      scrolled = true;
+      settle(y);
+    }
+    const late = elapsed > patience;
+    if (late && !scrolled) {
+      // The anchor never turned up, or the page never grew tall enough:
+      // settle for the offset, or failing that the fraction.
+      scrolled = true;
+      if (!touched) {
+        const top = parked === 'y' || room >= y ? y : ratio * Math.max(0, room);
+        jump(top);
+        settle(top);
+      }
+    }
+    if (target !== null && !touched && Math.abs(window.scrollY - target) > 40) jump(target);
+    const holding = target !== null && !touched && Date.now() - placedAt < HOLD_MS;
+    if (scrolled && !holding && (!pending.size || late)) return;
+    setTimeout(step, 100);
+  };
+  step();
+}
+
 // ---------------------------------------------------------------- start page
 //
 // The start page is an extension page, so it can read bookmarks and top sites
@@ -1814,6 +2356,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         })
         .catch(() => {});
       return false;
+    case 'stash':
+      // Stashed pages for the bar's menu: titles, hosts and ages, no urls.
+      askStash()
+        .then((items) => sendResponse({ items }))
+        .catch(() => sendResponse({ items: [] }));
+      return true;
+    case 'stashOpen':
+    case 'stashDrop': {
+      // By id only, never a url: a content script speaks for a renderer that
+      // may be compromised, the same reasoning as openPin. The CLI opens or
+      // drops only an id that is actually in the stash.
+      const id = String(msg.id || '');
+      if (STASH_ID.test(id)) send({ type: msg.norenBar, id });
+      return false;
+    }
     case 'urlbar':
       // Clicking the bar already focused this window, so the url bar's
       // Ctrl+Enter will target it.

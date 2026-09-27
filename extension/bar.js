@@ -47,7 +47,9 @@
   // Pinned: stays down until unpinned. Per window, remembered by the worker,
   // so it survives this window navigating to another site.
   let pinned = false;
-  let menuOpen = false;
+  // Which menu is down, if any: 'pins' or 'stash'. Only ever one.
+  let menuOpen = null;
+  let stashCount = 0;
   let dwellTimer = null;
   let hideTimer = null;
 
@@ -62,6 +64,7 @@
     pin: '<path d="M9 4h6l-1 6 3 3H7l3-3z"/><path d="M12 13v7"/>',
     pins: '<path d="M6 4h12v16l-6-4-6 4z"/>',
     set: '<rect x="4" y="4" width="10" height="10" rx="2"/><path d="M10 18h8a2 2 0 0 0 2-2V8"/>',
+    stash: '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10h14V9"/><path d="M10 13h4"/>',
   };
 
   function svg(name) {
@@ -310,6 +313,41 @@
       color: var(--muted);
     }
     .menu .glyph { width: 16px; height: 16px; flex: none; color: var(--muted); display: grid; place-items: center; }
+
+    /* The stash count, on the button. Hidden at zero: an empty stash is not
+       news. */
+    [data-act="stash"] { position: relative; }
+    .badge {
+      position: absolute;
+      top: 1px;
+      right: -1px;
+      min-width: 14px;
+      height: 14px;
+      padding: 0 3px;
+      box-sizing: border-box;
+      border-radius: 7px;
+      background: var(--accent);
+      color: var(--bg);
+      font-size: 9px;
+      font-weight: 700;
+      line-height: 14px;
+      text-align: center;
+      pointer-events: none;
+    }
+    .badge[hidden] { display: none; }
+    /* A stashed page is a row with its own way out: the x drops it without
+       opening it, and without closing the menu. */
+    .menu .row { display: flex; align-items: center; gap: 2px; border-radius: 7px; }
+    .menu .row .item { flex: 1; width: auto; min-width: 0; }
+    .menu .drop {
+      width: 24px; height: 24px;
+      flex: none;
+      margin-right: 2px;
+      font-size: 15px;
+      opacity: 0;
+    }
+    .menu .row:hover .drop, .menu .row:focus-within .drop { opacity: 1; }
+    .menu .drop:hover, .menu .drop:focus { opacity: 1; background: var(--surface); color: var(--fg); outline: none; }
   `;
 
   // Dark defaults until the Omarchy palette arrives from storage.
@@ -352,8 +390,12 @@
           <span class="url"><span class="host"></span><span class="path"></span></span>
         </button>
         <span class="menu-anchor">
+          <button data-act="stash" title="Stashed pages">${svg('stash')}<span class="badge" hidden></span></button>
+          <div class="menu" data-menu="stash" role="menu"></div>
+        </span>
+        <span class="menu-anchor">
           <button data-act="pins" title="Pinned sites">${svg('pins')}</button>
-          <div class="menu" role="menu"></div>
+          <div class="menu" data-menu="pins" role="menu"></div>
         </span>
         <button data-act="home" title="Start page">${svg('home')}</button>
         <button data-act="pin" title="Keep this bar visible">${svg('pin')}</button>
@@ -383,6 +425,7 @@
     // should survive that without being re-added.
     document.documentElement.appendChild(host);
     chrome.storage.local.get({ themeRoles: null }).then((got) => applyRoles(got.themeRoles));
+    refreshStash();
   }
 
   // The pages sharing this window's Hyprland group -- its tabs. Omarchy does
@@ -655,9 +698,10 @@
 
   function closeMenu() {
     if (!menuOpen) return;
-    menuOpen = false;
-    root.querySelector('.menu').classList.remove('open');
-    root.querySelector('[data-act="pins"]').classList.remove('on');
+    const which = menuOpen;
+    menuOpen = null;
+    root.querySelector(`.menu[data-menu="${which}"]`).classList.remove('open');
+    root.querySelector(`[data-act="${which}"]`).classList.remove('on');
   }
 
   function menuItem(label, sub, iconData, onChoose, glyph) {
@@ -704,7 +748,8 @@
   }
 
   async function openMenu() {
-    const menu = root.querySelector('.menu');
+    closeMenu();
+    const menu = root.querySelector('.menu[data-menu="pins"]');
     let pins = [];
     let sets = [];
     try {
@@ -773,21 +818,136 @@
     edit.classList.add('edit');
     menu.replaceChildren(...nodes, sep, edit);
 
-    menuOpen = true;
+    menuOpen = 'pins';
     menu.classList.add('open');
     root.querySelector('[data-act="pins"]').classList.add('on');
     const first = menu.querySelector('.item');
     if (first) first.focus({ preventScroll: true });
   }
 
+  // ------------------------------------------------------------ stashed pages
+  //
+  // Pages closed with Z on the ring, kept with their place. The bar sees ids,
+  // titles and hosts only -- never a url -- and opens or drops by id, so the
+  // worker has nothing here to be tricked with.
+
+  // "2h", not a date: how long ago is what says whether it is still worth
+  // opening.
+  function ageOf(stashedAt) {
+    const s = Math.max(0, Date.now() / 1000 - (Number(stashedAt) || 0));
+    if (s < 60) return 'now';
+    if (s < 3600) return Math.floor(s / 60) + 'm';
+    if (s < 86400) return Math.floor(s / 3600) + 'h';
+    if (s < 86400 * 7) return Math.floor(s / 86400) + 'd';
+    if (s < 86400 * 365) return Math.floor(s / (86400 * 7)) + 'w';
+    return Math.floor(s / (86400 * 365)) + 'y';
+  }
+
+  function setStashCount(n) {
+    stashCount = n;
+    if (!bar) return;
+    const button = root.querySelector('[data-act="stash"]');
+    const badge = button.querySelector('.badge');
+    badge.textContent = n > 99 ? '99+' : String(n);
+    badge.hidden = n === 0;
+    button.title = n ? `Stashed pages (${n})` : 'Stashed pages';
+  }
+
+  async function askStash() {
+    try {
+      const reply = await chrome.runtime.sendMessage({ norenBar: 'stash' });
+      return (reply && reply.items) || [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function stashEmpty() {
+    return Object.assign(document.createElement('div'), {
+      className: 'empty',
+      textContent: 'Nothing stashed. Press Z on the ring to stash a page.',
+    });
+  }
+
+  function renderStash(items) {
+    const menu = root.querySelector('.menu[data-menu="stash"]');
+    // A redraw under the keyboard keeps its place in the list.
+    const at = Array.from(menu.querySelectorAll('.item')).indexOf(root.activeElement);
+    const rows = items.map((entry) => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const sub = [entry.host, ageOf(entry.stashedAt)].filter(Boolean).join(' · ');
+      const item = menuItem(entry.title || entry.host || 'Untitled', sub, entry.icon || '', () => {
+        closeMenu();
+        chrome.runtime.sendMessage({ norenBar: 'stashOpen', id: entry.id }).catch(() => {});
+      });
+      item.dataset.id = entry.id;
+      const drop = document.createElement('button');
+      drop.className = 'drop';
+      drop.title = 'Drop it without opening';
+      drop.textContent = '×';
+      drop.addEventListener('click', () => dropStashed(item));
+      row.append(item, drop);
+      return row;
+    });
+    menu.replaceChildren(...(rows.length ? rows : [stashEmpty()]));
+    if (at >= 0) {
+      const after = menu.querySelectorAll('.item');
+      const next = after[Math.min(at, after.length - 1)];
+      if (next) next.focus({ preventScroll: true });
+    }
+  }
+
+  async function refreshStash() {
+    const items = await askStash();
+    if (!bar) return;
+    setStashCount(items.length);
+    if (menuOpen === 'stash') renderStash(items);
+  }
+
+  async function openStashMenu() {
+    closeMenu();
+    const items = await askStash();
+    if (!bar) return;
+    setStashCount(items.length);
+    renderStash(items);
+    const menu = root.querySelector('.menu[data-menu="stash"]');
+    menuOpen = 'stash';
+    menu.classList.add('open');
+    root.querySelector('[data-act="stash"]').classList.add('on');
+    const first = menu.querySelector('.item');
+    if (first) first.focus({ preventScroll: true });
+  }
+
+  // Gone from the menu at once rather than after the round trip; the
+  // stashChanged that follows redraws it from the file either way.
+  function dropStashed(item) {
+    const id = item && item.dataset.id;
+    if (!id) return;
+    const menu = root.querySelector('.menu[data-menu="stash"]');
+    const at = Array.from(menu.querySelectorAll('.item')).indexOf(item);
+    item.closest('.row').remove();
+    setStashCount(Math.max(0, stashCount - 1));
+    chrome.runtime.sendMessage({ norenBar: 'stashDrop', id }).catch(() => {});
+    const left = menu.querySelectorAll('.item');
+    if (left.length) left[Math.min(Math.max(at, 0), left.length - 1)].focus({ preventScroll: true });
+    else menu.replaceChildren(stashEmpty());
+  }
+
   // Arrows and Enter inside the menu. Stopped here so a site's own shortcuts
   // (j/k, arrows) do not also act on the page underneath.
   function menuKeys(event) {
     if (!menuOpen) return false;
-    const items = Array.from(root.querySelectorAll('.menu .item'));
+    const items = Array.from(root.querySelectorAll('.menu.open .item'));
     const at = items.indexOf(root.activeElement);
     if (event.key === 'Escape') {
       closeMenu();
+    } else if (!items.length) {
+      // An empty stash has nothing to move between.
+      return false;
+    } else if (event.key === 'Delete' && menuOpen === 'stash' && at >= 0) {
+      // The keyboard's way to the row's x.
+      dropStashed(items[at]);
     } else if (event.key === 'ArrowDown') {
       items[(at + 1) % items.length].focus();
     } else if (event.key === 'ArrowUp') {
@@ -818,7 +978,8 @@
     else if (action === 'forward') history.forward();
     else if (action === 'reload') location.reload();
     else if (action === 'pin') setPinned(!pinned, true);
-    else if (action === 'pins') (menuOpen ? closeMenu : openMenu)();
+    else if (action === 'pins') (menuOpen === 'pins' ? closeMenu : openMenu)();
+    else if (action === 'stash') (menuOpen === 'stash' ? closeMenu : openStashMenu)();
     else if (action === 'home' || action === 'urlbar') {
       chrome.runtime.sendMessage({ norenBar: action }).catch(() => {});
       hide();
@@ -882,6 +1043,8 @@
       // The group changed under us -- a window joined it, left it, or became
       // the active one. Only worth redrawing while the strip is on screen.
       if (msg && msg.norenBar === 'refresh' && shown) refreshTabs();
+      // Something was stashed, opened or dropped, here or anywhere else.
+      if (msg && msg.norenBar === 'stashChanged' && bar) refreshStash();
     });
   }
 

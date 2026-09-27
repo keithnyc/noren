@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Stash.** `SUPER + M` → `Z` closes the page in front of you and keeps your
+  place: scroll position and typed text included. A count on the Noren icon
+  shows what is stashed. Bring pages back from the url bar (`~`), the bar
+  or the reveal bar. The stash is a private local file that never syncs and
+  never expires. `noren stash` from a terminal.
+- The Noren icon shows in the bar again. It had been in the layout at zero
+  width.
+
 - The service worker is plain `background.js` now. The filename used to be
   bumped to force Chromium to load new code; `noren reload-extension` does that,
   so the number only confused people. `install.sh` regenerates the manifest, so

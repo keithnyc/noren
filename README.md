@@ -403,6 +403,38 @@ A stolen theme is an ordinary Omarchy theme in `~/.config/omarchy/themes/`, so
 it shows up in Omarchy's own theme picker too. Steal only ever overwrites themes
 it made itself.
 
+## Stash
+
+Not done with a page, but don't want it in front of you? Stash it.
+
+`SUPER + M` → `Z` closes the page in front of you and keeps your place: the
+address, how far down you had scrolled, and anything you had typed into the
+page. The window flies into a count on the Noren icon in your bar.
+
+To bring a page back:
+
+- **The url bar:** type `~` to see only your stash. Stashed pages also turn up
+  in ordinary searches. **Enter** opens the page in a new window, **Ctrl+Enter**
+  opens it in place of the page in front of you, and **Shift+Delete** drops it.
+- **The bar:** click the count on the Noren icon.
+- **The reveal bar:** its stash button lists everything with how long ago you
+  stashed it. Click to open, **×** to drop.
+
+The page comes back on the workspace you are on, scrolled to where you left it,
+with your text back in its fields. Opening a page takes it out of the stash.
+
+The stash is yours alone. It is one file, `~/.local/share/noren/stash.json`,
+readable only by you. It is never synced and never goes into the browser's
+history. Passwords, card numbers and one-time codes are never saved. Nothing
+expires.
+
+```bash
+noren stash                  # stash the page in front of you
+noren stash list             # what is in it
+noren stash open <id>        # bring one back (--replace: in place of this page)
+noren stash drop <id>        # let one go
+```
+
 ## Closing a page
 
 A page window can come apart as it closes: the page splits into hanging panels

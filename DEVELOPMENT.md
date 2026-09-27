@@ -1163,6 +1163,67 @@ the hue, the theme keeps it readable. Applying a theme is slow on slow
 machines, so the window's preview is drawn in QML and Omarchy is only switched
 on Try it.
 
+## Stash
+
+`SUPER + M` → `Z` closes the page in front of you and keeps your place. The
+CLI owns `~/.local/share/noren/stash.json` (0600 from the moment it is created,
+flock around every read-modify-write, since each ×, Shift+Delete or Z is its own
+process). The host only reads it, for the reveal bar. The shell watches it for
+the topbar count. The worker captures on the way out
+(`norenStashCapture`) and puts things back on the way in (`norenStashRestore`),
+holding a pending restore in `storage.session` for 60s, keyed by the url without
+its hash. It is private by design: no sync, never Chromium's history, field
+values never leave the entry (lists and the bar get summaries only), and nothing
+logs a url. What cost time:
+
+**A pixel offset is not a place.** It only survives on a page that lays itself
+out the same way twice. A feed re-renders, lazy images arrive, and the tiler
+gives the restored window a different width than the one you stashed from, so
+the text reflows. The capture also records an *anchor*: the block you were
+reading, by its permalink (`/status/`, `/comments/` …), its opening words, or,
+for a screenshot, its image `src`, plus where on screen it sat. Restore parks
+at the old `y` first, then corrects onto the anchor. Parking first matters:
+virtualised feeds only render near the viewport, so waiting at the top means the
+anchor is never drawn. A blog of screenshots needed the fallback scan. The
+probe points hit either the 12,000px article container, rejected as "the feed,
+not a post", or bare `<img>`s, so no anchor was recorded until images counted
+and the scan took the first readable block near the top. Measured headless:
+stashed wide, restored at 800px, the anchor landed on its exact screen offset
+while the page's `y` had moved ~190px.
+
+A social feed's home timeline still restores hit or miss: it serves a different
+feed after a reload, so the post is often simply not there. A single post or
+thread comes back exactly.
+
+**`scroll-behavior: smooth` animates `scrollTo`,** and anything can cancel the
+animation. Every restore scroll passes `behavior: 'instant'`, and the position
+is re-checked for ~1.5s in case a page script moves it. Any wheel, key or
+pointer from the user ends all of this.
+
+**Stashing the last page window closes the browser.** Then `stash open` has no
+bridge to send the restore to, and the page it opens is what starts the
+browser. The CLI opens first, waits for the bridge, and sends the restore with
+`late: true`. The worker then also applies it to a tab that has *already*
+finished loading, which `onCompleted` will not report again. That scan runs only
+when `late` is set: with the browser already up, the same url open in another
+window would otherwise take the restore meant for the new one.
+
+**The flight replaces the shatter, and it plays before the close.** The CLI
+photographs the window, tells the host to skip the shatter for that address
+(`stashMark`, 5s), starts the flight over IPC, and only then closes the window,
+after confirming that the address is the focused window. That is the ordering
+the closing animation has been missing (see Not done): the picture is on screen
+before the window goes. The count waits for the landing, so it does not tick over
+while the page is still visibly there.
+
+**The bar widget had no size.** The base `BarWidget` has no implicit size and
+Noren's never set one, so it sat in the layout at zero width: loaded,
+error-free, invisible. It was found because the flight had nowhere visible to
+land.
+
+Not done: watching stashed pages for changes (keith's idea, deliberately left
+for later); stashing a whole group; restoring into the original workspace.
+
 ## The radial shows what applies
 
 The ring had grown to 16 items. It now asks Hyprland directly (`hyprctl -j

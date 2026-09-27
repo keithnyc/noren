@@ -13,6 +13,7 @@ channel, so every diagnostic goes to stderr.
 import atexit
 import json
 import os
+import re
 import signal
 import socket
 import struct
@@ -41,6 +42,10 @@ CONFIG_FILE = os.path.join(os.path.dirname(SETS_FILE), "config.json")
 SITES_DIR = os.path.join(os.path.dirname(SETS_FILE), "sites")
 SITES_INDEX = os.path.join(SITES_DIR, "index.json")
 SITE_MAX_BYTES = 128 * 1024
+STASH_FILE = os.path.join(
+    os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"),
+    "noren", "stash.json",
+)
 
 
 # Settings the CLI owns and the page-side UI may change. Each maps to the
@@ -406,6 +411,63 @@ def read_sets():
     return out
 
 
+# ---------------------------------------------------------------------- stash
+
+STASH_ID = re.compile(r"^s_[0-9a-f]{12}$")
+
+
+def read_stash():
+    """Stash summaries, newest first. The CLI owns the file; this only reads.
+
+    Summaries only -- the same shape as `noren stash list --json`. What was
+    typed into a page's fields goes back to that page on restore and nowhere
+    else, so it never crosses to the worker from here.
+    """
+    try:
+        with open(STASH_FILE, "r") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    raw = data.get("items") if isinstance(data, dict) else None
+    out = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not STASH_ID.fullmatch(str(item.get("id") or "")):
+            continue
+        url = str(item.get("url") or "")
+        if not re.match(r"^https?://", url, re.I):
+            continue
+        icon = item.get("icon") if isinstance(item.get("icon"), str) else ""
+        out.append({
+            "id": item["id"],
+            "url": url,
+            "title": str(item.get("title") or ""),
+            "icon": icon if icon.startswith("data:") else "",
+            "stashedAt": item.get("stashedAt") if isinstance(item.get("stashedAt"), int) else 0,
+            "hasFields": bool(item.get("fields")),
+        })
+    return out
+
+
+def stash_op(verb, entry_id):
+    """Open or drop a stashed page for the bar, through the CLI.
+
+    Only an id that has the stash's own shape is passed on, after the
+    subcommand, so a message cannot smuggle a flag -- or a url -- in. The CLI
+    tells every bar the count moved once it is done.
+    """
+    entry_id = str(entry_id or "")
+    if verb not in ("open", "drop") or not STASH_ID.fullmatch(entry_id):
+        log("refused a stash %s: bad id" % verb)
+        return
+    try:
+        out = subprocess.run([NOREN_BIN, "stash", verb, entry_id],
+                             capture_output=True, text=True, timeout=30)
+        if out.returncode != 0:
+            log("stash %s failed (exit %d)" % (verb, out.returncode))
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("stash %s failed:" % verb, exc)
+
+
 def save_start(hidden):
     """Mirror the start page's hidden sites for the CLI's offline list.
 
@@ -559,8 +621,55 @@ def snapshot_for(address):
     return path
 
 
+# A stashed window flies into the topbar instead of shattering. `noren stash`
+# marks the address just before it closes the window; the close event that
+# follows finds the mark here and plays nothing. Addresses are recycled, so a
+# mark expires rather than lingering until some later window happens to reuse
+# the number.
+STASH_MARK_SECONDS = 5.0
+_stash_marks = {}        # address -> monotonic deadline
+_stash_marks_lock = threading.Lock()
+
+
+def mark_stashed(address, image):
+    address = str(address or "")
+    if address:
+        with _stash_marks_lock:
+            _stash_marks[address] = time.monotonic() + STASH_MARK_SECONDS
+    # The flight's picture, once the shell has loaded it. Only that one file:
+    # the path comes over the socket, and this must not become a way to unlink
+    # whatever a caller names. The mtime check keeps a second stash inside the
+    # window from losing its picture to the first one's timer.
+    image = str(image or "")
+    flight = os.path.join(SNAPSHOT_DIR, "noren-stash-flight.png")
+    if image != flight:
+        return
+    try:
+        stamp = os.path.getmtime(flight)
+    except OSError:
+        return
+
+    def unlink():
+        try:
+            if os.path.getmtime(flight) == stamp:
+                os.unlink(flight)
+        except OSError:
+            pass
+
+    threading.Timer(4.0, unlink).start()
+
+
+def was_stashed(address):
+    with _stash_marks_lock:
+        deadline = _stash_marks.pop(address, None)
+    return deadline is not None and time.monotonic() < deadline
+
+
 def burst_closed(address, where):
     """Ask the shell to play the close, with the last picture of that window."""
+    if was_stashed(address):
+        drop_snapshot(address)
+        return
     style = shatter_style_name(read_config())
     if not style or style == "off":
         drop_snapshot(address)
@@ -1238,7 +1347,8 @@ def handle_client(conn):
         # from Hyprland, since Chromium's own idea of focus is unreliable when
         # the call comes from a terminal or a keybind.
         if cmd in ("navigate", "back", "forward", "reload", "peel", "saveBookmark",
-                   "extract", "inspect", "home", "toggleBar", "clipPick", "steal"):
+                   "extract", "inspect", "home", "toggleBar", "clipPick", "steal",
+                   "stashCapture"):
             hint = hypr_target_title()
             if hint:
                 req["matchTitle"] = hint
@@ -1298,6 +1408,20 @@ def handle_client(conn):
                 reply = {"ok": True}
             else:
                 reply = {"ok": False, "error": "no extension id -- run install.sh"}
+        elif cmd == "stashCapture":
+            # Longer than the default: the capture injects into the page, and a
+            # page busy loading can take a while to run it.
+            reply = ask_extension("stashCapture", timeout=8, **req)
+        elif cmd == "stashRestore":
+            reply = ask_extension("stashRestore", url=req.get("url"),
+                                  scroll=req.get("scroll"), fields=req.get("fields"),
+                                  late=bool(req.get("late")))
+        elif cmd == "stashMark":
+            mark_stashed(req.get("address"), req.get("image"))
+            reply = {"ok": True}
+        elif cmd == "stashChanged":
+            write_native({"type": "stashChanged"})
+            reply = {"ok": True}
         elif cmd == "goto":
             # What the url bar does on Enter. Navigate only when the thing in
             # front of you is actually a page; otherwise open a new chrome-less
@@ -1445,6 +1569,18 @@ def main():
             # The start page lists sets but cannot read files; the worker asks
             # on its behalf.
             write_native({"type": "sets", "id": msg.get("id"), "sets": read_sets()})
+
+        elif kind == "getStash":
+            # The bar lists the stash but cannot read files; read-only, like
+            # getSets.
+            write_native({"type": "stash", "id": msg.get("id"), "items": read_stash()})
+
+        elif kind in ("stashOpen", "stashDrop"):
+            # Off the main loop: opening waits on the bridge, whose replies are
+            # read by this very loop.
+            verb = "open" if kind == "stashOpen" else "drop"
+            threading.Thread(target=stash_op, args=(verb, msg.get("id")),
+                             daemon=True).start()
 
         elif kind == "getSites":
             write_native({"type": "siteList", "id": msg.get("id"),
