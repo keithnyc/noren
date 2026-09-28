@@ -8,7 +8,9 @@
   or the reveal bar. The stash is a private local file that never syncs and
   never expires. `noren stash` from a terminal.
 - The Noren icon shows in the bar again. It had been in the layout at zero
-  width.
+  width. Its tooltip is the bar's own now, rather than an unstyled box drawn
+  over the icon, and it no longer flips to an X-in-a-box while the shell or
+  extension restarts.
 
 - The service worker is plain `background.js` now. The filename used to be
   bumped to force Chromium to load new code; `noren reload-extension` does that,

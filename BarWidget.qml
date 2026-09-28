@@ -23,7 +23,10 @@ BarWidget {
   readonly property string label: noren ? noren.label : ""
   readonly property int stashed: noren ? noren.stashCountShown : 0
 
-  readonly property string icon: !connected ? "󰅘" : (loading ? "󰑓" : "󰖟")
+  // No "disconnected" glyph: the bridge drops for a moment on every shell
+  // restart and extension reload, and an X-in-a-box there read as a broken
+  // font rather than news. `noren doctor` is where the connection is diagnosed.
+  readonly property string icon: connected && loading ? "󰑓" : "󰖟"
 
   function summary() {
     if (!root.connected) return "Noren — browser not running"
@@ -59,6 +62,8 @@ BarWidget {
     bar: root.bar
     text: root.icon
     active: root.loading
+    // The bar's own tooltip, placed and themed like every other widget's.
+    tooltipText: root.summary()
 
     onPressed: function (buttonCode) {
       if (buttonCode === Qt.RightButton) {
@@ -135,21 +140,5 @@ BarWidget {
     cursorShape: Qt.PointingHandCursor
     onClicked: Quickshell.execDetached(["omarchy-shell", "-q", "shell", "toggle", root.moduleName,
                                         JSON.stringify({ mode: "url", text: "~" })])
-  }
-
-  // PanelToolTip is a plain ToolTip now: it takes a `visible` binding and no
-  // longer has a `bar` property. Binding the old one made the whole widget fail
-  // to load -- "Cannot assign to non-existent property" kills the component, so
-  // the bar icon simply vanished rather than losing only its tooltip.
-  MouseArea {
-    id: hoverProbe
-    anchors.fill: parent
-    hoverEnabled: true
-    acceptedButtons: Qt.NoButton
-  }
-
-  PanelToolTip {
-    visible: hoverProbe.containsMouse
-    text: root.summary()
   }
 }
