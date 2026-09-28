@@ -25,6 +25,14 @@ def cli():
     return module
 
 
+def host():
+    loader = importlib.machinery.SourceFileLoader("noren_host", str(ROOT / "host" / "noren-host"))
+    spec = importlib.util.spec_from_loader("noren_host", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
 def js_function(path, name):
     """The source of `function name(...) {...}` in `path`, by brace matching."""
     text = (ROOT / path).read_text()

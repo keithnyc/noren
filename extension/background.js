@@ -40,6 +40,7 @@ function connect() {
       // search typed straight afterwards must still reach the right engine.
       searchTemplate = String(msg.search || '') || DEFAULT_SEARCH;
       chrome.storage.local.set({ searchTemplate }).catch(() => {});
+      setGlow(Boolean(msg.party));
       return;
     }
     if (msg && (msg.type === 'prefs')) {
@@ -571,6 +572,77 @@ chrome.storage.local
   })
   .catch(() => {});
 
+// Party mode: a playing video lights its window (and, in the shell, the bar).
+// The pages sample only while it is on, so turning it off stops the work as
+// well as the colour.
+let glowOn = false;
+const glowReady = chrome.storage.local
+  .get({ glowOn: false })
+  .then((got) => {
+    glowOn = Boolean(got.glowOn);
+  })
+  .catch(() => {});
+
+async function setGlow(on) {
+  await glowReady;
+  if (on === glowOn) return;
+  glowOn = on;
+  chrome.storage.local.set({ glowOn }).catch(() => {});
+  try {
+    const windows = await chrome.windows.getAll({ populate: true });
+    for (const win of windows) {
+      if (win.type !== 'app') continue;
+      for (const tab of win.tabs || []) {
+        chrome.tabs.sendMessage(tab.id, { norenGlow: 'config', enabled: on }).catch(() => {});
+      }
+    }
+  } catch (e) {
+    // The browser is shutting down.
+  }
+}
+
+// Which windows are Noren's chrome-less ones, asked once each: a frame arrives
+// a dozen times a second and the answer never changes for a window.
+const appWindows = new Map();
+async function isAppWindow(windowId) {
+  if (!appWindows.has(windowId)) {
+    const win = await chrome.windows.get(windowId).catch(() => null);
+    appWindows.set(windowId, Boolean(win && win.type === 'app'));
+  }
+  return appWindows.get(windowId);
+}
+chrome.windows.onRemoved.addListener((windowId) => appWindows.delete(windowId));
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || !msg.norenGlow || sender.id !== chrome.runtime.id || !sender.tab) return false;
+  if (msg.norenGlow === 'hello') {
+    glowReady
+      .then(() => (glowOn ? isAppWindow(sender.tab.windowId) : false))
+      .then((app) => sendResponse({ enabled: Boolean(app) }))
+      .catch(() => sendResponse({ enabled: false }));
+    return true;
+  }
+  if (msg.norenGlow === 'off') {
+    send({ type: 'glow', off: true });
+    return false;
+  }
+  if (msg.norenGlow === 'frame' && glowOn) {
+    // Numbers and the page's own title only; the host checks the title
+    // against the window in front before it paints anything.
+    const rgb = Array.isArray(msg.rgb) ? msg.rgb.slice(0, 3).map((c) => Math.round(Number(c) || 0)) : null;
+    if (!rgb || rgb.length !== 3) return false;
+    isAppWindow(sender.tab.windowId).then((app) => {
+      if (app) {
+        const energy = typeof msg.energy === 'number' && Number.isFinite(msg.energy)
+          ? Math.max(0, Math.min(1, msg.energy)) : null;
+        send({ type: 'glow', rgb, level: Number(msg.level) || 0, cut: Boolean(msg.cut),
+          energy, beat: Boolean(msg.beat), title: String(sender.tab.title || '') });
+      }
+    });
+  }
+  return false;
+});
+
 function searchUrl(words) {
   const query = encodeURIComponent(String(words || '').trim()).replace(/%20/g, '+');
   return searchTemplate.includes('%s')
@@ -797,6 +869,7 @@ async function allPrefs() {
     tabbed: Boolean(host.tabbed),
     shatter: host.shatter || 'off',
     search: host.search || DEFAULT_SEARCH,
+    party: Boolean(host.party),
   };
 }
 
@@ -2052,7 +2125,7 @@ async function injectBars() {
       const tab = (win.tabs || [])[0];
       if (!tab || !/^https?:/i.test(tab.url || '')) continue;
       chrome.scripting
-        .executeScript({ target: { tabId: tab.id }, files: ['bar.js'] })
+        .executeScript({ target: { tabId: tab.id }, files: ['bar.js', 'glow.js'] })
         .catch(() => {});
     }
   } catch (e) {

@@ -410,6 +410,14 @@ Item {
     { icon: "\udb80\udfd8", key: "T", label: "Steal theme", swaps: true,
       hint: "Make an Omarchy theme from this page's colours",
       run: function () { root.showSteal() } },
+    // U+F1056: a party popper. Rendered and looked at -- found by its name
+    // in the font, after six guessed codepoints were a play button, a link,
+    // a film strip, a face, "#!" and a heated seat. X, for FX: P is Peel.
+    // A setting, unlike its neighbours, but one you flip for the moment
+    // rather than configure, so it is here as well as on the start page.
+    { icon: "\udb84\udc56", key: "X", label: "Party", state: root.partyOn ? "on" : "off",
+      hint: "A playing video lights up its window and the bar",
+      run: function () { root.runNoren(["party", "toggle"]) } },
     // Tabs and Theme were here. They are settings, not actions, and live on
     // the start page with the others; the ring is for doing things.
   ]
@@ -751,6 +759,7 @@ Item {
   // make closing a page wait on the browser.
   property bool shatterEnabled: false
   property string shatterStyle: "curtain"
+  property bool partyOn: false
 
   FileView {
     id: settingsFile
@@ -759,6 +768,11 @@ Item {
     watchChanges: true
     printErrors: false
     onLoaded: {
+      try {
+        root.partyOn = JSON.parse(settingsFile.text() || "{}").party === true
+      } catch (e) {
+        root.partyOn = false
+      }
       try {
         var how = JSON.parse(settingsFile.text() || "{}").shatter
         // Off unless asked for: see shatter_style() in bin/noren.

@@ -126,6 +126,14 @@ BarWidget {
     function onStashLanded() { bump.restart() }
   }
 
+  // Party mode's lights on this bar. Its own surface, on this bar's screen.
+  PartyGlow {
+    service: root.noren
+    screen: root.QsWindow.window ? root.QsWindow.window.screen : null
+    edge: root.bar ? String(root.bar.position || "top") : "top"
+    barSize: root.barSize
+  }
+
   // The badge is its own button: straight to the stash in the url bar.
   // Generous around the dot, since the dot itself is a few pixels across --
   // but clamped to the widget, because the part of a child outside its parent

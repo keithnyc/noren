@@ -1224,6 +1224,76 @@ land.
 Not done: watching stashed pages for changes (keith's idea, deliberately left
 for later); stashing a whole group; restoring into the original workspace.
 
+## Party mode
+
+A video playing in the focused Noren window lights the desktop. Four parts:
+
+- **`extension/glow.js`** (content script, top frame, Noren's own windows only)
+  finds the playing video that fills at least 20% of the viewport. Thirty times
+  a second it measures the sound; every third tick it samples the picture at
+  32×18. Colour: near-black pixels skipped, saturation-weighted, then pushed
+  vivid with lightness held at 0.42-0.62, because a plain mean is brown. Sound:
+  `video.captureStream()` into an `AnalyserNode`, RMS against a slowly falling
+  peak for loudness, bass (40-150 Hz) 45% over its running average for a beat,
+  180 ms apart at least. It sends only numbers.
+- **The worker** relays frames from `app` windows while the setting is on, adding
+  the tab's title.
+- **The host** paints Hyprland over its request socket (`.socket.sock`, one
+  write per frame, where a `hyprctl` per frame would be 30 processes a second)
+  and writes `$XDG_RUNTIME_DIR/noren-party.json` for the shell.
+- **The shell** watches that file (`Service.qml`) and draws `PartyGlow.qml`, a
+  click-through overlay surface per bar: pools of light inside the bar, beat
+  flares, a lit edge, an underglow.
+
+What cost time, all on Hyprland 0.56.2:
+
+**`hyprctl setprop` is gone** ("unknown request"). The Lua form is
+`hl.dsp.window.set_prop({ prop, value, window })`, and it is no use here for two
+reasons. It keeps only the *last* colour of a gradient and still says ok.
+And `value = "unset"` does not fall back to the theme. It stores an empty
+gradient, and the window's border is simply gone afterwards; nothing clears it
+but closing the window. The glow therefore borrows the theme's *active* colours
+(`general:col.active_border`, `group:col.border_active`,
+`decoration:shadow:color`), which only ever apply to the focused window, and
+the focused window is the video's whenever you are watching it. Those are read
+from `j/getoption` when the glow lights and written back exactly, gradients
+and all, when it goes out: on pause, focus change (the event socket's
+`activewindowv2`), 1.5 s without a frame, `noren party off`, or host exit.
+
+**A repeated key in a Lua table constructor keeps the last one.**
+`hl.config({ decoration = { shadow = { color } }, decoration = { shadow = { range } } })`
+is legal, answers ok, and drops the colour. `_glow_apply` builds one nested
+table from option names, splitting on `.` as well as `:`, because
+`col.active_border` is two levels.
+
+**Some themes have shadows off,** which left only a border. The glow turns them
+on while lit, and then **every** window glowed: `shadow:color_inactive` unset
+means "same as active". While lit it is set to what inactive windows showed
+before (nothing, if shadows were off). It cannot be put back to *unset*, so it
+is written back as the colour it stood in for, which looks the same until the
+next config reload.
+
+**The page sent only on change, and the host times out on silence.** A still
+shot went dark after 1.5 s. The page now sends at least every 500 ms.
+
+**The shell reads a file, not IPC.** `omarchy-shell` per frame is the same fork
+storm. The host writes the file in place (never renamed over, so the watch
+keeps its inode) and creates it at startup, since a `FileView` cannot watch a
+file that does not exist yet. The shell retries every 3 s until it can, and
+treats 3 s without a change as lights out, in case a host died without saying
+so. Beats and cuts are counters, not flags, so each flashes once however the
+frames interleave.
+
+**Tap the sound, never reroute it.** `createMediaElementSource` moves the video's
+audio into the script's `AudioContext`. A suspended context (autoplay rules)
+or a dead one (`noren reload-extension`) is then a silent video.
+`captureStream()` is a copy, so the worst case is hearing nothing and lighting
+by the picture. A playlist swapping tracks under the same element is caught by
+comparing the live audio track each tick.
+
+Not done: a gradient border (left of the picture to right) now that the
+globals take gradients; vertical bars.
+
 ## The radial shows what applies
 
 The ring had grown to 16 items. It now asks Hyprland directly (`hyprctl -j

@@ -50,6 +50,8 @@ usage: noren <command> [args]
                     --name <n>, --print (change nothing), --undo
   tabbed on|off     new pages join the group in front, like tabs (persists)
   tabbed toggle     flip it; `tabbed` alone reports
+  party on|off      party mode: a playing video lights its window and the top
+                    bar in the picture's colours (persists; `toggle` flips it)
   go <url>          navigate the focused window (force)
   back              history back
   forward           history forward
@@ -412,6 +414,8 @@ def doctor():
          if tabbed_mode() else "off - new pages open as their own window")
     style = shatter_style()
     _row(OK, "shatter", f"{style} - how a closing page leaves" if style else "off")
+    _row(OK, "party mode", "on - a playing video lights its window and the bar"
+         if load_config().get("party") else "off")
 
     # The count and the file's mode, never what is in it: it is your browsing.
     stashed = len(load_stash())
@@ -3526,6 +3530,26 @@ def main(argv):
         elif rest and rest[0] not in ("status",):
             sys.exit(f"noren tabbed: unknown argument '{rest[0]}' (on | off | toggle)")
         print("tabbed", "on" if config.get("tabbed") else "off")
+        return 0
+
+    if cmd == "party":
+        config = load_config()
+        if rest and rest[0] in ("on", "off"):
+            config["party"] = rest[0] == "on"
+            save_config(config)
+        elif rest and rest[0] == "toggle":
+            config["party"] = not config.get("party")
+            save_config(config)
+        elif rest and rest[0] not in ("status",):
+            sys.exit(f"noren party: unknown argument '{rest[0]}' (on | off | toggle)")
+        # The pages sample only while it is on, and turning it off mid-video
+        # has to put the border and shadow back now, not at the next frame.
+        if rest and rest[0] != "status" and bridge_up():
+            try:
+                call({"cmd": "partyConfig"}, fallback=lambda: {"ok": False})
+            except SystemExit:
+                pass
+        print("party", "on" if config.get("party") else "off")
         return 0
 
     if cmd == "bar":

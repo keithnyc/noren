@@ -7,6 +7,12 @@
   shows what is stashed. Bring pages back from the url bar (`~`), the bar
   or the reveal bar. The stash is a private local file that never syncs and
   never expires. `noren stash` from a terminal.
+- **Party mode.** `SUPER + M` → `X`: a video playing in the window in front
+  of you lights up the desktop. The window's border and glow take the colour
+  of the picture; the bar gets drifting pools of light, a lit edge and an
+  underglow; and it all moves with the music, a flare across the bar on every
+  beat. Everything goes back to your theme the moment the video stops.
+  `noren party on|off|toggle`, or the switch on the start page.
 - The Noren icon shows in the bar again. It had been in the layout at zero
   width. Its tooltip is the bar's own now, rather than an unstyled box drawn
   over the icon, and it no longer flips to an X-in-a-box while the shell or

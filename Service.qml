@@ -241,6 +241,81 @@ Item {
     }
   }
 
+  // -------------------------------------------------------------------- party
+  //
+  // Party mode's bar half. The host writes what the video in front of you
+  // looks like -- colour, brightness, how many hard cuts so far -- to a small
+  // file a dozen times a second, and every bar widget draws from these. One
+  // reader here rather than one per bar, so the bars cannot drift apart.
+  property bool partyLit: false
+  property color partyColor: "transparent"
+  property real partyLevel: 0
+  // How loud, 0-1, when the page can hear the video. Without sound the bar
+  // follows the picture alone, and this stays at 0.
+  property bool partyHearing: false
+  property real partyEnergy: 0
+  property int partyCuts: 0
+  property int partyBeats: 0
+  signal partyCut()
+  signal partyBeat()
+
+  FileView {
+    id: partyFile
+    path: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/noren-party.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.readParty()
+    // The host makes the file when the browser starts, which can be after the
+    // shell; a watch cannot be put on a file that is not there yet.
+    onLoadFailed: partyRetry.start()
+    onFileChanged: reload()
+  }
+
+  Timer {
+    id: partyRetry
+    interval: 3000
+    onTriggered: partyFile.reload()
+  }
+
+  // The host puts the lights out itself when the video stops; this is for a
+  // host that died without saying so.
+  Timer {
+    id: partyStale
+    interval: 3000
+    onTriggered: root.partyLit = false
+  }
+
+  function readParty() {
+    var p
+    try {
+      p = JSON.parse(partyFile.text() || "")
+    } catch (e) {
+      // Caught between the truncate and the write: the next change has it.
+      return
+    }
+    if (!p || !p.lit) {
+      root.partyLit = false
+      partyStale.stop()
+      return
+    }
+    var c = Array.isArray(p.rgb) ? p.rgb : [0, 0, 0]
+    root.partyColor = Qt.rgba((Number(c[0]) || 0) / 255, (Number(c[1]) || 0) / 255,
+                              (Number(c[2]) || 0) / 255, 1)
+    root.partyLevel = Math.max(0, Math.min(1, Number(p.level) || 0))
+    root.partyHearing = typeof p.energy === "number"
+    root.partyEnergy = root.partyHearing ? Math.max(0, Math.min(1, p.energy)) : 0
+    var cuts = Number(p.cuts) || 0
+    var beats = Number(p.beats) || 0
+    // Only one seen while already lit: the counts carry over from earlier
+    // videos, and lighting up is not itself a cut or a beat.
+    if (root.partyLit && cuts > root.partyCuts) root.partyCut()
+    if (root.partyLit && beats > root.partyBeats) root.partyBeat()
+    root.partyCuts = cuts
+    root.partyBeats = beats
+    root.partyLit = true
+    partyStale.restart()
+  }
+
   IpcHandler {
     target: "io.github.keithnyc.noren"
 

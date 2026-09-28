@@ -55,6 +55,7 @@ PREF_COMMANDS = {
     "tabbed": lambda v: ["tabbed", "on" if v else "off"],
     "shatter": lambda v: ["shatter", str(v)],
     "search": lambda v: ["search", str(v)],
+    "party": lambda v: ["party", "on" if v else "off"],
 }
 
 _config_stamp = None
@@ -690,6 +691,243 @@ def burst_closed(address, where):
     # The shell has the pixels now.
     threading.Timer(2.5, drop_snapshot, args=(address,)).start()
 
+# ------------------------------------------------------------------------- glow
+#
+# A playing video lights the window it plays in: the border and the shadow take
+# the colour of the picture. The page samples its own video and sends a colour
+# a dozen times a second; this puts it on the window and, the moment anything
+# ends it, puts everything back.
+#
+# It borrows the theme's *active* colours -- the focused window's border (its
+# group border too, since a page is often in one) and shadow -- rather than
+# setting properties on the window. The focused window is the video's own
+# whenever you are watching it, which is the only time the glow is on. The
+# per-window route was tried first and does not work on Hyprland 0.56: set_prop
+# keeps only the last colour of a gradient, and "unset" does not fall back to
+# the theme, it leaves an empty border -- the window lost its border entirely
+# once the glow went out. The globals are read when the glow lights and written
+# back exactly, gradients and all, when it goes out.
+
+GLOW_IDLE = 1.5    # no frame for this long and the glow goes out
+GLOW_RANGE = 20    # how far the lit shadow spreads (Omarchy's own is 13)
+GLOW_POWER = 3     # falloff: lower is softer and reaches further (1-4)
+
+# Everything the glow changes, by getoption name; the name is also where it
+# sits in hl.config's nested table. Shadows are off in some themes, so the glow
+# turns them on while it is lit -- without that there is only a border.
+# The inactive shadow colour is handled beside these: it cannot be put back to
+# "unset", so it is written back as the colour it was standing in for, which
+# looks the same until the next config reload makes it unset again.
+GLOW_OPTIONS = (
+    "general:col.active_border",
+    "group:col.border_active",
+    "decoration:shadow:enabled",
+    "decoration:shadow:color",
+    "decoration:shadow:range",
+    "decoration:shadow:render_power",
+)
+
+# The shell's half of party mode -- the bar -- reads this. A file rather than
+# an IPC call per frame, for the same reason as the socket above: a dozen
+# processes a second is not a light show, it is a fork storm. Written in place,
+# never renamed over, so the shell's watch stays on the same inode.
+PARTY_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "noren-party.json")
+_party_cuts = 0
+_party_beats = 0
+
+
+def write_party(state):
+    try:
+        fd = os.open(PARTY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(state))
+    except OSError:
+        pass
+
+
+_glow_lock = threading.Lock()
+_glow = None       # while lit: {"address", "saved": {key: lua value}} -- what to restore
+_glow_seen = 0.0
+
+
+def hypr_request(command, timeout=1.0):
+    """One request on Hyprland's own socket, which is what hyprctl does.
+
+    Twelve colours a second as twelve hyprctl processes is a fork storm for a
+    glow; the socket is one write each.
+    """
+    sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not sig or not runtime:
+        return None
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect(os.path.join(runtime, "hypr", sig, ".socket.sock"))
+            sock.sendall(command.encode())
+            out = b""
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                out += chunk
+        return out.decode("utf-8", "replace")
+    except OSError:
+        return None
+
+
+def _hypr_option_lua(name):
+    """An option's current value, written the way hl.config takes it back.
+
+    Hyprland reports a gradient as `eef2fcff ee6fb8e3 45deg` -- AARRGGBB words
+    and an angle -- and takes it as { colors = { "rgba(f2fcffee)", ... },
+    angle = 45 }.
+    """
+    try:
+        opt = json.loads(hypr_request("j/getoption " + name) or "")
+    except ValueError:
+        return None
+    if isinstance(opt.get("bool"), bool):
+        return "true" if opt["bool"] else "false"
+    if isinstance(opt.get("int"), int):
+        return str(opt["int"])
+    words = str(opt.get("gradient") or "").split()
+    colors = [w for w in words if re.fullmatch(r"[0-9a-fA-F]{8}", w)]
+    angle = next((w[:-3] for w in words if re.fullmatch(r"-?[0-9.]+deg", w)), "0")
+    if not colors:
+        return None
+    return "{ colors = { %s }, angle = %s }" % (
+        ", ".join('"rgba(%s%s)"' % (c[2:], c[:2]) for c in colors), angle)
+
+
+def _glow_apply(values):
+    """Set options by getoption name, in one hl.config call.
+
+    Nested, never repeated: `{ decoration = A, decoration = B }` is legal Lua
+    and keeps only B, which silently dropped the shadow colour the first time.
+    """
+    tree = {}
+    for name, value in values.items():
+        node = tree
+        # `general:col.active_border` -- both separators are levels.
+        *parents, leaf = re.split(r"[:.]", name)
+        for part in parents:
+            node = node.setdefault(part, {})
+        node[leaf] = value
+
+    def lua(node):
+        return "{ %s }" % ", ".join(
+            "%s = %s" % (k, lua(v) if isinstance(v, dict) else v) for k, v in node.items())
+
+    hypr_request("eval hl.config(%s)" % lua(tree))
+
+
+def _glow_restore_locked():
+    global _glow
+    lit, _glow = _glow, None
+    if lit:
+        _glow_apply(lit["saved"])
+        write_party({"lit": False})
+
+
+def glow_restore():
+    with _glow_lock:
+        _glow_restore_locked()
+
+
+def glow_focus(address):
+    """Focus moved: the colours belong to whatever is in front now, so put them back."""
+    with _glow_lock:
+        if _glow and _glow["address"] != address:
+            _glow_restore_locked()
+
+
+def glow_watchdog():
+    """A page that stops sending -- closed, crashed, navigated -- still goes out."""
+    while True:
+        time.sleep(0.5)
+        with _glow_lock:
+            if _glow and time.monotonic() - _glow_seen > GLOW_IDLE:
+                _glow_restore_locked()
+
+
+def glow_frame(msg):
+    global _glow, _glow_seen, _party_cuts, _party_beats
+    if not read_config().get("party"):
+        glow_restore()
+        return
+    rgb = msg.get("rgb")
+    if (not isinstance(rgb, list) or len(rgb) != 3
+            or not all(isinstance(c, (int, float)) for c in rgb)):
+        return
+    r, g, b = (max(0, min(255, int(c))) for c in rgb)
+    try:
+        level = max(0.0, min(1.0, float(msg.get("level", 1))))
+    except (TypeError, ValueError):
+        level = 1.0
+    # How loud, when the page can hear the video; None when it cannot, and the
+    # lights then follow the picture alone.
+    energy = msg.get("energy")
+    energy = (max(0.0, min(1.0, float(energy)))
+              if isinstance(energy, (int, float)) and not isinstance(energy, bool) else None)
+
+    try:
+        front = json.loads(hypr_request("j/activewindow") or "")
+    except ValueError:
+        front = {}
+    address = str(front.get("address") or "")
+    # Only ever a Noren page window, and only the one the video is in: the
+    # frame names its page's title, and a frame still in flight after focus
+    # moved must not paint whatever took it.
+    if (not address or not str(front.get("class") or "").startswith("chrome-")
+            or (msg.get("title") and front.get("title") != msg.get("title"))):
+        glow_restore()
+        return
+
+    with _glow_lock:
+        if _glow and _glow["address"] != address:
+            _glow_restore_locked()
+        if not _glow:
+            saved = {name: _hypr_option_lua(name) for name in GLOW_OPTIONS}
+            if not all(saved.values()):
+                return   # nothing to restore to, so nothing is changed
+            # Every other window keeps the shadow it had. An unset inactive
+            # colour means "the active one", so without this the whole desktop
+            # glowed -- and a theme with shadows off had none to keep.
+            try:
+                opt = json.loads(hypr_request("j/getoption decoration:shadow:color_inactive") or "")
+            except ValueError:
+                opt = {}
+            own = _hypr_option_lua("decoration:shadow:color_inactive") if opt.get("set") else None
+            before = own or saved["decoration:shadow:color"]
+            saved["decoration:shadow:color_inactive"] = before
+            _glow = {"address": address, "saved": saved,
+                     "inactive": before if saved["decoration:shadow:enabled"] == "true"
+                     else '"rgba(00000000)"'}
+        _glow_seen = time.monotonic()
+        border = '"rgba(%02x%02x%02xee)"' % (r, g, b)
+        # A dark scene dims the glow rather than painting the desktop black;
+        # with sound, the music carries most of it, so the glow breathes.
+        strength = level if energy is None else 0.3 * level + 0.7 * energy
+        shadow = '"rgba(%02x%02x%02x%02x)"' % (r, g, b, int(0x18 + strength * (0x99 - 0x18)))
+        _glow_apply({
+            "general:col.active_border": border,
+            "group:col.border_active": border,
+            "decoration:shadow:enabled": "true",
+            "decoration:shadow:color": shadow,
+            "decoration:shadow:range": str(GLOW_RANGE),
+            "decoration:shadow:render_power": str(GLOW_POWER),
+            "decoration:shadow:color_inactive": _glow["inactive"],
+        })
+        # A hard cut in the picture is counted rather than flagged, so the bar
+        # flashes once per cut however many frames it reads in between.
+        if msg.get("cut"):
+            _party_cuts += 1
+        if msg.get("beat"):
+            _party_beats += 1
+        write_party({"lit": True, "rgb": [r, g, b], "level": round(level, 2),
+                     "energy": energy, "cuts": _party_cuts, "beats": _party_beats})
+
 
 def watch_hyprland():
     """Tell the extension when the grouping changed.
@@ -741,7 +979,10 @@ def watch_hyprland():
                             if where:
                                 threading.Thread(target=burst_closed,
                                                  args=(gone, where), daemon=True).start()
-                        elif name in ("openwindow", "movewindow", "movewindowv2",
+                        if name == "activewindowv2":
+                            glow_focus("0x" + text.split(">>", 1)[1].strip()
+                                       if ">>" in text else "")
+                        if name in ("openwindow", "movewindow", "movewindowv2",
                                       "resizewindow", "activewindowv2"):
                             known = page_clients()
                             # A moment after focus lands, so the window has
@@ -1197,7 +1438,8 @@ def push_config():
     (navigate), and it must reach the same engine as the CLI's own path.
     """
     config = read_config()
-    write_native({"type": "config", "search": config.get("search") or ""})
+    write_native({"type": "config", "search": config.get("search") or "",
+                  "party": bool(config.get("party"))})
 
 
 def set_pref(msg):
@@ -1419,6 +1661,13 @@ def handle_client(conn):
         elif cmd == "stashMark":
             mark_stashed(req.get("address"), req.get("image"))
             reply = {"ok": True}
+        elif cmd == "partyConfig":
+            # `noren party on|off`: the pages start or stop sampling, and a
+            # window lit right now goes back to how it was.
+            push_config()
+            if not read_config().get("party"):
+                glow_restore()
+            reply = {"ok": True}
         elif cmd == "stashChanged":
             write_native({"type": "stashChanged"})
             reply = {"ok": True}
@@ -1514,6 +1763,11 @@ def main():
     threading.Thread(target=lambda: (push_wallpaper(force=True),
                                      watch_theme()), daemon=True).start()
     threading.Thread(target=watch_hyprland, daemon=True).start()
+    threading.Thread(target=glow_watchdog, daemon=True).start()
+    atexit.register(glow_restore)
+    # Made now, lights off, so the shell has a file to watch before the first
+    # video -- a watch cannot be put on a file that does not exist.
+    write_party({"lit": False})
 
     while True:
         msg = read_native()
@@ -1560,7 +1814,16 @@ def main():
                 "tabbed": bool(config.get("tabbed")),
                 "shatter": shatter_style_name(config),
                 "search": config.get("search") or "",
+                "party": bool(config.get("party")),
             }})
+
+        elif kind == "glow":
+            # Twelve a second at most, and each is one socket write: kept on
+            # the main loop so the frames are applied in the order they came.
+            if msg.get("off"):
+                glow_restore()
+            else:
+                glow_frame(msg)
 
         elif kind == "setPref":
             threading.Thread(target=set_pref, args=(msg,), daemon=True).start()

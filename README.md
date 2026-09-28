@@ -435,6 +435,33 @@ noren stash open <id>        # bring one back (--replace: in place of this page)
 noren stash drop <id>        # let one go
 ```
 
+## Party mode
+
+Play a video in a Noren window and your desktop lights up with it.
+
+`SUPER + M` → `X` turns it on. While a video plays in the window in front of
+you:
+
+- **The window glows.** Its border and a soft light around it take the colour
+  of the picture, and follow it scene by scene.
+- **The bar lights up.** Pools of the same colour drift along inside it, a lit
+  line runs along its edge, and a glow falls from it onto your windows.
+- **It moves with the music.** Louder is brighter and faster, and every beat
+  sends a flare from the middle of the bar out to both ends. A video with no
+  sound, or one the page is not allowed to hear, follows the picture instead,
+  flashing on hard cuts.
+
+Pause, switch window or change workspace and everything goes back to your
+theme exactly as it was.
+
+```bash
+noren party on               # or off, or toggle
+```
+
+Party mode listens to a copy of the video's sound and never touches the video
+itself, so it cannot mute or change what you hear. Streaming services that use
+DRM hide both picture and sound from it, so those get a dim glow at most.
+
 ## Closing a page
 
 A page window can come apart as it closes: the page splits into hanging panels
@@ -557,8 +584,8 @@ Omarchy OSD.
 ## Settings
 
 Press **`S`** on the start page, or click **Settings**. Tabbed mode, auto-peel,
-the reveal bar, how a page closes, page theming, and the search engine, each
-saved the moment you change it.
+the reveal bar, party mode, how a page closes, page theming, and the search
+engine, each saved the moment you change it.
 
 ```bash
 noren search https://search.example/?q=%s   # %s is where the words go
