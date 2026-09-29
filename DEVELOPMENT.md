@@ -1291,8 +1291,35 @@ or a dead one (`noren reload-extension`) is then a silent video.
 by the picture. A playlist swapping tracks under the same element is caught by
 comparing the live audio track each tick.
 
+**In the background, only the bar.** With `party_background` the page keeps
+sampling while its window is unfocused, as long as it is visible. The host keeps
+two states apart: the *window* colours (the borrowed globals, only while the
+video's own window is focused) and the *bar* (the party file, lit for as long as
+a page keeps sending). Focus leaving puts back the window colours and leaves the
+bar lit. There is no per-window shadow colour to glow an unfocused window with,
+and borrowing the inactive colours would light every other window. One page owns
+the lights, by tab title: the focused one takes them; otherwise the owner keeps
+them until 1.5 s of silence. An "off" carries the page's title, so a second
+video pausing cannot put out the first one's show.
+
 Not done: a gradient border (left of the picture to right) now that the
 globals take gradients; vertical bars.
+
+## A group of one dissolves
+
+Closing tabs down to one left a group of one: a tab strip and a group border
+with nothing to switch to. After every settled burst of group or focus events,
+the host reads `activewindow` (one socket request) and, when the page in front
+is alone in its group, runs `noren solo`, because the CLI owns every group
+dispatch. `group.toggle()` has no window argument on 0.56 and acts on whatever is
+focused, so `solo` only ever acts on the window that is *already* in front, and
+reads it again immediately before the dispatch. It never moves focus to reach
+one; a lone group elsewhere is dissolved when it next takes focus. `gather`
+builds a group of one on purpose (its anchor, until the first fold), so it
+holds `$XDG_RUNTIME_DIR/noren-gathering` while it runs, and `solo` stands down
+while that file is under 30 s old. Tabbed mode needs nothing new: `gather` makes
+a group from an ungrouped anchor, which is how it grouped the page the first
+time.
 
 ## The radial shows what applies
 

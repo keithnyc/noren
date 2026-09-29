@@ -52,6 +52,8 @@ usage: noren <command> [args]
   tabbed toggle     flip it; `tabbed` alone reports
   party on|off      party mode: a playing video lights its window and the top
                     bar in the picture's colours (persists; `toggle` flips it)
+  party background on|off
+                    keep the bar lit while the video plays behind other windows
   go <url>          navigate the focused window (force)
   back              history back
   forward           history forward
@@ -414,7 +416,8 @@ def doctor():
          if tabbed_mode() else "off - new pages open as their own window")
     style = shatter_style()
     _row(OK, "shatter", f"{style} - how a closing page leaves" if style else "off")
-    _row(OK, "party mode", "on - a playing video lights its window and the bar"
+    _row(OK, "party mode", ("on - a playing video lights its window and the bar"
+                            + (", in the background too" if load_config().get("party_background") else ""))
          if load_config().get("party") else "off")
 
     # The count and the file's mode, never what is in it: it is your browsing.
@@ -1719,7 +1722,36 @@ def noren_windows(pattern=None):
     return wins
 
 
+# While a gather runs, its anchor is a group of one between being made a group
+# and the first fold -- exactly what `solo` dissolves. This marks the window of
+# time; older than the ceiling means a gather died without clearing it.
+GATHERING = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "noren-gathering")
+GATHERING_MAX_AGE = 30
+
+
 def gather(pattern=None, only=None, anchor_address=None):
+    try:
+        with open(GATHERING, "w"):
+            pass
+    except OSError:
+        pass
+    try:
+        return _gather(pattern, only, anchor_address)
+    finally:
+        try:
+            os.unlink(GATHERING)
+        except OSError:
+            pass
+
+
+def gathering():
+    try:
+        return time.time() - os.stat(GATHERING).st_mtime < GATHERING_MAX_AGE
+    except OSError:
+        return False
+
+
+def _gather(pattern=None, only=None, anchor_address=None):
     """Pull peeled windows back into one Hyprland group -- the return path.
 
     `peel` scatters and nothing brought them back, which makes a week of
@@ -1918,6 +1950,33 @@ def pop():
     hypr_do("hl.dsp.window.move({ out_of_group = true })")
     title = (target.get("title") or target.get("class") or "")[:60]
     print(f"noren: popped out {title}")
+    return 0
+
+
+def solo():
+    """A group of one is not a group: take the page in front out of it.
+
+    Closing tabs one by one left the last page still wearing a group's tab bar
+    and border with nothing to switch to. The host calls this when a group
+    changes; tabbed mode folds the page back into a group the moment a new one
+    opens, the same way it grouped it in the first place.
+
+    Only ever the window that is *already* focused, and never by moving focus:
+    `group.toggle()` has no window argument on 0.56 and acts on whatever is
+    focused, so a window elsewhere is left alone -- it is dealt with when it
+    next takes focus. The address is read again right before the dispatch, so a
+    focus change in between cannot turn this onto the wrong window.
+    """
+    if gathering():
+        return 0
+    front = hypr_json("activewindow") or {}
+    address = front.get("address") or ""
+    if (not address or not (front.get("class") or "").lower().startswith("chrome-")
+            or (front.get("grouped") or []) != [address]):
+        return 0
+    if (hypr_json("activewindow") or {}).get("address") != address:
+        return 0
+    hypr_do("hl.dsp.group.toggle()")
     return 0
 
 
@@ -3505,6 +3564,10 @@ def main(argv):
     if cmd == "start":
         return start_page(new="--new" in rest, keep="--keep" in rest)
 
+    if cmd == "solo":
+        # Internal: the host calls this when a group changes.
+        return solo()
+
     if cmd == "join":
         # Internal: the host calls this after spawning a window in tabbed mode.
         anchor, exclude = None, set()
@@ -3534,6 +3597,20 @@ def main(argv):
 
     if cmd == "party":
         config = load_config()
+        if rest and rest[0] == "background":
+            # Keep the bar lit while the video plays behind other windows.
+            if len(rest) > 1 and rest[1] in ("on", "off"):
+                config["party_background"] = rest[1] == "on"
+                save_config(config)
+            elif len(rest) > 1:
+                sys.exit(f"noren party background: unknown argument '{rest[1]}' (on | off)")
+            if len(rest) > 1 and bridge_up():
+                try:
+                    call({"cmd": "partyConfig"}, fallback=lambda: {"ok": False})
+                except SystemExit:
+                    pass
+            print("party background", "on" if config.get("party_background") else "off")
+            return 0
         if rest and rest[0] in ("on", "off"):
             config["party"] = rest[0] == "on"
             save_config(config)
@@ -3541,7 +3618,7 @@ def main(argv):
             config["party"] = not config.get("party")
             save_config(config)
         elif rest and rest[0] not in ("status",):
-            sys.exit(f"noren party: unknown argument '{rest[0]}' (on | off | toggle)")
+            sys.exit(f"noren party: unknown argument '{rest[0]}' (on | off | toggle | background)")
         # The pages sample only while it is on, and turning it off mid-video
         # has to put the border and shadow back now, not at the next frame.
         if rest and rest[0] != "status" and bridge_up():

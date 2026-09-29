@@ -247,6 +247,10 @@ Nothing else changes: `--tiled` opts a single `noren open` out, sets still open
 in the shape they were saved, and the page in front is only ever joined when it
 is the focused window — never a group you are not looking at.
 
+A group of one is not a group. Close the tabs down to the last page and it
+leaves group mode, tab strip and all; the next page you open folds back in with
+it as usual.
+
 ## Sets
 
 Pages you open together, named. Defining one requires typing no urls at all —
@@ -456,7 +460,16 @@ theme exactly as it was.
 
 ```bash
 noren party on               # or off, or toggle
+noren party background on    # keep the bar lit while you work in other windows
 ```
+
+With **party in the background** on (also a switch on the start page), the bar
+keeps the whole show going while the video plays in a window beside the one you
+are working in. The glow around the video's own window comes back when you
+focus it: Hyprland colours only the focused window's glow, so an unfocused one
+cannot have its own. One video runs the lights at a time: the one in front,
+otherwise the one that started first. The video's window has to stay on screen;
+on a workspace you cannot see, the browser slows the page down.
 
 Party mode listens to a copy of the video's sound and never touches the video
 itself, so it cannot mute or change what you hear. Streaming services that use

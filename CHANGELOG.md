@@ -13,6 +13,11 @@
   underglow; and it all moves with the music, a flare across the bar on every
   beat. Everything goes back to your theme the moment the video stops.
   `noren party on|off|toggle`, or the switch on the start page.
+- **Party in the background.** `noren party background on`, or its switch on
+  the start page: the bar keeps dancing to a video playing beside the window
+  you are working in.
+- A group of one is not a group: close tabs down to the last page and it leaves
+  group mode instead of keeping a tab strip with nothing to switch to.
 - The Noren icon shows in the bar again. It had been in the layout at zero
   width. Its tooltip is the bar's own now, rather than an unstyled box drawn
   over the icon, and it no longer flips to an X-in-a-box while the shell or

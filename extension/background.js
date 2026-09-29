@@ -40,7 +40,7 @@ function connect() {
       // search typed straight afterwards must still reach the right engine.
       searchTemplate = String(msg.search || '') || DEFAULT_SEARCH;
       chrome.storage.local.set({ searchTemplate }).catch(() => {});
-      setGlow(Boolean(msg.party));
+      setGlow(Boolean(msg.party), Boolean(msg.partyBackground));
       return;
     }
     if (msg && (msg.type === 'prefs')) {
@@ -576,24 +576,29 @@ chrome.storage.local
 // The pages sample only while it is on, so turning it off stops the work as
 // well as the colour.
 let glowOn = false;
+// Whether a page keeps the lights going when its window is not in front.
+let glowBackground = false;
 const glowReady = chrome.storage.local
-  .get({ glowOn: false })
+  .get({ glowOn: false, glowBackground: false })
   .then((got) => {
     glowOn = Boolean(got.glowOn);
+    glowBackground = Boolean(got.glowBackground);
   })
   .catch(() => {});
 
-async function setGlow(on) {
+async function setGlow(on, background) {
   await glowReady;
-  if (on === glowOn) return;
+  if (on === glowOn && background === glowBackground) return;
   glowOn = on;
-  chrome.storage.local.set({ glowOn }).catch(() => {});
+  glowBackground = background;
+  chrome.storage.local.set({ glowOn, glowBackground }).catch(() => {});
   try {
     const windows = await chrome.windows.getAll({ populate: true });
     for (const win of windows) {
       if (win.type !== 'app') continue;
       for (const tab of win.tabs || []) {
-        chrome.tabs.sendMessage(tab.id, { norenGlow: 'config', enabled: on }).catch(() => {});
+        chrome.tabs.sendMessage(tab.id, { norenGlow: 'config', enabled: on, background })
+          .catch(() => {});
       }
     }
   } catch (e) {
@@ -618,12 +623,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.norenGlow === 'hello') {
     glowReady
       .then(() => (glowOn ? isAppWindow(sender.tab.windowId) : false))
-      .then((app) => sendResponse({ enabled: Boolean(app) }))
+      .then((app) => sendResponse({ enabled: Boolean(app), background: glowBackground }))
       .catch(() => sendResponse({ enabled: false }));
     return true;
   }
   if (msg.norenGlow === 'off') {
-    send({ type: 'glow', off: true });
+    // Named, so the host only puts the lights out for the page running them.
+    send({ type: 'glow', off: true, title: String(sender.tab.title || '') });
     return false;
   }
   if (msg.norenGlow === 'frame' && glowOn) {
@@ -870,6 +876,7 @@ async function allPrefs() {
     shatter: host.shatter || 'off',
     search: host.search || DEFAULT_SEARCH,
     party: Boolean(host.party),
+    partyBackground: Boolean(host.partyBackground),
   };
 }
 

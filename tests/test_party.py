@@ -119,6 +119,51 @@ class Party(unittest.TestCase):
         self.assertGreaterEqual(state["beats"], 2)
         self.assertGreaterEqual(state["cuts"], 1)
 
+    def test_unfocused_video_lights_nothing_without_the_background_setting(self):
+        self.hypr.front = {"address": "0xdef", "class": "Alacritty", "title": "Terminal"}
+        self.frame()
+        self.assertEqual(self.hypr.sent, [])
+        self.assertFalse(os.path.exists(self.host.PARTY_FILE))
+
+    def test_background_keeps_the_bar_but_never_the_window_colours(self):
+        # There is no per-window shadow colour, and the inactive colours are
+        # every other window's: behind other windows, only the bar lights.
+        self.host.read_config = lambda: {"party": True, "party_background": True}
+        self.hypr.front = {"address": "0xdef", "class": "Alacritty", "title": "Terminal"}
+        self.frame(energy=0.7)
+        self.assertEqual(self.hypr.sent, [])
+        self.assertTrue(self.party()["lit"])
+
+    def test_focus_leaving_in_background_mode_keeps_the_bar(self):
+        self.host.read_config = lambda: {"party": True, "party_background": True}
+        self.frame()
+        self.assertIsNotNone(self.host._glow)
+        self.host.glow_focus("0xother")
+        self.assertIsNone(self.host._glow)                       # window colours back
+        self.assertIn("angle = 45", self.hypr.sent[-1])
+        self.assertTrue(self.party()["lit"])                     # bar still going
+
+    def test_one_video_runs_the_lights(self):
+        self.host.read_config = lambda: {"party": True, "party_background": True}
+        self.hypr.front = {"address": "0xdef", "class": "Alacritty", "title": "Terminal"}
+        self.frame()
+        self.host.glow_frame({"rgb": [0, 255, 0], "level": 0.5, "title": "Another video"})
+        self.assertEqual(self.party()["rgb"], [200, 40, 120])
+        # ...and the other one pausing does not put this one's show out.
+        self.host.glow_restore("Another video")
+        self.assertTrue(self.party()["lit"])
+        self.host.glow_restore("A video")
+        self.assertEqual(self.party(), {"lit": False})
+
+    def test_the_video_in_front_takes_the_lights(self):
+        self.host.read_config = lambda: {"party": True, "party_background": True}
+        self.hypr.front = {"address": "0xdef", "class": "Alacritty", "title": "Terminal"}
+        self.host.glow_frame({"rgb": [0, 255, 0], "level": 0.5, "title": "Another video"})
+        self.hypr.front = self.page
+        self.frame()
+        self.assertEqual(self.party()["rgb"], [200, 40, 120])
+        self.assertIsNotNone(self.host._glow)
+
     def test_off_in_the_config_means_nothing_is_touched(self):
         self.host.read_config = lambda: {}
         self.frame()

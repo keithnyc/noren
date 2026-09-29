@@ -7,8 +7,9 @@
 // the bar with it. Thirty times a second the sound is measured -- how loud, and
 // whether a beat just landed -- so the lights move with the music rather than
 // only with the picture. Only while a video is actually playing, big enough to
-// be the thing being watched, in a window that has focus -- otherwise this
-// sends one "off" and goes quiet.
+// be the thing being watched, in a window that has focus (or any visible
+// window, with the background setting) -- otherwise this sends one "off" and
+// goes quiet.
 //
 // The colour is chosen, not averaged. A plain mean of a frame is a brownish
 // grey: black letterbox bars count, and the vivid parts are outvoted by
@@ -56,6 +57,9 @@
   const CUT_GAP_MS = 350;
 
   let enabled = false;
+  // Keep going when this window is not in front (the "background" setting):
+  // the bar stays lit while you work elsewhere.
+  let background = false;
   let timer = null;
   let lit = false;
   let idle = 0;
@@ -279,7 +283,8 @@
   }
 
   function tick() {
-    const video = enabled && !document.hidden && document.hasFocus() ? pickVideo() : null;
+    const video = enabled && !document.hidden && (background || document.hasFocus())
+      ? pickVideo() : null;
     if (!video) {
       // Off at once, so a pause is felt; the loop itself lingers a moment in
       // case this was a buffering blip.
@@ -337,7 +342,7 @@
   document.addEventListener('playing', wake, { capture: true, signal });
   window.addEventListener('focus', wake, { signal });
   document.addEventListener('visibilitychange', () => (document.hidden ? tick() : wake()), { signal });
-  window.addEventListener('blur', () => timer && tick(), { signal });
+  window.addEventListener('blur', () => timer && !background && tick(), { signal });
 
   function hello() {
     try {
@@ -345,6 +350,7 @@
         .sendMessage({ norenGlow: 'hello' })
         .then((reply) => {
           enabled = Boolean(reply && reply.enabled);
+          background = Boolean(reply && reply.background);
           if (enabled) wake();
           else halt();
         })
@@ -356,6 +362,7 @@
 
   const onMessage = (msg) => {
     if (msg && msg.norenGlow === 'config') {
+      background = Boolean(msg.background);
       if (msg.enabled) hello();
       else {
         enabled = false;

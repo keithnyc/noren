@@ -56,6 +56,7 @@ PREF_COMMANDS = {
     "shatter": lambda v: ["shatter", str(v)],
     "search": lambda v: ["search", str(v)],
     "party": lambda v: ["party", "on" if v else "off"],
+    "partyBackground": lambda v: ["party", "background", "on" if v else "off"],
 }
 
 _config_stamp = None
@@ -734,6 +735,7 @@ GLOW_OPTIONS = (
 PARTY_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "noren-party.json")
 _party_cuts = 0
 _party_beats = 0
+_party_source = None   # the title of the page whose video runs the lights
 
 
 def write_party(state):
@@ -822,24 +824,41 @@ def _glow_apply(values):
     hypr_request("eval hl.config(%s)" % lua(tree))
 
 
-def _glow_restore_locked():
+def _glow_unlight_locked():
+    """Put the window's colours back; the bar is left as it is."""
     global _glow
     lit, _glow = _glow, None
     if lit:
         _glow_apply(lit["saved"])
+
+
+def _glow_restore_locked():
+    """Lights out everywhere: the window's colours back, and the bar dark."""
+    global _party_source
+    _glow_unlight_locked()
+    if _party_source is not None:
+        _party_source = None
         write_party({"lit": False})
 
 
-def glow_restore():
+def glow_restore(title=None):
+    """Lights out. With a title, only if that page is the one lighting them:
+    a second video pausing must not put out the first one's show."""
     with _glow_lock:
-        _glow_restore_locked()
+        if title is None or _party_source in (None, title):
+            _glow_restore_locked()
 
 
 def glow_focus(address):
-    """Focus moved: the colours belong to whatever is in front now, so put them back."""
+    """Focus moved: the window colours belong to whatever is in front now, so
+    they go back. In the background setting the bar stays lit -- the page keeps
+    sending, and that is what keeps it going."""
     with _glow_lock:
         if _glow and _glow["address"] != address:
-            _glow_restore_locked()
+            if read_config().get("party_background"):
+                _glow_unlight_locked()
+            else:
+                _glow_restore_locked()
 
 
 def glow_watchdog():
@@ -847,15 +866,17 @@ def glow_watchdog():
     while True:
         time.sleep(0.5)
         with _glow_lock:
-            if _glow and time.monotonic() - _glow_seen > GLOW_IDLE:
+            if _party_source is not None and time.monotonic() - _glow_seen > GLOW_IDLE:
                 _glow_restore_locked()
 
 
 def glow_frame(msg):
-    global _glow, _glow_seen, _party_cuts, _party_beats
-    if not read_config().get("party"):
+    global _glow, _glow_seen, _party_cuts, _party_beats, _party_source
+    config = read_config()
+    if not config.get("party"):
         glow_restore()
         return
+    background = bool(config.get("party_background"))
     rgb = msg.get("rgb")
     if (not isinstance(rgb, list) or len(rgb) != 3
             or not all(isinstance(c, (int, float)) for c in rgb)):
@@ -870,55 +891,70 @@ def glow_frame(msg):
     energy = msg.get("energy")
     energy = (max(0.0, min(1.0, float(energy)))
               if isinstance(energy, (int, float)) and not isinstance(energy, bool) else None)
+    title = str(msg.get("title") or "")
 
     try:
         front = json.loads(hypr_request("j/activewindow") or "")
     except ValueError:
         front = {}
     address = str(front.get("address") or "")
-    # Only ever a Noren page window, and only the one the video is in: the
-    # frame names its page's title, and a frame still in flight after focus
-    # moved must not paint whatever took it.
-    if (not address or not str(front.get("class") or "").startswith("chrome-")
-            or (msg.get("title") and front.get("title") != msg.get("title"))):
-        glow_restore()
+    # The video's own window is in front: a Noren page window whose title is
+    # this page's. A frame still in flight after focus moved must not paint
+    # whatever took it.
+    focused = bool(address and str(front.get("class") or "").startswith("chrome-")
+                   and (not title or front.get("title") == title))
+    if not focused and not background:
+        glow_restore(title)
         return
 
     with _glow_lock:
-        if _glow and _glow["address"] != address:
-            _glow_restore_locked()
-        if not _glow:
-            saved = {name: _hypr_option_lua(name) for name in GLOW_OPTIONS}
-            if not all(saved.values()):
-                return   # nothing to restore to, so nothing is changed
-            # Every other window keeps the shadow it had. An unset inactive
-            # colour means "the active one", so without this the whole desktop
-            # glowed -- and a theme with shadows off had none to keep.
-            try:
-                opt = json.loads(hypr_request("j/getoption decoration:shadow:color_inactive") or "")
-            except ValueError:
-                opt = {}
-            own = _hypr_option_lua("decoration:shadow:color_inactive") if opt.get("set") else None
-            before = own or saved["decoration:shadow:color"]
-            saved["decoration:shadow:color_inactive"] = before
-            _glow = {"address": address, "saved": saved,
-                     "inactive": before if saved["decoration:shadow:enabled"] == "true"
-                     else '"rgba(00000000)"'}
-        _glow_seen = time.monotonic()
-        border = '"rgba(%02x%02x%02xee)"' % (r, g, b)
-        # A dark scene dims the glow rather than painting the desktop black;
-        # with sound, the music carries most of it, so the glow breathes.
-        strength = level if energy is None else 0.3 * level + 0.7 * energy
-        shadow = '"rgba(%02x%02x%02x%02x)"' % (r, g, b, int(0x18 + strength * (0x99 - 0x18)))
-        _glow_apply({
-            "general:col.active_border": border,
-            "group:col.border_active": border,
-            "decoration:shadow:enabled": "true",
-            "decoration:shadow:color": shadow,
-            "decoration:shadow:range": str(GLOW_RANGE),
-            "decoration:shadow:render_power": str(GLOW_POWER),
-            "decoration:shadow:color_inactive": _glow["inactive"],
-        })
+        # One video runs the lights. The one in front takes them; otherwise
+        # whoever has them keeps them until it goes quiet.
+        now = time.monotonic()
+        if (_party_source is not None and _party_source != title and not focused
+                and now - _glow_seen < GLOW_IDLE):
+            return
+        _party_source = title
+        _glow_seen = now
+
+        if not focused:
+            # In the background: the bar only. There is no per-window shadow
+            # colour on 0.56, and the inactive colours are every other window's.
+            _glow_unlight_locked()
+        else:
+            if _glow and _glow["address"] != address:
+                _glow_unlight_locked()
+            if not _glow:
+                saved = {name: _hypr_option_lua(name) for name in GLOW_OPTIONS}
+                if not all(saved.values()):
+                    return   # nothing to restore to, so nothing is changed
+                # Every other window keeps the shadow it had. An unset inactive
+                # colour means "the active one", so without this the whole
+                # desktop glowed -- and a theme with shadows off had none to keep.
+                try:
+                    opt = json.loads(hypr_request("j/getoption decoration:shadow:color_inactive") or "")
+                except ValueError:
+                    opt = {}
+                own = _hypr_option_lua("decoration:shadow:color_inactive") if opt.get("set") else None
+                before = own or saved["decoration:shadow:color"]
+                saved["decoration:shadow:color_inactive"] = before
+                _glow = {"address": address, "saved": saved,
+                         "inactive": before if saved["decoration:shadow:enabled"] == "true"
+                         else '"rgba(00000000)"'}
+            border = '"rgba(%02x%02x%02xee)"' % (r, g, b)
+            # A dark scene dims the glow rather than painting the desktop black;
+            # with sound, the music carries most of it, so the glow breathes.
+            strength = level if energy is None else 0.3 * level + 0.7 * energy
+            shadow = '"rgba(%02x%02x%02x%02x)"' % (r, g, b, int(0x18 + strength * (0x99 - 0x18)))
+            _glow_apply({
+                "general:col.active_border": border,
+                "group:col.border_active": border,
+                "decoration:shadow:enabled": "true",
+                "decoration:shadow:color": shadow,
+                "decoration:shadow:range": str(GLOW_RANGE),
+                "decoration:shadow:render_power": str(GLOW_POWER),
+                "decoration:shadow:color_inactive": _glow["inactive"],
+            })
         # A hard cut in the picture is counted rather than flagged, so the bar
         # flashes once per cut however many frames it reads in between.
         if msg.get("cut"):
@@ -927,6 +963,32 @@ def glow_frame(msg):
             _party_beats += 1
         write_party({"lit": True, "rgb": [r, g, b], "level": round(level, 2),
                      "energy": energy, "cuts": _party_cuts, "beats": _party_beats})
+
+
+# A group of one is not a group. Checked after every settled burst of group or
+# focus events, which is cheap -- one socket read -- and only when the page in
+# front really is alone in its group does the CLI, which owns every group
+# dispatch, take it out.
+_solo_busy = threading.Lock()
+
+
+def solo_check():
+    if not _solo_busy.acquire(blocking=False):
+        return
+    try:
+        try:
+            front = json.loads(hypr_request("j/activewindow") or "")
+        except ValueError:
+            return
+        address = front.get("address")
+        if (address and str(front.get("class") or "").lower().startswith("chrome-")
+                and (front.get("grouped") or []) == [address]):
+            subprocess.run([NOREN_BIN, "solo"], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("solo failed:", exc)
+    finally:
+        _solo_busy.release()
 
 
 def watch_hyprland():
@@ -1004,6 +1066,7 @@ def watch_hyprland():
                     pending_since = None
                     pending_wait = STRUCTURE_DEBOUNCE
                     write_native({"type": "groupChanged"})
+                    threading.Thread(target=solo_check, daemon=True).start()
                 if snap_at and time.monotonic() >= snap_at:
                     snap_at = None
                     threading.Thread(target=snapshot_focused, daemon=True).start()
@@ -1439,7 +1502,8 @@ def push_config():
     """
     config = read_config()
     write_native({"type": "config", "search": config.get("search") or "",
-                  "party": bool(config.get("party"))})
+                  "party": bool(config.get("party")),
+                  "partyBackground": bool(config.get("party_background"))})
 
 
 def set_pref(msg):
@@ -1665,8 +1729,15 @@ def handle_client(conn):
             # `noren party on|off`: the pages start or stop sampling, and a
             # window lit right now goes back to how it was.
             push_config()
-            if not read_config().get("party"):
+            config = read_config()
+            if not config.get("party"):
                 glow_restore()
+            elif not config.get("party_background"):
+                # Background just went off: a show running for a window that
+                # is not in front stops now, not at its next frame.
+                with _glow_lock:
+                    if _party_source is not None and not _glow:
+                        _glow_restore_locked()
             reply = {"ok": True}
         elif cmd == "stashChanged":
             write_native({"type": "stashChanged"})
@@ -1815,13 +1886,14 @@ def main():
                 "shatter": shatter_style_name(config),
                 "search": config.get("search") or "",
                 "party": bool(config.get("party")),
+                "partyBackground": bool(config.get("party_background")),
             }})
 
         elif kind == "glow":
             # Twelve a second at most, and each is one socket write: kept on
             # the main loop so the frames are applied in the order they came.
             if msg.get("off"):
-                glow_restore()
+                glow_restore(str(msg.get("title") or "") or None)
             else:
                 glow_frame(msg)
 
