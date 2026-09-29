@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import _load
 
@@ -22,7 +23,11 @@ class Rules(unittest.TestCase):
             fh.write('require("default.hypr.omarchy")\n')
         self.reloads = []
         real = c.subprocess.run
-        c.subprocess.run = lambda cmd, **kw: self.reloads.append(cmd) if cmd[0] == "hyprctl" else real(cmd, **kw)
+        patcher = mock.patch.object(
+            c.subprocess, "run",
+            lambda cmd, **kw: self.reloads.append(cmd) if cmd[0] == "hyprctl" else real(cmd, **kw))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -37,7 +42,7 @@ class Rules(unittest.TestCase):
         self.assertEqual(rule["site"], "example.com")
         self.assertEqual(self.cli.rule_lua(rule),
                          'hl.window_rule({ match = { tag = "noren:site:example.com" }, '
-                         'opacity = 0.90, border_color = "rgba(ff3355ff)", rounding = 12 })')
+                         'opacity = 0.90, border_color = "rgba(ff3355ff) rgba(ff3355cc)", rounding = 12 })')
 
     def test_values_are_clamped_and_junk_is_dropped(self):
         rule = self.cli.clean_rule({"when": "typing", "then": {

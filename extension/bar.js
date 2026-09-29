@@ -1064,10 +1064,46 @@
     },
   };
 
+  // A page's title is its window's title, and in a group the window title is
+  // the tab. Some sites put a whole post in theirs, and Hyprland's group bar
+  // centres it and clips both ends. Past a length it is cut at a word, keeping
+  // the site's own short suffix ("... / Site", "... - Site"), and cut again
+  // whenever the site sets it again -- only in Noren's page windows, never in
+  // an ordinary tab. Chromium's history keeps the shorter title too.
+  const TITLE_MAX = 64;
+  function shortTitle(t) {
+    if (t.length <= TITLE_MAX) return t;
+    // A short last part after a separator is the site's name: keep it.
+    const m = t.match(/^(.*?)(\s[/|\-\u2013\u2014\u00b7]\s[^/|\-\u2013\u2014\u00b7]+)$/);
+    const site = m && m[2].length <= 27;
+    const head = site ? m[1] : t;
+    const tail = site ? m[2] : '';
+    const room = Math.max(16, TITLE_MAX - tail.length - 1);
+    const cut = head.slice(0, room);
+    return (cut.replace(/\s+\S*$/, '') || cut).replace(/[\s,.;:!?"'([]+$/, '') + '\u2026' + tail;
+  }
+  function trimTitles() {
+    let mine = '';
+    const trim = () => {
+      const t = document.title;
+      if (!t || t === mine) return;
+      const short = shortTitle(t);
+      if (short === t) return;
+      mine = short;
+      document.title = short;
+    };
+    trim();
+    const watcher = new MutationObserver(trim);
+    watcher.observe(document.head || document.documentElement,
+      { childList: true, subtree: true, characterData: true });
+    signal.addEventListener('abort', () => watcher.disconnect());
+  }
+
   // Ask before doing anything: only Noren's own chrome-less windows get a bar.
   chrome.runtime
     .sendMessage({ norenBar: 'hello' })
     .then((reply) => {
+      if (reply && reply.app) trimTitles();
       if (!reply || !reply.enabled) return;
       start();
       if (reply.pinned) {

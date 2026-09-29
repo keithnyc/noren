@@ -13,6 +13,11 @@
   underglow; and it all moves with the music, a flare across the bar on every
   beat. Everything goes back to your theme the moment the video stops.
   `noren party on|off|toggle`, or the switch on the start page.
+- Long page titles are trimmed in Noren's windows, keeping the site's name
+  ("... / Site"), so a tab in a Hyprland group no longer spills off both ends of
+  the group bar. History keeps the shorter title too.
+- A window rule's border colour shows on the window when it is not focused
+  too. `noren rules apply` rewrites the rules after an update like this one.
 - **Window rules on the start page.** "When a page is on a site, has a login
   form, is playing... then change its opacity, border, rounding, blur, dim
   around it, or float it": saved and live the moment you change it, with

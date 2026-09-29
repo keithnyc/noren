@@ -1344,6 +1344,11 @@ back one at a time, so the file is the truth and a reload applies it.
 Dispatched window tags survive the reload (measured). The start page makes
 rule ids itself, so a card keeps its id across saves.
 
+**A border rule needs two colours.** `border_color = "rgba(...)"` sets only
+the *focused* border, and the page a rule is about is usually not the window
+you are in (you are in the start page making the rule). `"focused unfocused"`
+sets both; measured with `getprop inactive_border_color`.
+
 **Float is placement, so Noren does it**, through `noren float-page`, when a
 window first gains a floating rule's tag. Two traps. A window floated by
 address keeps its size, which for a page tiled full-screen does not fit

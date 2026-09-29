@@ -2953,7 +2953,9 @@ def rule_lua(rule):
     if "opacity" in t:
         parts.append(f"opacity = {t['opacity']:.2f}")
     if "border" in t:
-        parts.append('border_color = "rgba(%sff)"' % t["border"][1:])
+        # Focused, then unfocused: one colour sets only the focused border, and
+        # the page a rule is about is often not the window you are in.
+        parts.append('border_color = "rgba(%sff) rgba(%scc)"' % (t["border"][1:], t["border"][1:]))
     if "border_size" in t:
         parts.append(f"border_size = {t['border_size']}")
     if "rounding" in t:
@@ -3864,7 +3866,13 @@ def main(argv):
         if sub == "lua":
             print(rules_lua(rules), end="")
             return 0
-        sys.exit("noren rules: list | add <when> [effects] | rm|on|off <id> | lua")
+        if sub == "apply":
+            # Rewrite the Lua from rules.json and reload -- after an update
+            # changes what a rule becomes.
+            saved, _ = save_rules(rules)
+            print(f"applied {len(saved)} rule(s)")
+            return 0
+        sys.exit("noren rules: list | add <when> [effects] | rm|on|off <id> | lua | apply")
 
     if cmd == "tags":
         # What Hyprland rules can match on right now: every page window and

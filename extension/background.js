@@ -2667,13 +2667,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'hello':
       // Only Noren's chrome-less windows ('app'). A tabbed window has its own
       // toolbar, and a popup is usually a login flow that wants none.
+      // `app` says it is a Noren page window at all, whatever the bar
+      // setting: the page trims an overlong title there (see bar.js).
       revealBarReady
-        .then(() => (revealBar ? chrome.windows.get(tab.windowId) : null))
+        .then(() => chrome.windows.get(tab.windowId))
         .then(async (win) => {
-          const enabled = Boolean(win && win.type === 'app');
-          sendResponse({ enabled, pinned: enabled ? await barPinned() : false });
+          const app = Boolean(win && win.type === 'app');
+          const enabled = app && revealBar;
+          sendResponse({ enabled, app, pinned: enabled ? await barPinned() : false });
         })
-        .catch(() => sendResponse({ enabled: false }));
+        .catch(() => sendResponse({ enabled: false, app: false }));
       return true;
     case 'pin':
       chrome.storage.local.set({ revealBarPinned: Boolean(msg.value) }).catch(() => {});
