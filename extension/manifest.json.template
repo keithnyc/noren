@@ -30,7 +30,8 @@
       ],
       "js": [
         "bar.js",
-        "glow.js"
+        "glow.js",
+        "signals.js"
       ],
       "run_at": "document_idle"
     }

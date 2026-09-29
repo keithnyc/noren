@@ -420,6 +420,32 @@ async function handleCommand(msg) {
       }
     }
 
+    case 'theatre': {
+      // Theatre mode on the page in front of you: its video player fills the
+      // window, and a `noren:theatre` tag has Hyprland dim everything else.
+      const tab = await focusedTab(msg.matchTitle);
+      if (!tab || !/^https?:/i.test(tab.url || '')) {
+        return reply({ ok: false, error: 'no web page in front of you' });
+      }
+      const win = await chrome.windows.get(tab.windowId).catch(() => null);
+      if (!win || win.type !== 'app') return reply({ ok: false, error: 'not a Noren page' });
+      let state = null;
+      try {
+        const [result] = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: norenTheatre,
+        });
+        state = result && result.result;
+      } catch (e) {
+        return reply({ ok: false, error: 'this page does not allow it' });
+      }
+      if (state === 'no-video') return reply({ ok: false, error: 'no video on this page' });
+      if (state) theatreTabs.add(tab.id);
+      else theatreTabs.delete(tab.id);
+      saveTheatre();
+      scheduleTags(0);
+      return reply({ ok: true, theatre: Boolean(state) });
+    }
     case 'stashCapture': {
       // Everything needed to put the page in front of you back later: where
       // it is, how far down you were, and what you had typed. Only a Noren
@@ -948,6 +974,278 @@ function siteHostOf(url) {
   } catch (e) {
     return '';
   }
+}
+
+// ------------------------------------------------------------ window tags
+//
+// Every page window carries `noren:*` tags in Hyprland, so window rules can
+// match on what a window shows: its site, whether it is loading, playing or
+// making sound, whether it holds a login form or unsent typing. This works out
+// each window's set and hands the whole list to the host, which reconciles
+// Hyprland against it. The whole list, every time: there are only ever a
+// handful of windows, and a full picture heals anything a missed event left
+// stale. Titles pair them up, as elsewhere -- an app window's Hyprland title
+// is its tab's title.
+
+const pageSignals = new Map(); // tabId -> { playing, login, typing }, from signals.js
+const theatreTabs = new Set(); // tabs in theatre mode
+let tagsTimer = null;
+
+chrome.storage.session.get(['pageSignals', 'theatreTabs']).then((got) => {
+  for (const [id, sig] of Object.entries((got && got.pageSignals) || {})) {
+    if (!pageSignals.has(Number(id))) pageSignals.set(Number(id), sig);
+  }
+  for (const id of (got && got.theatreTabs) || []) theatreTabs.add(Number(id));
+}).catch(() => {});
+
+// The worker is torn down when idle; a page still in theatre mode must keep
+// its tag when it comes back.
+function saveTheatre() {
+  chrome.storage.session.set({ theatreTabs: Array.from(theatreTabs) }).catch(() => {});
+}
+
+function tagsFor(tab) {
+  const tags = ['noren:page'];
+  const site = /^https?:/i.test(tab.url || '') ? siteHostOf(tab.url) : '';
+  if (site) tags.push('noren:site:' + site);
+  if (tab.status === 'loading') tags.push('noren:loading');
+  if (tab.audible) tags.push('noren:audible');
+  if (theatreTabs.has(tab.id)) tags.push('noren:theatre');
+  const sig = pageSignals.get(tab.id) || {};
+  if (sig.playing) tags.push('noren:playing');
+  if (sig.login) tags.push('noren:login');
+  if (sig.typing) tags.push('noren:typing');
+  return tags;
+}
+
+async function pushTags() {
+  tagsTimer = null;
+  try {
+    const windows = await chrome.windows.getAll({ populate: true });
+    const out = [];
+    for (const win of windows) {
+      if (win.type !== 'app') continue;
+      const tab = (win.tabs || [])[0];
+      if (tab && tab.title) out.push({ title: tab.title, tags: tagsFor(tab) });
+    }
+    send({ type: 'tags', windows: out });
+  } catch (e) {
+    // The browser is shutting down.
+  }
+}
+
+function scheduleTags(ms = 150) {
+  if (!tagsTimer) tagsTimer = setTimeout(pushTags, ms);
+}
+
+chrome.tabs.onUpdated.addListener((tabId, change) => {
+  // A navigation takes theatre mode with it: the new page is not in it.
+  if (change.status === 'loading' && theatreTabs.delete(tabId)) {
+    saveTheatre();
+    scheduleTags();
+  }
+  if ('status' in change || 'title' in change || 'audible' in change || 'url' in change) scheduleTags();
+});
+chrome.tabs.onRemoved.addListener((tabId) => {
+  pageSignals.delete(tabId);
+  theatreTabs.delete(tabId);
+  scheduleTags();
+});
+chrome.windows.onCreated.addListener(() => scheduleTags(400));
+
+chrome.runtime.onMessage.addListener((msg, sender) => {
+  if (msg && msg.norenTheatre === false && sender.id === chrome.runtime.id && sender.tab) {
+    // Escape inside the page ended it.
+    if (theatreTabs.delete(sender.tab.id)) {
+      saveTheatre();
+      scheduleTags(0);
+    }
+    return false;
+  }
+  if (!msg || !msg.norenSignals || sender.id !== chrome.runtime.id || !sender.tab) return false;
+  // Booleans only, whatever the page sent.
+  const sig = msg.norenSignals;
+  pageSignals.set(sender.tab.id, {
+    playing: sig.playing === true, login: sig.login === true, typing: sig.typing === true,
+  });
+  chrome.storage.session
+    .set({ pageSignals: Object.fromEntries(pageSignals) })
+    .catch(() => {});
+  scheduleTags(50);
+  return false;
+});
+
+scheduleTags(1000);
+
+// Runs in the page: toggles theatre mode. The video's player -- the video plus
+// the controls and captions drawn around it -- fills the window and the rest of
+// the page goes dark, left in place but invisible, the same way a clip hides
+// its page. The player, not the bare video: a video without its controls
+// cannot be paused or scrubbed. Escape ends it.
+//
+// It follows the video. A video site keeps more than one home for its player
+// and moves it between them when its layout changes -- which a window being
+// re-tiled does -- so the marks made on entry can end up on an empty box while
+// the video plays, hidden, somewhere else. On every resize, and on a
+// half-second check, a video that has left its marked player or stopped
+// filling the window is found again from scratch.
+function norenTheatre() {
+  const S = window.__norenTheatre || (window.__norenTheatre = {});
+  const MARKS = ['data-noren-theatre', 'data-noren-theatre-up', 'data-noren-theatre-fill',
+    'data-noren-theatre-core', 'data-noren-theatre-video'];
+
+  const unmark = () => {
+    for (const a of MARKS) document.querySelectorAll(`[${a}]`).forEach((n) => n.removeAttribute(a));
+  };
+
+  const clear = () => {
+    const style = document.getElementById('noren-theatre-style');
+    if (style) style.remove();
+    unmark();
+    if (S.onKey) removeEventListener('keydown', S.onKey, true);
+    if (S.onResize) removeEventListener('resize', S.onResize);
+    clearInterval(S.check);
+    clearTimeout(S.later);
+    Object.assign(S, { on: false, onKey: null, onResize: null, check: null, video: null, player: null });
+    // Players size their video from the window; tell them it changed.
+    dispatchEvent(new Event('resize'));
+    return false;
+  };
+  if (S.on) return clear();
+
+  // The one being watched: a playing video beats a bigger paused one.
+  const pickVideo = () => {
+    let video = null;
+    let best = 0;
+    for (const v of document.querySelectorAll('video')) {
+      const r = v.getBoundingClientRect();
+      // A video that has been styled into the window already counts at its
+      // natural size, so it is not out-scored by its own reflection.
+      const area = Math.max(r.width * r.height, (v.videoWidth || 0) * (v.videoHeight || 0) / 4);
+      const score = area * (v.paused ? 1 : 4);
+      if (score > best) { video = v; best = score; }
+    }
+    return best > 0 ? video : null;
+  };
+
+  const apply = () => {
+    unmark();
+    const video = pickVideo();
+    if (!video) return false;
+    const vr = video.getBoundingClientRect();
+    // Its player: the largest ancestor still about the video's own size. A
+    // column or a page is much bigger; a player is the video plus its chrome.
+    // Measured with theatre's own styles off, so the box is the page's.
+    let player = video;
+    for (let n = video.parentElement; n && n !== document.body; n = n.parentElement) {
+      const r = n.getBoundingClientRect();
+      if (r.width > vr.width * 1.15 || r.height > vr.height * 1.35) break;
+      player = n;
+    }
+    // The core: the nearest box that holds the video *and* something beside
+    // it -- the controls. Only it is shown; the wrappers above it are sized to
+    // the window but stay dark, so nothing else a site keeps in them (a
+    // blurred "ambient" copy of the picture, say) can land over the video.
+    let core = video;
+    for (let n = video.parentElement; n; n = n.parentElement) {
+      core = n;
+      if (n === player || n.children.length > 1) break;
+    }
+    player.setAttribute('data-noren-theatre', '');
+    core.setAttribute('data-noren-theatre-core', '');
+    video.setAttribute('data-noren-theatre-video', '');
+    // Everything between the player and the video fills its parent. A video
+    // told to be 100% high inside a wrapper with no height of its own is 0
+    // pixels high, and players hold their shape with the padding trick, whose
+    // padding lands on top of a filled height. With the chain filled, the
+    // height is defined all the way down and the site's own resize code sizes
+    // the video from there.
+    for (let n = video.parentElement; n && n !== player; n = n.parentElement) {
+      n.setAttribute('data-noren-theatre-fill', '');
+    }
+    // An ancestor with a transform (or filter, or containment) would trap
+    // position:fixed inside itself; see norenIsolate.
+    for (let n = player.parentElement; n && n !== document.documentElement; n = n.parentElement) {
+      n.setAttribute('data-noren-theatre-up', '');
+    }
+    S.video = video;
+    S.player = player;
+    S.shape = `${innerWidth}x${innerHeight}`;
+    return true;
+  };
+
+  // Styles go on once; they key on the marks, so re-marking moves them.
+  const style = document.createElement('style');
+  style.id = 'noren-theatre-style';
+  style.textContent = `
+    html, body { overflow: hidden !important; background: #000 !important; }
+    body * { visibility: hidden !important; }
+    [data-noren-theatre-core], [data-noren-theatre-core] * { visibility: visible !important; }
+    [data-noren-theatre-up] {
+      transform: none !important; filter: none !important;
+      backdrop-filter: none !important; contain: none !important;
+      perspective: none !important; will-change: auto !important;
+    }
+    [data-noren-theatre] {
+      position: fixed !important; inset: 0 !important;
+      width: 100vw !important; height: 100vh !important;
+      max-width: none !important; max-height: none !important;
+      margin: 0 !important; padding: 0 !important; z-index: 2147483647 !important;
+    }
+    [data-noren-theatre-fill] {
+      width: 100% !important; height: 100% !important;
+      max-width: none !important; max-height: none !important;
+      padding: 0 !important; min-height: 0 !important; min-width: 0 !important;
+      top: 0 !important; left: 0 !important;
+    }
+    [data-noren-theatre-video] {
+      width: 100% !important; height: 100% !important;
+      left: 0 !important; top: 0 !important; object-fit: contain !important;
+    }`;
+
+  if (!pickVideo()) return 'no-video';
+  document.documentElement.appendChild(style);
+  apply();
+
+  // Still showing the video? Re-find it if it moved or no longer fills the
+  // window -- but not twice for the same window shape, so a page that simply
+  // cannot be filled is not re-marked forever.
+  const healthy = () => {
+    const v = S.video;
+    if (!v || !v.isConnected || !S.player || !S.player.isConnected || !S.player.contains(v)) return false;
+    const r = v.getBoundingClientRect();
+    return r.width >= innerWidth * 0.9 || r.height >= innerHeight * 0.9;
+  };
+  const heal = () => {
+    if (!S.on || healthy()) return;
+    const shape = `${innerWidth}x${innerHeight}:${S.video && S.video.isConnected}`;
+    if (shape === S.tried) return;
+    S.tried = shape;
+    apply();
+    dispatchEvent(new Event('resize'));
+  };
+  S.onResize = () => {
+    S.tried = null;
+    clearTimeout(S.later);
+    // After the site has finished its own reflow.
+    S.later = setTimeout(heal, 250);
+  };
+  addEventListener('resize', S.onResize);
+  S.check = setInterval(heal, 500);
+
+  S.onKey = (e) => {
+    if (e.key !== 'Escape') return;
+    clear();
+    try {
+      chrome.runtime.sendMessage({ norenTheatre: false }).catch(() => {});
+    } catch (err) {
+      // The extension was reloaded; the page is back to normal regardless.
+    }
+  };
+  addEventListener('keydown', S.onKey, true);
+  S.on = true;
+  dispatchEvent(new Event('resize'));
+  return true;
 }
 
 // ------------------------------------------------ clips (experimental)
@@ -2132,7 +2430,7 @@ async function injectBars() {
       const tab = (win.tabs || [])[0];
       if (!tab || !/^https?:/i.test(tab.url || '')) continue;
       chrome.scripting
-        .executeScript({ target: { tabId: tab.id }, files: ['bar.js', 'glow.js'] })
+        .executeScript({ target: { tabId: tab.id }, files: ['bar.js', 'glow.js', 'signals.js'] })
         .catch(() => {});
     }
   } catch (e) {

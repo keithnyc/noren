@@ -475,6 +475,44 @@ Party mode listens to a copy of the video's sound and never touches the video
 itself, so it cannot mute or change what you hear. Streaming services that use
 DRM hide both picture and sound from it, so those get a dim glow at most.
 
+## Theatre mode
+
+`SUPER + M` → `E` on a page with a video: the player fills its window,
+controls and captions included, and everything else on screen dims. Press `E`
+again, or **Escape**, to leave. It holds when the window is re-tiled, and it
+pairs well with party mode. `noren theatre` from a terminal.
+
+## Window tags
+
+Every page window carries Hyprland tags that say what it is showing, so your
+own window rules can match on it:
+
+| Tag | On when |
+|---|---|
+| `noren:page` | it is a Noren page window |
+| `noren:site:<host>` | it shows that site (`www.` dropped, as for site scripts) |
+| `noren:loading` | the page is loading |
+| `noren:audible` | the tab is making sound |
+| `noren:playing` | a video or audio element is playing, muted or not |
+| `noren:login` | a password field is on the page |
+| `noren:typing` | you have typed into a field and not sent it |
+| `noren:theatre` | the page is in theatre mode |
+
+Rules follow the tags live and let go cleanly when a tag goes:
+
+```lua
+hl.window_rule({ match = { tag = "noren:typing" }, border_color = "rgba(ffb000ff)" })
+hl.window_rule({ match = { tag = "noren:login" }, border_color = "rgba(ff3355ff)" })
+hl.window_rule({ match = { tag = "noren:site:example.com" }, opacity = 0.97 })
+```
+
+Tags match exactly, not as patterns. Live effects (opacity, border colour and
+size, rounding, blur, dimming around) follow a page as it changes; placement
+(float, workspace, size) is decided by Hyprland when a window opens, before
+Noren knows its page, so a tag cannot move a window. `noren tags` lists every
+page window and its tags. The page only ever reports three yes-or-no facts; what
+you type never leaves it.
+
 ## Closing a page
 
 A page window can come apart as it closes: the page splits into hanging panels

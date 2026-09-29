@@ -965,6 +965,118 @@ def glow_frame(msg):
                      "energy": energy, "cuts": _party_cuts, "beats": _party_beats})
 
 
+# ------------------------------------------------------------------ window tags
+#
+# The worker reports every page window's `noren:*` tags; this makes Hyprland
+# match, so window rules can key on what a window shows. Only `noren:` tags on
+# `chrome-` windows are ever added or removed -- a tag Omarchy or the user put
+# there is not ours to touch.
+#
+# A tag lands inside a Lua string in the dispatch, so it is held to a strict
+# shape here, whatever the worker sent: a page's hostname is attacker-chosen
+# text, and `"` or `\` in it would be code.
+
+TAG_RE = re.compile(r"^noren:[a-z0-9][a-z0-9:._-]{0,120}$")
+ADDRESS_RE = re.compile(r"^0x[0-9a-f]+$")
+_tags_lock = threading.Lock()
+_tags_wanted = {}     # window title -> set of tags, from the worker's last report
+_tags_pending = False
+
+
+def set_tag_report(windows):
+    global _tags_wanted
+    wanted = {}
+    for w in windows if isinstance(windows, list) else []:
+        if not isinstance(w, dict):
+            continue
+        title = str(w.get("title") or "")
+        tags = {t for t in (w.get("tags") or []) if isinstance(t, str) and TAG_RE.match(t)}
+        if title:
+            # Two windows on the same page title get the same tags: the title
+            # is all the pairing there is.
+            wanted.setdefault(title, set()).update(tags)
+    with _tags_lock:
+        _tags_wanted = wanted
+    reconcile_tags()
+    theatre_dim(any("noren:theatre" in tags for tags in wanted.values()))
+
+
+def reconcile_tags():
+    with _tags_lock:
+        try:
+            clients = json.loads(hypr_request("j/clients") or "")
+        except ValueError:
+            return
+        for c in clients if isinstance(clients, list) else []:
+            address = str(c.get("address") or "")
+            if (not str(c.get("class") or "").lower().startswith("chrome-")
+                    or not ADDRESS_RE.match(address)):
+                continue
+            want = _tags_wanted.get(c.get("title") or "")
+            if want is None:
+                # Mid-navigation the two titles disagree for a moment. Leaving
+                # the tags as they are beats dropping them and flickering every
+                # rule that matches.
+                continue
+            want = want | {"noren:page"}
+            have = {t for t in (c.get("tags") or [])
+                    if isinstance(t, str) and t.startswith("noren:")}
+            for sign, tags in (("-", have - want), ("+", want - have)):
+                for tag in sorted(tags):
+                    if TAG_RE.match(tag):
+                        hypr_request('dispatch hl.dsp.window.tag({ tag = "%s%s", window = "address:%s" })'
+                                     % (sign, tag, address))
+
+
+# Theatre mode: a page tagged `noren:theatre` has everything around it dimmed.
+# The rule lives in Hyprland's running config, so it is added when the host
+# starts and again after every config reload, which clears runtime rules. The
+# dim is darker than Hyprland's default while any page is in theatre mode, and
+# put back when none is.
+THEATRE_DIM = 0.8
+_theatre_saved = None   # dim_around to put back, while theatre mode is on
+
+
+def theatre_rule():
+    hypr_request('eval hl.window_rule({ match = { tag = "noren:theatre" }, dim_around = true })')
+
+
+def theatre_dim(active):
+    global _theatre_saved
+    if active and _theatre_saved is None:
+        try:
+            opt = json.loads(hypr_request("j/getoption decoration:dim_around") or "")
+            _theatre_saved = float(opt.get("float"))
+        except (ValueError, TypeError):
+            return
+        hypr_request("eval hl.config({ decoration = { dim_around = %.3f } })" % THEATRE_DIM)
+    elif not active and _theatre_saved is not None:
+        hypr_request("eval hl.config({ decoration = { dim_around = %.3f } })" % _theatre_saved)
+        _theatre_saved = None
+
+
+def theatre_reloaded():
+    """A config reload clears runtime rules and resets the dim."""
+    theatre_rule()
+    if _theatre_saved is not None:
+        hypr_request("eval hl.config({ decoration = { dim_around = %.3f } })" % THEATRE_DIM)
+
+
+def reconcile_tags_soon():
+    """A window opened or retitled: match it up once the burst settles."""
+    global _tags_pending
+    if _tags_pending:
+        return
+    _tags_pending = True
+
+    def run():
+        global _tags_pending
+        _tags_pending = False
+        reconcile_tags()
+
+    threading.Timer(0.2, run).start()
+
+
 # A group of one is not a group. Checked after every settled burst of group or
 # focus events, which is cheap -- one socket read -- and only when the page in
 # front really is alone in its group does the CLI, which owns every group
@@ -1041,6 +1153,10 @@ def watch_hyprland():
                             if where:
                                 threading.Thread(target=burst_closed,
                                                  args=(gone, where), daemon=True).start()
+                        if name in ("openwindow", "windowtitle", "windowtitlev2"):
+                            reconcile_tags_soon()
+                        if name == "configreloaded":
+                            threading.Thread(target=theatre_reloaded, daemon=True).start()
                         if name == "activewindowv2":
                             glow_focus("0x" + text.split(">>", 1)[1].strip()
                                        if ">>" in text else "")
@@ -1654,7 +1770,7 @@ def handle_client(conn):
         # the call comes from a terminal or a keybind.
         if cmd in ("navigate", "back", "forward", "reload", "peel", "saveBookmark",
                    "extract", "inspect", "home", "toggleBar", "clipPick", "steal",
-                   "stashCapture"):
+                   "stashCapture", "theatre"):
             hint = hypr_target_title()
             if hint:
                 req["matchTitle"] = hint
@@ -1836,6 +1952,8 @@ def main():
     threading.Thread(target=watch_hyprland, daemon=True).start()
     threading.Thread(target=glow_watchdog, daemon=True).start()
     atexit.register(glow_restore)
+    atexit.register(theatre_dim, False)
+    threading.Thread(target=theatre_rule, daemon=True).start()
     # Made now, lights off, so the shell has a file to watch before the first
     # video -- a watch cannot be put on a file that does not exist.
     write_party({"lit": False})
@@ -1896,6 +2014,10 @@ def main():
                 glow_restore(str(msg.get("title") or "") or None)
             else:
                 glow_frame(msg)
+
+        elif kind == "tags":
+            threading.Thread(target=set_tag_report, args=(msg.get("windows"),),
+                             daemon=True).start()
 
         elif kind == "setPref":
             threading.Thread(target=set_pref, args=(msg,), daemon=True).start()

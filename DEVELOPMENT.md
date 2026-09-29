@@ -1305,6 +1305,57 @@ video pausing cannot put out the first one's show.
 Not done: a gradient border (left of the picture to right) now that the
 globals take gradients; vertical bars.
 
+## Window tags
+
+The worker works out each page window's `noren:*` tags (site, loading, audible
+from the tab; playing, login and typing from `signals.js`, three booleans and
+never a value; theatre from its own state) and sends the whole list, debounced,
+on any change. The host reconciles Hyprland against it over the socket: only
+`noren:` tags, only `chrome-` windows, paired by title. A title the report does
+not know is left alone, because mid-navigation the two titles disagree for a
+moment, and dropping the tags would flicker every rule. Hyprland events
+(`openwindow`, `windowtitle`) trigger a reconcile against the last report too.
+
+A tag goes inside a Lua string in the dispatch, and a hostname is chosen by the
+page, so every tag must match `^noren:[a-z0-9][a-z0-9:._-]{0,120}$` and every
+address `^0x[0-9a-f]+$`, whatever the worker sent. `tests/test_tags.py`
+includes the injection attempt.
+
+Measured on 0.56.2 before building (a spike, on one window, restored after):
+tags take any characters; rules re-evaluate the moment a tag is added or removed
+and restore cleanly (the clean restore `set_prop` never had); tag matching is
+exact, not a regex, so `^noren:site:example\.com$` matches nothing; live effects
+(opacity, border colour and size, rounding, `no_blur`, `dim_around`) follow tags,
+but static ones (`float`, `workspace`, `size`) are decided at map time and a
+later tag does nothing. The rule builder planned for the start page has to do
+placement itself, with address-targeted dispatchers, when a tag first appears.
+
+## Theatre mode
+
+`norenTheatre` is injected into the page; the tag `noren:theatre` does the
+dimming through a rule the host adds at startup and again on `configreloaded`,
+which clears runtime rules, with `decoration:dim_around` darkened to 0.8 while
+any page is in theatre and put back after. What cost time, on a video site:
+
+- **The video was 0 pixels tall.** It was told `height: 100%` inside a wrapper
+  with no height of its own. Now every box between the player and the video
+  fills its parent.
+- **Then it was 1433 pixels tall in a 713-pixel window.** A container held the
+  player's shape with the padding trick (`padding-top: 720px` on a 0-height
+  box), and the padding landed on top of the filled height. The chain drops
+  padding and min-heights.
+- **Re-tiling turned it black.** The site keeps two homes for its player and
+  moves it between them when its layout changes, and a window changing width
+  can do that. The marks stayed on the empty home. Theatre now re-finds the
+  video on resize and on a 500 ms check, guarded so a page it cannot fill is
+  not re-marked forever. Only the *core* (the nearest box holding the video and
+  its controls) is shown, so what else the site keeps in the wrappers (a
+  blurred "ambient" copy of the picture) stays dark.
+
+All three were reproduced headless (`--headless=new`, a throwaway profile, CDP
+from Node) on a public video, including the site's own layout switch, forced
+with its theater button.
+
 ## A group of one dissolves
 
 Closing tabs down to one left a group of one: a tab strip and a group border

@@ -418,6 +418,13 @@ Item {
     { icon: "\udb84\udc56", key: "X", label: "Party", state: root.partyOn ? "on" : "off",
       hint: "A playing video lights up its window and the bar",
       run: function () { root.runNoren(["party", "toggle"]) } },
+    // U+F050D: a screen above rows of seats. Rendered and looked at, found by
+    // its name in the font; the neighbours tried were a projector screen, a
+    // clapperboard and popcorn. E: every other letter of "theatre" is taken,
+    // and C, which the first sketch used, is Copy.
+    { icon: "\udb81\udd0d", key: "E", label: "Theatre", show: root.ctx !== null && root.ctx.page,
+      hint: "The video fills the window, everything else dims",
+      run: function () { root.runNoren(["theatre"]) } },
     // Tabs and Theme were here. They are settings, not actions, and live on
     // the start page with the others; the ring is for doing things.
   ]

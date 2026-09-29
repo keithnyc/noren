@@ -52,6 +52,9 @@ usage: noren <command> [args]
   tabbed toggle     flip it; `tabbed` alone reports
   party on|off      party mode: a playing video lights its window and the top
                     bar in the picture's colours (persists; `toggle` flips it)
+  theatre           the video in front of you fills its window and everything
+                    else dims; again (or Escape) to leave
+  tags              each page window's noren:* tags, for Hyprland window rules
   party background on|off
                     keep the bar lit while the video plays behind other windows
   go <url>          navigate the focused window (force)
@@ -3563,6 +3566,27 @@ def main(argv):
 
     if cmd == "start":
         return start_page(new="--new" in rest, keep="--keep" in rest)
+
+    if cmd == "theatre":
+        res = call({"cmd": "theatre"})
+        if not res.get("ok"):
+            sys.exit(f"noren theatre: {res.get('error', 'failed')}")
+        print("theatre", "on" if res.get("theatre") else "off")
+        return 0
+
+    if cmd == "tags":
+        # What Hyprland rules can match on right now: every page window and
+        # its noren:* tags. Titles are cut short; they are only for telling
+        # the windows apart.
+        pages = [c for c in (hypr_json("clients") or [])
+                 if (c.get("class") or "").lower().startswith("chrome-")]
+        if not pages:
+            print("noren: no page windows open")
+            return 0
+        for c in pages:
+            tags = sorted(t for t in (c.get("tags") or []) if t.startswith("noren:"))
+            print(f"{(c.get('title') or '')[:48]:<48}  {' '.join(tags) or '(none yet)'}")
+        return 0
 
     if cmd == "solo":
         # Internal: the host calls this when a group changes.

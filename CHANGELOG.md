@@ -13,6 +13,13 @@
   underglow; and it all moves with the music, a flare across the bar on every
   beat. Everything goes back to your theme the moment the video stops.
   `noren party on|off|toggle`, or the switch on the start page.
+- **Theatre mode.** `SUPER + M` → `E`: the video's player fills its window and
+  everything else on screen dims. Escape leaves. It follows the player when a
+  site moves it, so re-tiling the window does not lose the picture.
+- **Window tags.** Every page window carries `noren:*` tags in Hyprland --
+  its site, loading, playing, audible, a login form, unsent typing, theatre --
+  so your own window rules can match on what a window shows. `noren tags`
+  lists them.
 - **Party in the background.** `noren party background on`, or its switch on
   the start page: the bar keeps dancing to a video playing beside the window
   you are working in.
