@@ -164,6 +164,39 @@ class Party(unittest.TestCase):
         self.assertEqual(self.party()["rgb"], [200, 40, 120])
         self.assertIsNotNone(self.host._glow)
 
+    def test_after_lighting_only_the_two_colours_are_sent(self):
+        # Every hl.config runs on the compositor's thread, where the cursor is
+        # drawn. Measured on 0.56.2: the colours cost ~0.75 ms each and the
+        # group border ~20 ms. Thirty full updates a second stalled the desktop.
+        self.frame()
+        self.assertIn("range = 20", self.hypr.sent[-1])        # the statics, once
+        self.assertNotIn("border_active", self.hypr.sent[-1])  # not in a group
+        self.host._glow["at"] = 0                               # let the next one through
+        self.host.glow_frame({"rgb": [20, 200, 90], "level": 0.5, "title": "A video"})
+        per_frame = self.hypr.sent[-1]
+        self.assertIn("active_border", per_frame)
+        self.assertIn("shadow = { color", per_frame)
+        for static in ("range", "render_power", "enabled", "color_inactive", "border_active"):
+            self.assertNotIn(static, per_frame)
+
+    def test_hyprland_hears_about_the_colour_at_most_fifteen_times_a_second(self):
+        self.frame()
+        before = len(self.hypr.sent)
+        for i in range(10):                                     # a burst, all at once
+            self.host.glow_frame({"rgb": [10 * i, 200, 90], "level": 0.5, "title": "A video"})
+        configs = [c for c in self.hypr.sent[before:] if c.startswith("eval")]
+        self.assertLessEqual(len(configs), 1)
+
+    def test_a_grouped_window_gets_its_group_border_once(self):
+        self.hypr.front = {**self.page, "grouped": ["0xabc", "0xdef"]}
+        self.frame()
+        self.assertIn("border_active", self.hypr.sent[-1])
+        self.host._glow["at"] = 0
+        self.host.glow_frame({"rgb": [20, 200, 90], "level": 0.5, "title": "A video"})
+        self.assertNotIn("border_active", self.hypr.sent[-1])
+        self.host.glow_restore()
+        self.assertIn("border_active", self.hypr.sent[-1])     # and put back
+
     def test_off_in_the_config_means_nothing_is_touched(self):
         self.host.read_config = lambda: {}
         self.frame()

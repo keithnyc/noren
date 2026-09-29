@@ -710,6 +710,13 @@ def burst_closed(address, where):
 # back exactly, gradients and all, when it goes out.
 
 GLOW_IDLE = 1.5    # no frame for this long and the glow goes out
+# Hyprland is told about the colour at most this often, and only when it has
+# moved. Every hl.config runs on the compositor's own thread, where the cursor
+# is drawn: measured on 0.56.2, a border or shadow colour costs ~0.75 ms, and
+# `group:col.border_active` ~20 ms -- set thirty times a second it cost ~75% of
+# a core and made the whole desktop stutter. The page still sends thirty
+# frames a second for the bar; the window glow eases slowly and needs far fewer.
+GLOW_MIN_GAP = 1 / 15
 GLOW_RANGE = 20    # how far the lit shadow spreads (Omarchy's own is 13)
 GLOW_POWER = 3     # falloff: lower is softer and reaches further (1-4)
 
@@ -924,6 +931,7 @@ def glow_frame(msg):
         else:
             if _glow and _glow["address"] != address:
                 _glow_unlight_locked()
+            fresh = not _glow
             if not _glow:
                 saved = {name: _hypr_option_lua(name) for name in GLOW_OPTIONS}
                 if not all(saved.values()):
@@ -938,23 +946,43 @@ def glow_frame(msg):
                 own = _hypr_option_lua("decoration:shadow:color_inactive") if opt.get("set") else None
                 before = own or saved["decoration:shadow:color"]
                 saved["decoration:shadow:color_inactive"] = before
-                _glow = {"address": address, "saved": saved,
+                grouped = bool(front.get("grouped"))
+                if not grouped:
+                    # Never touched, so never put back: that is the 20 ms one.
+                    saved.pop("group:col.border_active", None)
+                _glow = {"address": address, "saved": saved, "grouped": grouped,
                          "inactive": before if saved["decoration:shadow:enabled"] == "true"
-                         else '"rgba(00000000)"'}
+                         else '"rgba(00000000)"', "sent": None, "at": 0.0}
             border = '"rgba(%02x%02x%02xee)"' % (r, g, b)
             # A dark scene dims the glow rather than painting the desktop black;
             # with sound, the music carries most of it, so the glow breathes.
             strength = level if energy is None else 0.3 * level + 0.7 * energy
-            shadow = '"rgba(%02x%02x%02x%02x)"' % (r, g, b, int(0x18 + strength * (0x99 - 0x18)))
-            _glow_apply({
-                "general:col.active_border": border,
-                "group:col.border_active": border,
-                "decoration:shadow:enabled": "true",
-                "decoration:shadow:color": shadow,
-                "decoration:shadow:range": str(GLOW_RANGE),
-                "decoration:shadow:render_power": str(GLOW_POWER),
-                "decoration:shadow:color_inactive": _glow["inactive"],
-            })
+            alpha = int(0x18 + strength * (0x99 - 0x18))
+            shadow = '"rgba(%02x%02x%02x%02x)"' % (r, g, b, alpha)
+            if fresh:
+                # Everything that does not change frame to frame, once. The
+                # group border only for a window that is in a group, and then
+                # only here: it is not animated.
+                lit = {
+                    "general:col.active_border": border,
+                    "decoration:shadow:enabled": "true",
+                    "decoration:shadow:color": shadow,
+                    "decoration:shadow:range": str(GLOW_RANGE),
+                    "decoration:shadow:render_power": str(GLOW_POWER),
+                    "decoration:shadow:color_inactive": _glow["inactive"],
+                }
+                if _glow["grouped"]:
+                    lit["group:col.border_active"] = border
+                _glow_apply(lit)
+                _glow["sent"], _glow["at"] = (r, g, b, alpha), now
+            else:
+                last = _glow["sent"]
+                moved = (max(abs(r - last[0]), abs(g - last[1]), abs(b - last[2])) >= 4
+                         or abs(alpha - last[3]) >= 8)
+                if moved and now - _glow["at"] >= GLOW_MIN_GAP:
+                    _glow_apply({"general:col.active_border": border,
+                                 "decoration:shadow:color": shadow})
+                    _glow["sent"], _glow["at"] = (r, g, b, alpha), now
         # A hard cut in the picture is counted rather than flagged, so the bar
         # flashes once per cut however many frames it reads in between.
         if msg.get("cut"):
@@ -1001,6 +1029,96 @@ def set_tag_report(windows):
     theatre_dim(any("noren:theatre" in tags for tags in wanted.values()))
 
 
+# Window rules: the CLI owns rules.json and the Lua made from it; the host only
+# reads it, for the one effect Hyprland cannot do from a tag -- float, which it
+# decides when a window opens -- and to count which windows a rule is on.
+RULES_FILE = os.path.join(os.path.dirname(CONFIG_FILE), "rules.json")
+_float_cache = (None, set())
+
+
+def float_tags():
+    """The tags whose rules float a window, from rules.json (cached by mtime)."""
+    global _float_cache
+    try:
+        stamp = os.stat(RULES_FILE).st_mtime
+    except OSError:
+        return set()
+    if _float_cache[0] == stamp:
+        return _float_cache[1]
+    tags = set()
+    try:
+        with open(RULES_FILE) as fh:
+            rules = (json.load(fh) or {}).get("rules") or []
+    except (OSError, ValueError, AttributeError):
+        rules = []
+    for r in rules if isinstance(rules, list) else []:
+        if not isinstance(r, dict) or r.get("on") is False or not (r.get("then") or {}).get("float"):
+            continue
+        tag = ("noren:site:" + str(r.get("site") or "")) if r.get("when") == "site" \
+            else "noren:" + str(r.get("when") or "")
+        if TAG_RE.match(tag):
+            tags.add(tag)
+    _float_cache = (stamp, tags)
+    return tags
+
+
+def rules_view(msg):
+    """The rules for the start page: as the CLI keeps them, and how many open
+    windows each one is on right now."""
+    try:
+        out = subprocess.run([NOREN_BIN, "rules", "json"], capture_output=True, text=True, timeout=10)
+        rules = json.loads(out.stdout or "{}").get("rules") or []
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        rules = []
+    try:
+        clients = json.loads(hypr_request("j/clients") or "")
+    except ValueError:
+        clients = []
+    carried = [set(c.get("tags") or []) for c in clients if isinstance(c, dict)
+               and str(c.get("class") or "").lower().startswith("chrome-")]
+    for r in rules:
+        r["live"] = sum(1 for tags in carried if r.get("tag") in tags)
+    write_native({"type": "rules", "id": msg.get("id"), "rules": rules})
+
+
+def rules_save(msg):
+    """The start page's whole list, handed to the CLI, which validates it."""
+    rules = msg.get("rules")
+    ok, error = False, "no rules"
+    if isinstance(rules, list):
+        try:
+            out = subprocess.run([NOREN_BIN, "rules", "save"], input=json.dumps({"rules": rules}),
+                                 capture_output=True, text=True, timeout=15)
+            ok = out.returncode == 0
+            error = "" if ok else (out.stderr.strip() or "failed")
+        except (OSError, subprocess.SubprocessError) as exc:
+            error = str(exc)
+    write_native({"type": "rulesResult", "id": msg.get("id"), "ok": ok, "error": error})
+    # Floats and counts follow the new rules straight away.
+    reconcile_tags()
+
+
+# Windows a float rule is waiting on: in a group and not in front when they
+# gained the tag. They are floated when they are next focused.
+_float_pending = set()
+
+
+def float_page(address):
+    """Hand one window to the CLI to float -- it owns every group dispatch,
+    and a grouped window has to leave its group before floating."""
+    try:
+        out = subprocess.run([NOREN_BIN, "float-page", address], capture_output=True,
+                             text=True, timeout=10)
+        result = out.stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("float failed:", exc)
+        return
+    if result == "wait":
+        _float_pending.add(address)
+    else:
+        _float_pending.discard(address)
+
+
 def reconcile_tags():
     with _tags_lock:
         try:
@@ -1026,6 +1144,11 @@ def reconcile_tags():
                     if TAG_RE.match(tag):
                         hypr_request('dispatch hl.dsp.window.tag({ tag = "%s%s", window = "address:%s" })'
                                      % (sign, tag, address))
+            # Float is placement: Hyprland only floats at open, so a rule that
+            # floats acts here, once, when the window first gains its tag. By
+            # address, never by focus; a window already floating is left be.
+            if (want - have) & float_tags() and not c.get("floating"):
+                threading.Thread(target=float_page, args=(address,), daemon=True).start()
 
 
 # Theatre mode: a page tagged `noren:theatre` has everything around it dimmed.
@@ -1093,6 +1216,10 @@ def solo_check():
         except ValueError:
             return
         address = front.get("address")
+        if address in _float_pending:
+            # A float rule was waiting for this window to come to the front.
+            float_page(address)
+            return
         if (address and str(front.get("class") or "").lower().startswith("chrome-")
                 and (front.get("grouped") or []) == [address]):
             subprocess.run([NOREN_BIN, "solo"], stdout=subprocess.DEVNULL,
@@ -2014,6 +2141,12 @@ def main():
                 glow_restore(str(msg.get("title") or "") or None)
             else:
                 glow_frame(msg)
+
+        elif kind == "getRules":
+            threading.Thread(target=rules_view, args=(msg,), daemon=True).start()
+
+        elif kind == "rulesSave":
+            threading.Thread(target=rules_save, args=(msg,), daemon=True).start()
 
         elif kind == "tags":
             threading.Thread(target=set_tag_report, args=(msg.get("windows"),),

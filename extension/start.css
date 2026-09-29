@@ -648,6 +648,63 @@ body.has-wallpaper .settings {
 .site .why { margin-top: 2px; }
 
 
+/* Window rules: one card per rule, reading as a sentence -- "When a page ...
+   then ...". The chips are the effects; the ones with a value grow their
+   control on the line below, so an unused effect costs no space. */
+.rules { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.rule {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--noren-border);
+  background: color-mix(in srgb, var(--noren-bg) 55%, transparent);
+  transition: opacity 140ms ease;
+}
+.rule.off { opacity: 0.55; }
+.rule-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; }
+.rule-line + .rule-line { margin-top: 8px; }
+.rule-word { font-size: 12px; color: var(--noren-muted); }
+.rule-select {
+  background: var(--noren-bg);
+  color: var(--noren-fg);
+  border: 1px solid var(--noren-border);
+  border-radius: 7px;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+}
+.rule-select:focus { border-color: var(--noren-accent); outline: none; }
+.setting input.text.rule-site { flex: 0 1 180px; }
+.rule-tools { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.rule-effects { display: flex; flex-wrap: wrap; gap: 4px; }
+.rule-extra { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 8px; }
+.rule-extra:empty { display: none; }
+.rule-slider { display: flex; align-items: center; gap: 8px; }
+.rule-slider input { width: 120px; accent-color: var(--noren-accent); }
+.rule-swatches { display: flex; gap: 6px; }
+.swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  box-shadow: 0 0 0 1px var(--noren-border);
+  cursor: pointer;
+}
+.swatch.on { border-color: var(--noren-bg); box-shadow: 0 0 0 2px var(--noren-fg); }
+.rule-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
+.rule-lua {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--noren-bg);
+  border: 1px solid var(--noren-border);
+  color: var(--noren-fg);
+  font: 11px/1.45 ui-monospace, "JetBrains Mono", monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.rule-add { margin-top: 10px; }
+.rule-recipes { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0 6px; }
+
 /* The curtain the plugin is named after: a noren hangs in a shop doorway and
    you part it to go through. Opening settings parts it -- two halves sweep
    aside, the panel hangs down like cloth, and the rows settle in behind. */

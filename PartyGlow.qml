@@ -35,47 +35,37 @@ PanelWindow {
   readonly property bool hearing: !!service && service.partyHearing
   readonly property int depth: 26   // the underglow's reach at full drive
 
-  // Everything fades in and out on this, so the lights come up and go down
-  // rather than switching.
-  property real on: lit ? 1 : 0
-  Behavior on on { NumberAnimation { duration: 450; easing.type: Easing.OutCubic } }
+  // One clock drives everything here, thirty steps a second: the fade in and
+  // out, the drive, the beat's pulse and flare, the lights' drift. Separate
+  // animations each redraw at the display's own rate, and with a beat every
+  // half second something was always animating -- both monitors' overlays
+  // repainting at full rate for as long as the music played.
 
   // How hard the lights are driven, 0-1: the music when it can be heard, the
-  // picture's brightness when not. Eased over a couple of frames so thirty
-  // steps a second read as one movement.
-  property real drive: !service ? 0
+  // picture's brightness when not.
+  readonly property real target: !service ? 0
     : (hearing ? service.partyEnergy : 0.35 + 0.4 * service.partyLevel)
-  Behavior on drive { NumberAnimation { duration: 70 } }
+
+  property real on: 0       // the lights up (1) or down (0)
+  property real drive: 0    // `target`, eased over a couple of ticks
+  property real pulse: 0    // 1 on a beat (or, without sound, a cut), fading after
+  property real sweep: 1    // the flare's journey from the middle to the ends, 0 -> 1
+  property real t: 0        // the lights' drift, faster with the music
+  property real clock: 0
+  property real hitAt: -1
 
   // The video's colour. The service keeps the last one after the lights go
-  // out, so the fade-out fades that rather than black.
-  property color tone: service ? service.partyColor : "transparent"
-  Behavior on tone { ColorAnimation { duration: 180 } }
+  // out, so the fade-out fades that rather than black. Not animated here: the
+  // page already eases it, and every colour change rebuilds the gradients --
+  // so the service also rounds it, and it only moves when it really moves.
+  readonly property color tone: service ? service.partyColor : "transparent"
 
   function hue(dh) {
     var h = win.tone.hslHue < 0 ? 0 : win.tone.hslHue
     return Qt.hsla((h + dh + 1) % 1, win.tone.hslSaturation, win.tone.hslLightness, 1)
   }
 
-  // 1 on a beat (or, without sound, a cut), back to 0 quickly after.
-  property real pulse: 0
-  SequentialAnimation {
-    id: pulseAnim
-    NumberAnimation { target: win; property: "pulse"; to: 1; duration: 30; easing.type: Easing.OutQuad }
-    NumberAnimation { target: win; property: "pulse"; to: 0; duration: 380; easing.type: Easing.OutCubic }
-  }
-
-  // The flare's journey from the middle to the ends, 0 -> 1.
-  property real sweep: 1
-  NumberAnimation {
-    id: sweepAnim
-    target: win; property: "sweep"; from: 0; to: 1; duration: 460; easing.type: Easing.OutCubic
-  }
-
-  function hit() {
-    pulseAnim.restart()
-    sweepAnim.restart()
-  }
+  function hit() { win.hitAt = win.clock }
 
   Connections {
     target: win.service
@@ -83,11 +73,23 @@ PanelWindow {
     function onPartyCut() { if (!win.hearing) win.hit() }
   }
 
-  // The lights' clock, running faster with the music.
-  property real t: 0
-  FrameAnimation {
-    running: win.visible
-    onTriggered: win.t += frameTime * (0.15 + 0.6 * win.drive)
+  Timer {
+    interval: 33
+    repeat: true
+    running: win.lit || win.on > 0
+    onTriggered: {
+      var dt = interval / 1000
+      win.clock += dt
+      var want = win.lit ? 1 : 0
+      var on = win.on + (want - win.on) * 0.18     // ~450 ms to settle
+      win.on = Math.abs(on - want) < 0.004 ? want : on
+      win.drive += (win.target - win.drive) * 0.6
+      var since = win.hitAt < 0 ? 99 : win.clock - win.hitAt
+      var pulse = Math.exp(-since * 7)
+      win.pulse = pulse < 0.01 ? 0 : pulse
+      win.sweep = since >= 0.46 ? 1 : 1 - Math.pow(1 - since / 0.46, 3)
+      win.t += dt * (0.15 + 0.6 * win.drive)
+    }
   }
 
   visible: on > 0.001
@@ -106,11 +108,14 @@ PanelWindow {
   WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
   mask: Region {}
 
-  // A pool of light: a radial gradient, squashed into the bar's height.
+  // A pool of light: a radial gradient, squashed into the bar's height. How
+  // bright it is goes through opacity, which costs nothing; only the tint is
+  // in the gradient, because a gradient is rebuilt whenever its stops change.
   component Light: Shape {
     id: light
     property color tint: "white"
     property real glow: 0
+    opacity: glow
     property real size: 400
     property real centre: 0
     x: centre - size / 2
@@ -131,8 +136,8 @@ PanelWindow {
         centerRadius: light.size / 2
         focalX: light.size / 2
         focalY: light.size / 2
-        GradientStop { position: 0; color: Qt.rgba(light.tint.r, light.tint.g, light.tint.b, 0.42 * light.glow) }
-        GradientStop { position: 0.4; color: Qt.rgba(light.tint.r, light.tint.g, light.tint.b, 0.18 * light.glow) }
+        GradientStop { position: 0; color: Qt.rgba(light.tint.r, light.tint.g, light.tint.b, 0.42) }
+        GradientStop { position: 0.4; color: Qt.rgba(light.tint.r, light.tint.g, light.tint.b, 0.18) }
         GradientStop { position: 1; color: Qt.rgba(light.tint.r, light.tint.g, light.tint.b, 0) }
       }
       startX: 0; startY: 0
@@ -210,15 +215,16 @@ PanelWindow {
     width: parent.width
     height: win.depth * (0.45 + 0.45 * win.drive + 0.9 * win.pulse)
     y: win.fromTop ? win.barSize : parent.height - win.barSize - height
-    opacity: win.on
+    // Strength through opacity, for the same reason as the lights.
+    opacity: win.on * under.strength
     gradient: Gradient {
       GradientStop {
         position: 0
-        color: Qt.rgba(win.tone.r, win.tone.g, win.tone.b, win.fromTop ? 0.5 * under.strength : 0)
+        color: Qt.rgba(win.tone.r, win.tone.g, win.tone.b, win.fromTop ? 0.5 : 0)
       }
       GradientStop {
         position: 1
-        color: Qt.rgba(win.tone.r, win.tone.g, win.tone.b, win.fromTop ? 0 : 0.5 * under.strength)
+        color: Qt.rgba(win.tone.r, win.tone.g, win.tone.b, win.fromTop ? 0 : 0.5)
       }
     }
   }

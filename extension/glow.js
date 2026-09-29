@@ -135,16 +135,43 @@
   }
 
   // One colour and a brightness for the frame, or null if it cannot be read.
-  function sample(video) {
-    let data;
+  // The picture is shrunk before it is read. Drawing the video straight into a
+  // canvas the page reads back copies every full-resolution frame from the
+  // GPU -- a 4K frame eleven times a second, to keep 576 pixels of it.
+  // createImageBitmap does the shrinking first, off the main thread, so only
+  // the small picture ever crosses over.
+  let inFlight = false;
+  let fresh = null; // a sample that arrived since the last tick
+
+  function grab(video) {
+    if (inFlight) return;
+    inFlight = true;
+    let shrinking;
     try {
-      ctx.drawImage(video, 0, 0, W, H);
-      data = ctx.getImageData(0, 0, W, H).data;
+      shrinking = createImageBitmap(video, { resizeWidth: W, resizeHeight: H, resizeQuality: 'low' });
     } catch (e) {
-      // A cross-origin video without CORS taints the canvas. Not this one again.
-      tainted.add(video);
-      return null;
+      inFlight = false; // no frame decoded yet
+      return;
     }
+    shrinking.then((bitmap) => {
+      try {
+        ctx.clearRect(0, 0, W, H);
+        ctx.drawImage(bitmap, 0, 0);
+        fresh = measure(ctx.getImageData(0, 0, W, H).data);
+      } catch (e) {
+        // A cross-origin video without CORS taints what it draws. Not this
+        // one again.
+        tainted.add(video);
+      } finally {
+        bitmap.close();
+        inFlight = false;
+      }
+    }, () => {
+      inFlight = false;
+    });
+  }
+
+  function measure(data) {
     let wr = 0;
     let wg = 0;
     let wb = 0;
@@ -267,6 +294,7 @@
     cur = null;
     sent = null;
     last = null;
+    fresh = null;
     if (lit) {
       lit = false;
       post({ norenGlow: 'off' });
@@ -294,13 +322,10 @@
     }
     const now = performance.now();
     let cut = false;
-    if (!cur || ticks % PICTURE_EVERY === 0) {
-      const frame = sample(video);
-      if (!frame) {
-        off();
-        if (++idle >= IDLE_TICKS) halt();
-        return;
-      }
+    if (!cur || ticks % PICTURE_EVERY === 0) grab(video);
+    const frame = fresh;
+    fresh = null;
+    if (frame) {
       cut = Boolean(last) && now - cutAt > CUT_GAP_MS
         && (frame.rgb.reduce((s, c, i) => s + Math.abs(c - last.rgb[i]), 0) > CUT_DISTANCE
           || Math.abs(frame.level - last.level) > CUT_BRIGHTNESS);
@@ -315,6 +340,8 @@
     }
     ticks++;
     idle = 0;
+    // Nothing to say until the first picture has come back.
+    if (!cur) return;
     const sound = listen(video);
     const moved = !sent
       || cur.rgb.some((c, i) => Math.abs(c - sent.rgb[i]) >= 3)

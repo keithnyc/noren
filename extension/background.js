@@ -63,6 +63,7 @@ function connect() {
     }
     if (msg && (msg.type === 'sets' || msg.type === 'setOpResult'
       || msg.type === 'siteList' || msg.type === 'siteOpResult'
+      || msg.type === 'rules' || msg.type === 'rulesResult'
       || msg.type === 'group' || msg.type === 'stash')) {
       const settle = pendingHost.get(msg.id);
       pendingHost.delete(msg.id);
@@ -1039,6 +1040,12 @@ function scheduleTags(ms = 150) {
 }
 
 chrome.tabs.onUpdated.addListener((tabId, change) => {
+  // A navigation resets what the page reported: the next page reports for
+  // itself, and one that cannot (the start page, a browser page) must not
+  // inherit "playing" from the video that was here before.
+  if (change.status === 'loading' && pageSignals.delete(tabId)) {
+    chrome.storage.session.set({ pageSignals: Object.fromEntries(pageSignals) }).catch(() => {});
+  }
   // A navigation takes theatre mode with it: the new page is not in it.
   if (change.status === 'loading' && theatreTabs.delete(tabId)) {
     saveTheatre();
@@ -2805,6 +2812,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .then((got) => sendResponse({ ok: Boolean(got.ok), error: got.error || '' }));
       return true;
     }
+    case 'rules':
+      // Window rules for the settings panel, with how many open windows each
+      // is on. The CLI keeps them; the page lists and edits.
+      askHost({ type: 'getRules' }, null, 5000)
+        .then((got) => sendResponse({ ok: Boolean(got), rules: (got && got.rules) || [] }));
+      return true;
+    case 'rulesSave':
+      // The whole list; the CLI validates every field before any of it
+      // reaches Hyprland, so nothing here needs trusting.
+      askHost({ type: 'rulesSave', rules: Array.isArray(msg.rules) ? msg.rules.slice(0, 100) : [] },
+        { ok: false, error: 'Noren did not answer' }, 20000)
+        .then((got) => sendResponse({ ok: Boolean(got.ok), error: got.error || '' }));
+      return true;
     case 'prefs':
       allPrefs().then((prefs) => sendResponse({ prefs }));
       return true;

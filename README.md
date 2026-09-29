@@ -506,6 +506,29 @@ hl.window_rule({ match = { tag = "noren:login" }, border_color = "rgba(ff3355ff)
 hl.window_rule({ match = { tag = "noren:site:example.com" }, opacity = 0.97 })
 ```
 
+### The rule builder
+
+You do not have to write Lua. On the start page's settings (`S`), **Window
+rules** reads as a sentence: *when a page* is on a site, is playing media,
+has a login form, has unsent typing, and so on, *then* change its opacity,
+border colour, rounding, blur, dim everything around it, or float it. Each
+change is saved and applied the moment you make it, each card says how many
+windows it is on right now, and **{ } Lua** shows the Hyprland rule it
+became. Recipes add common ones in a click.
+
+```bash
+noren rules                              # list them
+noren rules add typing border=#ffb000    # when, then what
+noren rules add site:example.com opacity=0.9 float
+noren rules off <id>                     # or on, or rm
+```
+
+Rules live in `~/.config/noren/rules.json`. Noren writes them to
+`~/.config/hypr/noren-rules.lua` and loads that from a small fenced block at the
+end of your `hyprland.lua`, added the first time a rule is saved (your file is
+backed up first). The block skips a broken rules file rather than failing your
+config, and it is safe to delete.
+
 Tags match exactly, not as patterns. Live effects (opacity, border colour and
 size, rounding, blur, dimming around) follow a page as it changes; placement
 (float, workspace, size) is decided by Hyprland when a window opens, before

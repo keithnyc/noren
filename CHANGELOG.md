@@ -13,6 +13,15 @@
   underglow; and it all moves with the music, a flare across the bar on every
   beat. Everything goes back to your theme the moment the video stops.
   `noren party on|off|toggle`, or the switch on the start page.
+- **Window rules on the start page.** "When a page is on a site, has a login
+  form, is playing... then change its opacity, border, rounding, blur, dim
+  around it, or float it": saved and live the moment you change it, with
+  recipes and the Lua it becomes. `noren rules` from a terminal.
+- **Party mode is much lighter.** It was costing Hyprland ~25 ms of its own
+  thread per frame, thirty times a second, which made the cursor lag. The
+  group border alone was 20 ms; it is now set once, and the colours go at most
+  fifteen times a second. The bar overlay and the page's sampling cost about
+  half what they did.
 - **Theatre mode.** `SUPER + M` → `E`: the video's player fills its window and
   everything else on screen dims. Escape leaves. It follows the player when a
   site moves it, so re-tiling the window does not lose the picture.

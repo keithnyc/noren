@@ -752,6 +752,339 @@ function sitesRow(sites, onChange) {
   return row;
 }
 
+// ------------------------------------------------------------- window rules
+//
+// "When a page <is this>, then <that>", as cards. Every change is saved the
+// moment it is made, like the rest of this panel, and Hyprland applies it at
+// once -- so a rule is tried by making it. The CLI validates every field before
+// any of it reaches Hyprland; nothing here is trusted to have got it right.
+
+const RULE_WHENS = [
+  ['site', 'is on a site'],
+  ['playing', 'is playing media'],
+  ['audible', 'is making sound'],
+  ['loading', 'is loading'],
+  ['login', 'has a login form'],
+  ['typing', 'has unsent typing'],
+  ['theatre', 'is in theatre mode'],
+  ['page', 'is any page'],
+];
+
+async function readRules() {
+  try {
+    const reply = await chrome.runtime.sendMessage({ noren: 'rules' });
+    return reply && reply.ok ? reply.rules : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function writeRules(rules) {
+  try {
+    const reply = await chrome.runtime.sendMessage({ noren: 'rulesSave', rules });
+    return Boolean(reply && reply.ok);
+  } catch (e) {
+    return false;
+  }
+}
+
+// The theme's own colours, for border swatches: whatever is picked reads
+// against this theme, and a rule keeps its colour if the theme changes.
+function themeSwatches() {
+  const css = getComputedStyle(document.documentElement);
+  const pick = (name) => css.getPropertyValue(name).trim();
+  const out = [];
+  for (const [name, label] of [['--noren-accent', 'accent'], ['--noren-success', 'green'],
+    ['--noren-warning', 'amber'], ['--noren-danger', 'red'], ['--noren-fg', 'light']]) {
+    const hex = pick(name);
+    if (/^#[0-9a-f]{6}$/i.test(hex)) out.push({ hex: hex.toLowerCase(), label });
+  }
+  return out;
+}
+
+async function openHosts() {
+  try {
+    const tabs = await chrome.tabs.query({});
+    const hosts = new Set();
+    for (const t of tabs) {
+      try {
+        const u = new URL(t.url || '');
+        if (/^https?:$/.test(u.protocol)) hosts.add(u.hostname.replace(/^www\./, ''));
+      } catch (e) {
+        // Not a web page.
+      }
+    }
+    return Array.from(hosts).sort();
+  } catch (e) {
+    return [];
+  }
+}
+
+function newRuleId() {
+  const bytes = crypto.getRandomValues(new Uint8Array(4));
+  return 'r_' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+const RULE_RECIPES = [
+  { name: 'Login pages get a red border', rule: { when: 'login', then: { border: 'red' } } },
+  { name: 'Typing gets an amber border', rule: { when: 'typing', then: { border: 'amber' } } },
+  { name: 'Loading pages fade', rule: { when: 'loading', then: { opacity: 0.8 } } },
+  { name: 'Sound gets a green border', rule: { when: 'audible', then: { border: 'green' } } },
+  { name: 'A site floats', rule: { when: 'site', site: '', then: { float: true } } },
+];
+
+function rulesRow(initial, hosts) {
+  const row = settingRow('Window rules',
+    'Change how a page window looks by what it is showing. Hyprland applies each one live.');
+  row.classList.add('stacked');
+  const swatches = themeSwatches();
+  const rules = (initial || []).map((r) => ({ ...r, then: { ...(r.then || {}) } }));
+  const cards = new Map(); // id -> { status, lua }
+  const list = el('div', 'rules');
+
+  const datalist = document.createElement('datalist');
+  datalist.id = 'noren-rule-hosts';
+  for (const h of hosts) {
+    const o = document.createElement('option');
+    o.value = h;
+    datalist.appendChild(o);
+  }
+  row.appendChild(datalist);
+
+  let saving = null;
+  const save = () => {
+    clearTimeout(saving);
+    saving = setTimeout(async () => {
+      await writeRules(rules.map((r) => ({ id: r.id, on: r.on !== false, when: r.when,
+        site: r.site || '', then: r.then })));
+      // Counts and Lua come back from the CLI's own reading of what it kept.
+      const kept = await readRules();
+      for (const r of kept || []) {
+        const card = cards.get(r.id);
+        if (!card) continue;
+        card.status.textContent = r.live
+          ? `on ${r.live} window${r.live === 1 ? '' : 's'} now` : 'not on any window right now';
+        card.lua.textContent = r.lua || '';
+      }
+      for (const r of rules) {
+        if (!(kept || []).some((k) => k.id === r.id) && cards.get(r.id)) {
+          cards.get(r.id).status.textContent = r.when === 'site' && !r.site
+            ? 'pick a site to save this rule' : 'not saved';
+        }
+      }
+    }, 350);
+  };
+
+  const chip = (label, on, onClick) => {
+    const b = el('button', 'choice' + (on ? ' on' : ''), label);
+    b.type = 'button';
+    b.addEventListener('click', onClick);
+    return b;
+  };
+
+  const slider = (min, max, step, value, fmt, onInput) => {
+    const wrap = el('label', 'rule-slider');
+    const input = document.createElement('input');
+    input.type = 'range';
+    Object.assign(input, { min, max, step, value });
+    const out = el('span', 'why', fmt(value));
+    input.addEventListener('input', () => {
+      out.textContent = fmt(Number(input.value));
+      onInput(Number(input.value));
+    });
+    wrap.append(input, out);
+    return wrap;
+  };
+
+  function card(rule) {
+    const box = el('div', 'rule' + (rule.on === false ? ' off' : ''));
+
+    // When ...
+    const when = el('div', 'rule-line');
+    when.appendChild(el('span', 'rule-word', 'When a page'));
+    const pickWhen = document.createElement('select');
+    pickWhen.className = 'rule-select';
+    for (const [value, label] of RULE_WHENS) {
+      const o = document.createElement('option');
+      o.value = value;
+      o.textContent = label;
+      o.selected = value === rule.when;
+      pickWhen.appendChild(o);
+    }
+    const site = document.createElement('input');
+    site.className = 'text rule-site';
+    site.placeholder = 'example.com';
+    site.spellcheck = false;
+    site.value = rule.site || '';
+    site.setAttribute('list', datalist.id);
+    site.hidden = rule.when !== 'site';
+    site.addEventListener('keydown', (e) => e.stopPropagation());
+    site.addEventListener('change', () => {
+      rule.site = site.value.trim().toLowerCase().replace(/^www\./, '');
+      save();
+    });
+    pickWhen.addEventListener('change', () => {
+      rule.when = pickWhen.value;
+      site.hidden = rule.when !== 'site';
+      if (!site.hidden) site.focus();
+      save();
+    });
+    when.append(pickWhen, site);
+
+    const toggle = el('button', 'switch' + (rule.on !== false ? ' on' : ''));
+    toggle.type = 'button';
+    toggle.title = 'Turn this rule on or off';
+    toggle.appendChild(el('span', 'knob'));
+    toggle.addEventListener('click', () => {
+      rule.on = rule.on === false;
+      toggle.classList.toggle('on', rule.on);
+      box.classList.toggle('off', !rule.on);
+      save();
+    });
+    const del = el('button', 'tool danger', '✕');
+    del.type = 'button';
+    del.title = 'Delete this rule';
+    let armed = null;
+    del.addEventListener('click', () => {
+      if (!armed) {
+        del.textContent = 'Sure?';
+        del.classList.add('armed');
+        armed = setTimeout(() => {
+          armed = null;
+          del.textContent = '✕';
+          del.classList.remove('armed');
+        }, 3000);
+        return;
+      }
+      clearTimeout(armed);
+      rules.splice(rules.indexOf(rule), 1);
+      cards.delete(rule.id);
+      box.remove();
+      save();
+    });
+    const tools = el('div', 'rule-tools');
+    tools.append(toggle, del);
+    when.appendChild(tools);
+    box.appendChild(when);
+
+    // ... then these. A chip turns an effect on; the ones with a value grow
+    // their control beside it.
+    const then = el('div', 'rule-line');
+    then.appendChild(el('span', 'rule-word', 'then'));
+    const effects = el('div', 'rule-effects');
+    const extra = el('div', 'rule-extra');
+    const redraw = () => {
+      effects.replaceChildren();
+      extra.replaceChildren();
+      const t = rule.then;
+      const flip = (key, value) => () => {
+        if (key in t) delete t[key];
+        else t[key] = value;
+        redraw();
+        save();
+      };
+      effects.append(
+        chip('Opacity', 'opacity' in t, flip('opacity', 0.9)),
+        chip('Border', 'border' in t, flip('border', (swatches[0] || { hex: '#7aa2f7' }).hex)),
+        chip('Rounding', 'rounding' in t, flip('rounding', 16)),
+        chip('Dim around', Boolean(t.dim_around), flip('dim_around', true)),
+        chip('No blur', Boolean(t.no_blur), flip('no_blur', true)),
+        chip('Float', Boolean(t.float), flip('float', true)),
+      );
+      if ('opacity' in t) {
+        extra.appendChild(slider(0.2, 1, 0.01, t.opacity, (v) => `opacity ${Math.round(v * 100)}%`,
+          (v) => { t.opacity = v; save(); }));
+      }
+      if ('border' in t) {
+        const pal = el('div', 'rule-swatches');
+        for (const sw of swatches) {
+          const b = el('button', 'swatch' + (sw.hex === t.border ? ' on' : ''));
+          b.type = 'button';
+          b.title = sw.label;
+          b.style.background = sw.hex;
+          b.addEventListener('click', () => {
+            t.border = sw.hex;
+            redraw();
+            save();
+          });
+          pal.appendChild(b);
+        }
+        extra.appendChild(pal);
+      }
+      if ('rounding' in t) {
+        extra.appendChild(slider(0, 40, 1, t.rounding, (v) => `rounding ${v}px`,
+          (v) => { t.rounding = v; save(); }));
+      }
+      if (t.float) {
+        extra.appendChild(el('div', 'why',
+          'Floats a window when it first matches. You can tile it again by hand.'));
+      }
+    };
+    redraw();
+    then.appendChild(effects);
+    box.append(then, extra);
+
+    // What it is doing right now, and the Lua it became.
+    const foot = el('div', 'rule-foot');
+    const status = el('span', 'why', rule.live
+      ? `on ${rule.live} window${rule.live === 1 ? '' : 's'} now` : 'not on any window right now');
+    const lua = el('pre', 'rule-lua', rule.lua || '');
+    lua.hidden = true;
+    const show = el('button', 'tool', '{ } Lua');
+    show.type = 'button';
+    show.title = 'The Hyprland rule this becomes';
+    show.addEventListener('click', () => { lua.hidden = !lua.hidden; });
+    foot.append(status, show);
+    box.append(foot, lua);
+    cards.set(rule.id, { status, lua });
+    return box;
+  }
+
+  for (const rule of rules) list.appendChild(card(rule));
+  row.appendChild(list);
+
+  const add = (rule) => {
+    const border = rule.then && rule.then.border;
+    const made = {
+      id: newRuleId(), on: true, when: rule.when, site: rule.site || '',
+      then: { ...(rule.then || {}) },
+    };
+    // Recipes name a colour by role; the theme decides what that looks like.
+    if (border) {
+      const sw = swatches.find((x) => x.label === border) || swatches[0];
+      if (sw) made.then.border = sw.hex;
+      else delete made.then.border;
+    }
+    rules.push(made);
+    const box = card(made);
+    list.appendChild(box);
+    const site = box.querySelector('.rule-site');
+    if (made.when === 'site' && site) site.focus();
+    save();
+  };
+
+  const bottom = el('div', 'rule-add');
+  const plus = el('button', 'choice', '+ New rule');
+  plus.type = 'button';
+  plus.addEventListener('click', () => add({ when: 'typing', then: {} }));
+  bottom.appendChild(plus);
+  row.appendChild(bottom);
+
+  const recipes = el('div', 'rule-recipes');
+  recipes.appendChild(el('span', 'why', 'Recipes'));
+  for (const recipe of RULE_RECIPES) {
+    const b = el('button', 'choice', recipe.name);
+    b.type = 'button';
+    b.addEventListener('click', () => add(recipe.rule));
+    recipes.appendChild(b);
+  }
+  row.appendChild(recipes);
+  row.appendChild(el('div', 'why',
+    'Saved to ~/.config/noren/rules.json, loaded into Hyprland from noren-rules.lua. '
+    + '`noren tags` shows what each window carries.'));
+  return row;
+}
+
 async function renderSettings() {
   const box = document.getElementById('settings');
   const section = document.getElementById('settings-section');
@@ -761,7 +1094,8 @@ async function renderSettings() {
     return;
   }
 
-  const [prefs, sites] = await Promise.all([readPrefs(), readSites()]);
+  const [prefs, sites, rules, hosts] = await Promise.all([readPrefs(), readSites(), readRules(),
+    openHosts()]);
   if (!prefs) {
     box.replaceChildren(Object.assign(document.createElement('div'), {
       className: 'why',
@@ -802,6 +1136,7 @@ async function renderSettings() {
       ['respect', 'tint', 'immerse'], prefs.themeMode, save('themeMode')),
     searchRow(prefs.search, save('search')),
     sitesRow(sites, () => renderSettings()),
+    rulesRow(rules, hosts),
   ];
 
   // Each row a beat behind the one above, so the panel fills the way cloth

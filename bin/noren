@@ -55,6 +55,10 @@ usage: noren <command> [args]
   theatre           the video in front of you fills its window and everything
                     else dims; again (or Escape) to leave
   tags              each page window's noren:* tags, for Hyprland window rules
+  rules             window rules made from those tags (the start page edits them)
+  rules add <when> [effect ...]
+                    e.g. `rules add typing border=#ffb000`, `rules add
+                    site:example.com opacity=0.9 float`; also rm|on|off <id>
   party background on|off
                     keep the bar lit while the video plays behind other windows
   go <url>          navigate the focused window (force)
@@ -1983,6 +1987,53 @@ def solo():
     return 0
 
 
+# A floated page gets a share of its own monitor, inside what the bar leaves
+# free: floated by address it would keep whatever size it had, and a page that
+# was tiled full-screen does not fit on the desktop floating.
+FLOAT_SHARE = (0.6, 0.65)
+
+
+def float_page(address):
+    """Float one page window for a window rule. Returns "floated", "done",
+    "wait" (it is in a group and not in front) or "no".
+
+    Floating a window that is in a group floats the whole group, so it leaves
+    the group first -- and leaving acts on the focused window, with no window
+    argument, so that only happens when this window is already the one in
+    front. Otherwise it is left tiled rather than having focus taken to reach
+    it; the host tries again when it is focused.
+    """
+    c = next((x for x in (hypr_json("clients") or []) if x.get("address") == address), None)
+    if not c or not (c.get("class") or "").lower().startswith("chrome-"):
+        return "no"
+    if c.get("floating"):
+        return "done"
+    if len(c.get("grouped") or []) > 1:
+        if (hypr_json("activewindow") or {}).get("address") != address:
+            return "wait"
+        hypr_do("hl.dsp.window.move({ out_of_group = true })")
+        deadline = time.monotonic() + 0.5
+        while True:
+            now = hypr_json("activewindow") or {}
+            if now.get("address") == address and len(now.get("grouped") or []) <= 1:
+                break
+            if time.monotonic() >= deadline:
+                return "no"   # still grouped: floating now would take the group with it
+            time.sleep(0.03)
+    hypr_do(f'hl.dsp.window.float({{ window = "address:{address}", action = "toggle" }})')
+    mon = next((m for m in (hypr_json("monitors") or []) if m.get("id") == c.get("monitor")), None)
+    if mon:
+        scale = float(mon.get("scale") or 1) or 1
+        left, top, right, bottom = (list(mon.get("reserved") or []) + [0, 0, 0, 0])[:4]
+        width = mon.get("width", 0) / scale - left - right
+        height = mon.get("height", 0) / scale - top - bottom
+        if width >= 200 and height >= 150:
+            hypr_do(f'hl.dsp.window.resize({{ window = "address:{address}", '
+                    f'x = {int(width * FLOAT_SHARE[0])}, y = {int(height * FLOAT_SHARE[1])} }})')
+    hypr_do(f'hl.dsp.window.center({{ window = "address:{address}" }})')
+    return "floated"
+
+
 def raise_window(address):
     """Focus a window by Hyprland address, and say whether it took.
 
@@ -2814,6 +2865,193 @@ def site_host(text):
     return raw if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$", raw) else ""
 
 
+# ------------------------------------------------------------------ window rules
+#
+# Rules made on the start page (or with `noren rules`): "when a page is <this>,
+# then <that>". rules.json is the truth and this CLI its only writer; from it
+# comes ~/.config/hypr/noren-rules.lua, which Hyprland loads through a small
+# fenced block in hyprland.lua. Every value is validated here before it can
+# reach Lua -- a hostname especially, which a page chooses -- and anything that
+# does not validate is dropped, not escaped.
+#
+# Two kinds of effect. Live ones (opacity, border, rounding, blur, dimming
+# around) are Hyprland rules and follow the tags as a page changes. Float is
+# placement, which Hyprland decides only when a window opens -- before Noren
+# knows its page -- so the host does it, when a window first gains the tag.
+
+RULES_FILE = os.path.join(os.path.dirname(CONFIG_FILE), "rules.json")
+HYPR_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "hypr")
+RULES_LUA = os.path.join(HYPR_DIR, "noren-rules.lua")
+HYPR_MAIN = os.path.join(HYPR_DIR, "hyprland.lua")
+RULES_MAX = 100
+RULE_WHENS = ("site", "page", "playing", "audible", "loading", "login", "typing", "theatre")
+BLOCK_BEGIN = "-- >>> noren managed block >>>"
+BLOCK_END = "-- <<< noren managed block <<<"
+BLOCK = f"""{BLOCK_BEGIN}
+-- Written by Noren: loads the window rules made on its start page. Safe to
+-- remove; Noren adds it back the next time a rule is saved. A broken rules
+-- file is skipped rather than taking the rest of this config down with it.
+do local path = os.getenv("HOME") .. "/.config/hypr/noren-rules.lua"; local file = io.open(path, "r"); if file then file:close(); pcall(dofile, path) end end
+{BLOCK_END}
+"""
+
+
+def rule_tag(rule):
+    return ("noren:site:" + rule["site"]) if rule["when"] == "site" else ("noren:" + rule["when"])
+
+
+def clean_rule(raw):
+    """A rule as it may be stored, or None. Unknown keys are dropped."""
+    if not isinstance(raw, dict):
+        return None
+    when = raw.get("when")
+    if when not in RULE_WHENS:
+        return None
+    rule = {"id": str(raw.get("id") or ""), "on": raw.get("on") is not False, "when": when}
+    if not re.match(r"^r_[0-9a-f]{8}$", rule["id"]):
+        rule["id"] = "r_" + secrets.token_hex(4)
+    if when == "site":
+        rule["site"] = site_host(raw.get("site"))
+        if not rule["site"]:
+            return None
+    then = raw.get("then") if isinstance(raw.get("then"), dict) else {}
+    out = {}
+
+    def number(key, low, high, cast):
+        v = then.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return
+        out[key] = cast(min(high, max(low, v)))
+
+    number("opacity", 0.2, 1.0, lambda v: round(float(v), 2))
+    number("border_size", 0, 10, int)
+    number("rounding", 0, 40, int)
+    border = str(then.get("border") or "").lower()
+    if re.match(r"^#[0-9a-f]{6}$", border):
+        out["border"] = border
+    for key in ("dim_around", "no_blur", "float"):
+        if then.get(key) is True:
+            out[key] = True
+    rule["then"] = out
+    return rule
+
+
+def load_rules():
+    try:
+        with open(RULES_FILE, "r") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    items = data.get("rules") if isinstance(data, dict) else None
+    return [r for r in (clean_rule(x) for x in (items or [])[:RULES_MAX]) if r]
+
+
+def rule_lua(rule):
+    """The Hyprland rule for one rule's live effects, or a comment saying why none."""
+    t = rule["then"]
+    parts = []
+    if "opacity" in t:
+        parts.append(f"opacity = {t['opacity']:.2f}")
+    if "border" in t:
+        parts.append('border_color = "rgba(%sff)"' % t["border"][1:])
+    if "border_size" in t:
+        parts.append(f"border_size = {t['border_size']}")
+    if "rounding" in t:
+        parts.append(f"rounding = {t['rounding']}")
+    if t.get("dim_around"):
+        parts.append("dim_around = true")
+    if t.get("no_blur"):
+        parts.append("no_blur = true")
+    lines = []
+    if parts:
+        lines.append('hl.window_rule({ match = { tag = "%s" }, %s })' % (rule_tag(rule), ", ".join(parts)))
+    if t.get("float"):
+        lines.append(f"-- float: Noren floats a window when it first gains {rule_tag(rule)} "
+                     "(Hyprland only floats at open)")
+    if not lines:
+        lines.append("-- no effects yet")
+    return "\n".join(lines)
+
+
+def rules_lua(rules):
+    head = ("-- Generated by Noren from ~/.config/noren/rules.json. Edit rules on its start\n"
+            "-- page (Settings, Window rules) or with `noren rules`; changes made here are\n"
+            "-- overwritten on the next save.\n")
+    body = [rule_lua(r) for r in rules if r["on"]]
+    return head + ("\n".join(body) + "\n" if body else "")
+
+
+def ensure_hypr_block():
+    """Put the fenced loader in hyprland.lua, once. Returns what happened."""
+    try:
+        with open(HYPR_MAIN, "r") as fh:
+            text = fh.read()
+    except OSError:
+        return "no hyprland.lua"
+    if BLOCK_BEGIN in text:
+        return "present"
+    # The same backup habit Omarchy's own edits leave behind.
+    shutil.copy2(HYPR_MAIN, f"{HYPR_MAIN}.bak.{int(time.time())}")
+    with open(HYPR_MAIN, "a") as fh:
+        fh.write(("" if text.endswith("\n") else "\n") + "\n" + BLOCK)
+    return "added"
+
+
+def save_rules(rules):
+    rules = [r for r in (clean_rule(x) for x in rules[:RULES_MAX]) if r]
+    os.makedirs(os.path.dirname(RULES_FILE), exist_ok=True)
+    tmp = RULES_FILE + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump({"rules": rules}, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, RULES_FILE)
+    os.makedirs(HYPR_DIR, exist_ok=True)
+    tmp = RULES_LUA + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.write(rules_lua(rules))
+    os.replace(tmp, RULES_LUA)
+    block = ensure_hypr_block()
+    # Rules added at runtime cannot be taken back one at a time, so the file is
+    # the truth and a config reload applies it. config-only leaves the monitors
+    # alone.
+    try:
+        subprocess.run(["hyprctl", "reload", "config-only"], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return rules, block
+
+
+def parse_rule_args(args):
+    """`typing border=#ffb000` or `site:example.com opacity=0.9 float` -> a rule."""
+    if not args:
+        return None
+    first = args[0]
+    raw = {"when": first}
+    if first.startswith("site:"):
+        raw = {"when": "site", "site": first[5:]}
+    then = {}
+    for arg in args[1:]:
+        key, _, value = arg.partition("=")
+        key = key.replace("-", "_")
+        if key in ("dim_around", "no_blur", "float") and not value:
+            then[key] = True
+        elif key in ("opacity",):
+            try:
+                then[key] = float(value)
+            except ValueError:
+                pass
+        elif key in ("border_size", "rounding"):
+            try:
+                then[key] = int(value)
+            except ValueError:
+                pass
+        elif key == "border":
+            then[key] = value
+    raw["then"] = then
+    return clean_rule(raw)
+
+
 def load_sites():
     try:
         with open(SITES_INDEX, "r") as fh:
@@ -3574,6 +3812,60 @@ def main(argv):
         print("theatre", "on" if res.get("theatre") else "off")
         return 0
 
+    if cmd == "rules":
+        sub = rest[0] if rest else "list"
+        rules = load_rules()
+        if sub in ("list", "ls"):
+            if not rules:
+                print("noren: no window rules yet (Settings on the start page, or `noren rules add`)")
+            for r in rules:
+                effects = " ".join(k if v is True else f"{k}={v}" for k, v in r["then"].items())
+                print(f"{r['id']}  {'on ' if r['on'] else 'off'}  {rule_tag(r):<34}  {effects or '(no effects)'}")
+            return 0
+        if sub == "json":
+            # For the start page, through the host: each rule with its tag and
+            # the Lua it becomes.
+            print(json.dumps({"rules": [dict(r, tag=rule_tag(r), lua=rule_lua(r)) for r in rules]}))
+            return 0
+        if sub == "save":
+            # The start page's whole list, on stdin.
+            try:
+                incoming = json.load(sys.stdin).get("rules")
+            except (ValueError, AttributeError):
+                incoming = None
+            if not isinstance(incoming, list):
+                sys.exit("noren rules save: expected {\"rules\": [...]} on stdin")
+            saved, block = save_rules(incoming)
+            print(json.dumps({"ok": True, "count": len(saved), "block": block}))
+            return 0
+        if sub == "add":
+            rule = parse_rule_args(rest[1:])
+            if not rule:
+                sys.exit("noren rules add: say when, then what -- e.g. "
+                         "`noren rules add typing border=#ffb000` or "
+                         "`noren rules add site:example.com opacity=0.9 float`")
+            saved, block = save_rules(rules + [rule])
+            print(f"added {rule['id']}  {rule_tag(rule)}"
+                  + ("  (hyprland.lua now loads Noren's rules)" if block == "added" else ""))
+            return 0
+        if sub in ("rm", "on", "off") and len(rest) > 1:
+            target = rest[1]
+            if not any(r["id"] == target for r in rules):
+                sys.exit(f"noren rules: no rule {target}")
+            if sub == "rm":
+                rules = [r for r in rules if r["id"] != target]
+            else:
+                for r in rules:
+                    if r["id"] == target:
+                        r["on"] = sub == "on"
+            save_rules(rules)
+            print(f"{sub} {target}")
+            return 0
+        if sub == "lua":
+            print(rules_lua(rules), end="")
+            return 0
+        sys.exit("noren rules: list | add <when> [effects] | rm|on|off <id> | lua")
+
     if cmd == "tags":
         # What Hyprland rules can match on right now: every page window and
         # its noren:* tags. Titles are cut short; they are only for telling
@@ -3586,6 +3878,14 @@ def main(argv):
         for c in pages:
             tags = sorted(t for t in (c.get("tags") or []) if t.startswith("noren:"))
             print(f"{(c.get('title') or '')[:48]:<48}  {' '.join(tags) or '(none yet)'}")
+        return 0
+
+    if cmd == "float-page":
+        # Internal: the host calls this for a window rule that floats.
+        hex_part = re.sub(r"[^0-9a-fA-F]", "", (rest[0] if rest else "").replace("0x", "", 1))
+        if not hex_part:
+            sys.exit("noren float-page: needs a window address")
+        print(float_page("0x" + hex_part.lower()))
         return 0
 
     if cmd == "solo":

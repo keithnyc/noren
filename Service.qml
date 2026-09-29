@@ -299,8 +299,12 @@ Item {
       return
     }
     var c = Array.isArray(p.rgb) ? p.rgb : [0, 0, 0]
-    root.partyColor = Qt.rgba((Number(c[0]) || 0) / 255, (Number(c[1]) || 0) / 255,
-                              (Number(c[2]) || 0) / 255, 1)
+    // Rounded to steps of 12 a channel: the bars' gradients are rebuilt on
+    // every colour change, and the page's easing would otherwise change it
+    // thirty times a second by amounts nobody can see.
+    var q = function (v) { return Math.min(255, Math.round((Number(v) || 0) / 12) * 12) / 255 }
+    var next = Qt.rgba(q(c[0]), q(c[1]), q(c[2]), 1)
+    if (!Qt.colorEqual(next, root.partyColor)) root.partyColor = next
     root.partyLevel = Math.max(0, Math.min(1, Number(p.level) || 0))
     root.partyHearing = typeof p.energy === "number"
     root.partyEnergy = root.partyHearing ? Math.max(0, Math.min(1, p.energy)) : 0

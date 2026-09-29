@@ -1330,6 +1330,54 @@ but static ones (`float`, `workspace`, `size`) are decided at map time and a
 later tag does nothing. The rule builder planned for the start page has to do
 placement itself, with address-targeted dispatchers, when a tag first appears.
 
+## The rule builder
+
+`rules.json` is the truth and the CLI its only writer (`noren rules save` takes
+the start page's whole list on stdin). `clean_rule` validates every field. A
+condition from a whitelist, a hostname through `site_host`, numbers clamped,
+colours as `#rrggbb`, unknown keys dropped: nothing reaches Lua unvalidated,
+and anything that fails is dropped, not escaped. Saving writes
+`noren-rules.lua`, makes sure the fenced block is in `hyprland.lua` (appended
+once, backup first, `pcall(dofile, ...)` so a broken file cannot fail the
+config), and runs `hyprctl reload config-only`. Runtime rules cannot be taken
+back one at a time, so the file is the truth and a reload applies it.
+Dispatched window tags survive the reload (measured). The start page makes
+rule ids itself, so a card keeps its id across saves.
+
+**Float is placement, so Noren does it**, through `noren float-page`, when a
+window first gains a floating rule's tag. Two traps. A window floated by
+address keeps its size, which for a page tiled full-screen does not fit
+floating, so it is sized to 60% x 65% of its monitor's free area and centred.
+And floating a grouped window floats the whole group, so it leaves the group
+first. Leaving acts on the focused window, so that only happens when it is
+already in front (verified, then confirmed out before floating); otherwise it
+waits, tiled, and the host floats it the next time it is focused. The group
+left behind is usually one page, which `solo` then dissolves.
+
+## Party mode's cost
+
+Measured on 0.56.2 with a benchmark that sets values already in place, so
+nothing changes on screen. One `hl.config` costs ~0.1 ms for a colour, but
+**`group:col.border_active` alone costs ~20 ms**, and the old seven-option
+frame came to 25.5 ms. That ran thirty times a second on the compositor's
+thread, where the cursor is drawn: ~75% of a core, and a stuttering desktop.
+Now the statics go once at light-up, the group border only for a window that
+is grouped (and it is not animated), and per frame only the two colours, at
+most fifteen times a second and only when they move. `tests/test_party.py`
+pins it.
+
+The bar overlay had several animations; with a beat every half second one was
+always running, so both monitors' overlays redrew at the display rate for the
+whole song. One 30 fps timer drives everything now, brightness goes through
+opacity (a gradient is rebuilt whenever its stops change), and the colour is
+rounded before it reaches the bars. Shell +17% → +9% of a core, Hyprland
+compositing +6.5% → +2%, measured with fake frames against idle. The page
+shrinks the video with `createImageBitmap` before reading it, instead of drawing
+every full-resolution frame into a canvas it reads back. Verified headless
+against the old path: same frame rate, colours and beats. A headless tab counts
+as hidden until `Page.bringToFront` and focus emulation, and party mode
+rightly stops on hidden pages.
+
 ## Theatre mode
 
 `norenTheatre` is injected into the page; the tag `noren:theatre` does the

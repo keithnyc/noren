@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 
 import _load
@@ -99,6 +100,29 @@ class Tags(unittest.TestCase):
         self.host.set_tag_report([{"title": "A video", "tags": ["noren:page"]}])
         self.assertEqual(hypr.sent[-1], "eval hl.config({ decoration = { dim_around = 0.400 } })")
         self.assertIsNone(self.host._theatre_saved)
+
+    def test_a_float_rule_hands_the_window_to_the_cli_once(self):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.host.RULES_FILE = os.path.join(tmp.name, "rules.json")
+        with open(self.host.RULES_FILE, "w") as fh:
+            json.dump({"rules": [{"id": "r_00000001", "on": True, "when": "site",
+                                  "site": "example.com", "then": {"float": True}}]}, fh)
+        floated = []
+        self.host.float_page = floated.append
+        from unittest import mock
+        inline = mock.patch.object(self.host.threading, "Thread", lambda target, args, daemon: type(
+            "T", (), {"start": lambda self_: target(*args)})())
+        inline.start()
+        self.addCleanup(inline.stop)
+        self.run_with([dict(page("0xa", "A video"), floating=False)],
+                      [{"title": "A video", "tags": ["noren:page", "noren:site:example.com"]}])
+        self.assertEqual(floated, ["0xa"])
+        # Already carrying the tag: not floated again.
+        self.run_with([dict(page("0xa", "A video", ["noren:page", "noren:site:example.com"]), floating=False)],
+                      [{"title": "A video", "tags": ["noren:page", "noren:site:example.com"]}])
+        self.assertEqual(floated, ["0xa"])
 
     def test_the_report_is_all_booleans_and_hostnames_from_the_page_side(self):
         # signals.js reports three booleans and nothing else; the worker adds
