@@ -514,9 +514,11 @@ has a login form, has unsent typing, and so on, *then* change its opacity,
 border colour, rounding, blur, dim everything around it, or float it. Each
 change is saved and applied the moment you make it, each card says how many
 windows it is on right now, and **{ } Lua** shows the Hyprland rule it
-became. Recipes add common ones in a click.
+became. Recipes add common ones in a click. It works from the keyboard too:
+Tab, Enter and the arrow keys reach everything.
 
 ```bash
+noren rules edit                         # open the builder, keyboard ready
 noren rules                              # list them
 noren rules add typing border=#ffb000    # when, then what
 noren rules add site:example.com opacity=0.9 float

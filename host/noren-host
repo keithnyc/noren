@@ -343,12 +343,18 @@ def start_url():
     return "chrome-extension://%s/start.html" % ext_id
 
 
-def spawn_start():
+# Where the start page may be opened straight into. A fixed list, never a
+# fragment from the caller: the start page is the one non-web page this host
+# opens, and it stays exactly that.
+START_SECTIONS = {"rules": "#rules", "edit": "#edit"}
+
+
+def spawn_start(section=None):
     url = start_url()
     if not url:
         log("no extension id; cannot open the start page")
         return False
-    _spawn_app(url)
+    _spawn_app(url + START_SECTIONS.get(section, ""))
     return True
 
 
@@ -1953,7 +1959,7 @@ def handle_client(conn):
             else:
                 reply = {"ok": False, "error": "no page in front of you"}
         elif cmd == "start":
-            if spawn_start():
+            if spawn_start(req.get("section")):
                 reply = {"ok": True}
             else:
                 reply = {"ok": False, "error": "no extension id -- run install.sh"}

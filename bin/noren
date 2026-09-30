@@ -56,6 +56,7 @@ usage: noren <command> [args]
                     else dims; again (or Escape) to leave
   tags              each page window's noren:* tags, for Hyprland window rules
   rules             window rules made from those tags (the start page edits them)
+  rules edit        open the rule builder (keyboard: Tab, Enter, arrows)
   rules add <when> [effect ...]
                     e.g. `rules add typing border=#ffb000`, `rules add
                     site:example.com opacity=0.9 float`; also rm|on|off <id>
@@ -3866,13 +3867,22 @@ def main(argv):
         if sub == "lua":
             print(rules_lua(rules), end="")
             return 0
+        if sub == "edit":
+            # The start page, open at the window rules, with the keyboard on
+            # "+ New rule": the whole builder works from the keyboard.
+            if not bridge_up():
+                sys.exit("noren rules edit: the browser is not running")
+            res = call({"cmd": "start", "section": "rules"})
+            if res.get("ok") is False:
+                sys.exit(f"noren rules edit: {res.get('error', 'failed')}")
+            return 0
         if sub == "apply":
             # Rewrite the Lua from rules.json and reload -- after an update
             # changes what a rule becomes.
             saved, _ = save_rules(rules)
             print(f"applied {len(saved)} rule(s)")
             return 0
-        sys.exit("noren rules: list | add <when> [effects] | rm|on|off <id> | lua | apply")
+        sys.exit("noren rules: list | edit | add <when> [effects] | rm|on|off <id> | lua | apply")
 
     if cmd == "tags":
         # What Hyprland rules can match on right now: every page window and

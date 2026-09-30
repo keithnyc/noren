@@ -13,6 +13,9 @@
   underglow; and it all moves with the music, a flare across the bar on every
   beat. Everything goes back to your theme the moment the video stops.
   `noren party on|off|toggle`, or the switch on the start page.
+- The rule builder works from the keyboard, and `noren rules edit` opens it
+  ready to type. The start page's own shortcuts no longer fire while you are in
+  a dropdown or a text box.
 - Long page titles are trimmed in Noren's windows, keeping the site's name
   ("... / Site"), so a tab in a Hyprland group no longer spills off both ends of
   the group bar. History keeps the shorter title too.

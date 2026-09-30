@@ -517,7 +517,9 @@ function addTile() {
 
 document.addEventListener('keydown', (event) => {
   if (event.target && event.target.isContentEditable) return;
-  if (event.target && event.target.tagName === 'INPUT') return;
+  // A dropdown takes typed letters to jump between its options, and a
+  // textarea is for typing: neither is a page shortcut.
+  if (event.target && /^(INPUT|SELECT|TEXTAREA)$/.test(event.target.tagName)) return;
   if (event.altKey || event.shiftKey) return;
 
   if (event.key === 'e' && !event.ctrlKey && !event.metaKey) {
@@ -973,7 +975,14 @@ function rulesRow(initial, hosts) {
     then.appendChild(el('span', 'rule-word', 'then'));
     const effects = el('div', 'rule-effects');
     const extra = el('div', 'rule-extra');
+    // Rebuilding the effects drops keyboard focus on the floor -- the focused
+    // chip or swatch is replaced by a new one. Note which control had it, by
+    // what it says, and hand focus to its replacement.
+    const keyOf = (n) => n && (n.title || n.textContent || n.type || '');
     const redraw = () => {
+      const had = document.activeElement;
+      const where = had && (effects.contains(had) ? effects : extra.contains(had) ? extra : null);
+      const wanted = where && keyOf(had);
       effects.replaceChildren();
       extra.replaceChildren();
       const t = rule.then;
@@ -1018,6 +1027,11 @@ function rulesRow(initial, hosts) {
       if (t.float) {
         extra.appendChild(el('div', 'why',
           'Floats a window when it first matches. You can tile it again by hand.'));
+      }
+      if (where) {
+        const again = Array.from(box.querySelectorAll('.rule-effects button, .rule-extra button, .rule-extra input'))
+          .find((n) => keyOf(n) === wanted);
+        if (again) again.focus({ preventScroll: true });
       }
     };
     redraw();
@@ -1568,9 +1582,24 @@ document.getElementById('unhide').addEventListener('click', async () => {
   render();
 });
 wireBarDrops();
-// `start.html#edit` opens straight into edit mode.
+// `start.html#edit` opens straight into edit mode; `#rules` (`noren rules
+// edit`) into settings, at the window rules, with the keyboard on "+ New rule".
 if (location.hash === '#edit') setEditing(true);
 else render();
+if (location.hash === '#rules') {
+  setSettings(true);
+  (async () => {
+    for (let i = 0; i < 60; i++) {
+      const add = document.querySelector('.rule-add .choice');
+      if (add) {
+        add.scrollIntoView({ block: 'center' });
+        add.focus({ preventScroll: true });
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  })();
+}
 
 // The bar can change from elsewhere -- a tabbed window's bar, `D` in the radial,
 // sync. Follow it rather than going stale until the next visit.
