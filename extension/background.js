@@ -904,6 +904,7 @@ async function allPrefs() {
     search: host.search || DEFAULT_SEARCH,
     party: Boolean(host.party),
     partyBackground: Boolean(host.partyBackground),
+    partyShake: host.partyShake !== false,
   };
 }
 

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **The bar shakes in party mode.** Its icons and text thump on every beat and
+  rumble with the music. `noren party shake off`, or "Shake the bar" on the
+  start page, keeps the lights and stills the bar.
 - **Stash.** `SUPER + M` → `Z` closes the page in front of you and keeps your
   place: scroll position and typed text included. A count on the Noren icon
   shows what is stashed. Bring pages back from the url bar (`~`), the bar

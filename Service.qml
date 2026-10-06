@@ -83,6 +83,8 @@ Item {
   // has to hold when the browser is not running at all.
   property bool shatterEnabled: false
   property string shatterStyle: "curtain"
+  // Party mode shakes the bar's modules to the music unless this is off.
+  property bool partyShake: true
 
   FileView {
     id: configFile
@@ -103,6 +105,7 @@ Item {
       if (how === true) how = "curtain"
       root.shatterEnabled = how !== false && how !== "off"
       root.shatterStyle = how === "glass" ? "glass" : "curtain"
+      root.partyShake = config.party_shake !== false
     } catch (e) {
       root.shatterEnabled = false
       root.shatterStyle = "curtain"

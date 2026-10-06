@@ -454,6 +454,8 @@ you:
   sends a flare from the middle of the bar out to both ends. A video with no
   sound, or one the page is not allowed to hear, follows the picture instead,
   flashing on hard cuts.
+- **The bar shakes.** Its icons and text thump on every beat and rumble with
+  the music. Only the bar's contents move, so your windows stay put.
 
 Pause, switch window or change workspace and everything goes back to your
 theme exactly as it was.
@@ -461,6 +463,7 @@ theme exactly as it was.
 ```bash
 noren party on               # or off, or toggle
 noren party background on    # keep the bar lit while you work in other windows
+noren party shake off         # keep the lights, stop the bar shaking
 ```
 
 With **party in the background** on (also a switch on the start page), the bar

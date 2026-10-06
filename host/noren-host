@@ -57,6 +57,7 @@ PREF_COMMANDS = {
     "search": lambda v: ["search", str(v)],
     "party": lambda v: ["party", "on" if v else "off"],
     "partyBackground": lambda v: ["party", "background", "on" if v else "off"],
+    "partyShake": lambda v: ["party", "shake", "on" if v else "off"],
 }
 
 _config_stamp = None
@@ -2138,6 +2139,7 @@ def main():
                 "search": config.get("search") or "",
                 "party": bool(config.get("party")),
                 "partyBackground": bool(config.get("party_background")),
+                "partyShake": config.get("party_shake") is not False,
             }})
 
         elif kind == "glow":

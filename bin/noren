@@ -3939,6 +3939,16 @@ def main(argv):
 
     if cmd == "party":
         config = load_config()
+        if rest and rest[0] == "shake":
+            # The bar's modules thump and rumble with the music. On unless
+            # turned off; the shell reads the setting straight from the file.
+            if len(rest) > 1 and rest[1] in ("on", "off"):
+                config["party_shake"] = rest[1] == "on"
+                save_config(config)
+            elif len(rest) > 1:
+                sys.exit(f"noren party shake: unknown argument '{rest[1]}' (on | off)")
+            print("party shake", "off" if config.get("party_shake") is False else "on")
+            return 0
         if rest and rest[0] == "background":
             # Keep the bar lit while the video plays behind other windows.
             if len(rest) > 1 and rest[1] in ("on", "off"):
@@ -3960,7 +3970,7 @@ def main(argv):
             config["party"] = not config.get("party")
             save_config(config)
         elif rest and rest[0] not in ("status",):
-            sys.exit(f"noren party: unknown argument '{rest[0]}' (on | off | toggle | background)")
+            sys.exit(f"noren party: unknown argument '{rest[0]}' (on | off | toggle | background | shake)")
         # The pages sample only while it is on, and turning it off mid-video
         # has to put the border and shadow back now, not at the next frame.
         if rest and rest[0] != "status" and bridge_up():

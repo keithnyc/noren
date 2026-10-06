@@ -1383,6 +1383,20 @@ against the old path: same frame rate, colours and beats. A headless tab counts
 as hidden until `Page.bringToFront` and focus emulation, and party mode
 rightly stops on hidden pages.
 
+**The bar's shake** is a render transform (a `Scale` and a `Translate`) that
+`PartyGlow.qml` puts on the item Omarchy's bar lays its modules in: the
+Loader's item under the bar window's `contentItem`, found by shape on every
+tick and left alone when it is not there. That is Omarchy's code, not a plugin
+interface, so it is always handed back with an empty transform list when the
+lights go out, the setting is turned off, or the widget is destroyed. Moving
+the bar *window* instead would change its exclusive zone and re-tile every
+window thirty times a second. The first version scaled the row by a percentage
+from its middle: on a 3840 px bar, 3.5% threw the end modules ~70 px, half off
+the screen. The width now grows by a fixed 10 px at most and the height takes
+the punch (7%). The bar surface clips what leaves it, so the rumble stays at a
+pixel or two. Cost, measured with music playing: shell ~23% and Hyprland ~18%
+of a core either way, so on and off differ by less than the noise.
+
 ## Theatre mode
 
 `norenTheatre` is injected into the page; the tag `noren:theatre` does the

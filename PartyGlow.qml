@@ -28,6 +28,8 @@ PanelWindow {
   property var service: null
   property string edge: "top"
   property int barSize: 0
+  // The bar's own window. The shake moves the bar's contents (see below).
+  property var barWindow: null
 
   readonly property bool horizontal: edge === "top" || edge === "bottom"
   readonly property bool fromTop: edge !== "bottom"
@@ -89,8 +91,61 @@ PanelWindow {
       win.pulse = pulse < 0.01 ? 0 : pulse
       win.sweep = since >= 0.46 ? 1 : 1 - Math.pow(1 - since / 0.46, 3)
       win.t += dt * (0.15 + 0.6 * win.drive)
+      win.shake()
     }
   }
+
+  // The shake: the bar's modules thump on the beat and rumble with the music.
+  // A render transform on the row the bar lays its modules in -- drawing only,
+  // so nothing re-lays out and the bar's reserved space never changes (moving
+  // the bar window itself would re-tile every window thirty times a second).
+  // That row is Omarchy's, not a plugin interface: found by shape, left alone
+  // if it is not there, and always handed back untransformed.
+  Scale { id: thump }
+  Translate { id: rumble }
+  property var shaken: null
+
+  function shakeTarget() {
+    var w = win.barWindow
+    var kids = w && w.contentItem ? w.contentItem.children : []
+    for (var i = 0; i < kids.length; i++)
+      if (kids[i] && kids[i].sourceComponent !== undefined && kids[i].item) return kids[i].item
+    return null
+  }
+
+  function unshake() {
+    if (win.shaken) {
+      try { win.shaken.transform = [] } catch (e) {}
+    }
+    win.shaken = null
+  }
+
+  function shake() {
+    var amount = win.lit && win.service.partyShake ? win.on : 0
+    if (amount <= 0.001) { win.unshake(); return }
+    var item = win.shakeTarget()
+    if (item !== win.shaken) {
+      win.unshake()
+      if (!item) return
+      item.transform = [thump, rumble]
+      win.shaken = item
+    }
+    // Scaled from the middle, a percentage of a 4K-wide bar throws the end
+    // modules ~70 px, off the screen. So the thump is a few pixels wide
+    // whatever the bar's width, and the height takes the punch.
+    var k = amount * (0.25 * win.drive + win.pulse)
+    thump.origin.x = item.width / 2
+    thump.origin.y = item.height / 2
+    thump.xScale = 1 + k * 10 / Math.max(1, item.width)
+    thump.yScale = 1 + k * 0.07
+    // The bar's surface clips what leaves it, so the rumble stays small.
+    var r = amount * (0.5 * win.drive + 1.6 * win.pulse)
+    rumble.x = (Math.random() * 2 - 1) * r * 1.5
+    rumble.y = (Math.random() * 2 - 1) * r
+  }
+
+  onLitChanged: if (!lit) shake()
+  Component.onDestruction: unshake()
 
   visible: on > 0.001
   color: "transparent"

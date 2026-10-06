@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 
@@ -201,6 +202,35 @@ class Party(unittest.TestCase):
         self.host.read_config = lambda: {}
         self.frame()
         self.assertEqual(self.hypr.sent, [])
+
+
+class Shake(unittest.TestCase):
+    """The bar's shake is on unless turned off; the shell reads the file."""
+
+    def run_cli(self, *args):
+        env = dict(os.environ, XDG_CONFIG_HOME=self.tmp.name,
+                   XDG_RUNTIME_DIR=self.tmp.name)
+        return subprocess.run([str(_load.ROOT / "bin" / "noren"), "party", "shake", *args],
+                              env=env, capture_output=True, text=True, timeout=20)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_on_by_default_and_off_is_written_down(self):
+        self.assertEqual(self.run_cli().stdout.strip(), "party shake on")
+        self.assertEqual(self.run_cli("off").stdout.strip(), "party shake off")
+        with open(os.path.join(self.tmp.name, "noren", "config.json")) as fh:
+            self.assertIs(json.load(fh)["party_shake"], False)
+        self.assertEqual(self.run_cli("on").stdout.strip(), "party shake on")
+
+    def test_a_bad_argument_changes_nothing(self):
+        self.assertNotEqual(self.run_cli("loud").returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "noren", "config.json")))
+
+    def test_the_start_page_switch_goes_through_the_cli(self):
+        make = _load.host().PREF_COMMANDS["partyShake"]
+        self.assertEqual(make(False), ["party", "shake", "off"])
 
 
 if __name__ == "__main__":

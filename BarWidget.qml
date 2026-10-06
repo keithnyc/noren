@@ -132,6 +132,7 @@ BarWidget {
     screen: root.QsWindow.window ? root.QsWindow.window.screen : null
     edge: root.bar ? String(root.bar.position || "top") : "top"
     barSize: root.barSize
+    barWindow: root.QsWindow.window
   }
 
   // The badge is its own button: straight to the stash in the url bar.
