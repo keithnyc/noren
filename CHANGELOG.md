@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Fixed: the url bar and the radial were a black box after updating Omarchy.**
+  The update brought Qt 6.12, whose own `Color` hid the theme's colours from
+  Noren. Noren now asks Omarchy for them by name.
 - **The bar shakes in party mode.** Its icons and text thump on every beat and
   rumble with the music. `noren party shake off`, or "Shake the bar" on the
   start page, keeps the lights and stills the bar.

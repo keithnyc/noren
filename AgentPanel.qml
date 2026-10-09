@@ -3,6 +3,7 @@ import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 // Ask your own agent about the page in front of you.
@@ -31,11 +32,11 @@ Item {
   property string pageTitle: ""
   property string pageHost: ""
 
-  property color background: Color.menu.background
-  property color foreground: Color.menu.text
-  property color borderColor: Color.menu.border
-  property color accent: Color.menu.selectedText
-  property color surface: Color.menu.selectedBackground
+  property color background: Commons.Color.menu.background
+  property color foreground: Commons.Color.menu.text
+  property color borderColor: Commons.Color.menu.border
+  property color accent: Commons.Color.menu.selectedText
+  property color surface: Commons.Color.menu.selectedBackground
   property string fontFamily: Style.font.menuFamily
 
   // "ask" answers a question about the page; "site" writes a site script for it.

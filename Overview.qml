@@ -4,6 +4,7 @@ import Quickshell
 import Quickshell.Hyprland
 import Quickshell.Wayland
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 // Every page in the group, laid out in depth.
@@ -26,10 +27,10 @@ Item {
 
   property bool active: false
 
-  property color background: Color.menu.background
-  property color foreground: Color.menu.text
-  property color borderColor: Color.menu.border
-  property color accent: Color.menu.selectedText
+  property color background: Commons.Color.menu.background
+  property color foreground: Commons.Color.menu.text
+  property color borderColor: Commons.Color.menu.border
+  property color accent: Commons.Color.menu.selectedText
   property string fontFamily: Style.font.menuFamily
 
   // Two different outcomes, and they were one signal to begin with: picking a

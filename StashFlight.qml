@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Hyprland
 import Quickshell.Wayland
 import qs.Commons
+import qs.Commons as Commons
 
 // A stashed page flying into the topbar count.
 //
@@ -19,9 +20,9 @@ import qs.Commons
 Item {
   id: root
 
-  property color surface: Color.menu.background
-  property color edge: Color.menu.border
-  property color accent: Color.menu.selectedText
+  property color surface: Commons.Color.menu.background
+  property color edge: Commons.Color.menu.border
+  property color accent: Commons.Color.menu.selectedText
 
   // Fired on contact, not when the animation ends: the count has to move the
   // instant the card reaches it, or the bump reads as an afterthought.

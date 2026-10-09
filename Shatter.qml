@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Hyprland
 import Quickshell.Wayland
 import qs.Commons
+import qs.Commons as Commons
 
 // A page window coming apart as it closes.
 //
@@ -17,8 +18,8 @@ import qs.Commons
 Item {
   id: root
 
-  property color surface: Color.menu.background
-  property color edge: Color.menu.border
+  property color surface: Commons.Color.menu.background
+  property color edge: Commons.Color.menu.border
 
   // How the window leaves. A noren is a split curtain in a doorway: the page
   // parts into hanging panels, sways aside and drops. Glass is the other one --

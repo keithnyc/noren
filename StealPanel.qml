@@ -4,6 +4,7 @@ import QtQuick.Shapes
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 
 // Steal this theme: the colours of the page in front of you, as an Omarchy
 // theme you can adjust before you keep it.
@@ -23,11 +24,11 @@ Item {
   property bool active: false
   property string binPath: ""
 
-  property color background: Color.menu.background
-  property color foreground: Color.menu.text
-  property color borderColor: Color.menu.border
-  property color accent: Color.menu.selectedText
-  property color surface: Color.menu.selectedBackground
+  property color background: Commons.Color.menu.background
+  property color foreground: Commons.Color.menu.text
+  property color borderColor: Commons.Color.menu.border
+  property color accent: Commons.Color.menu.selectedText
+  property color surface: Commons.Color.menu.selectedBackground
   property string fontFamily: Style.font.menuFamily
 
   signal closeRequested()

@@ -4,6 +4,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 // The curtain. Type a url to navigate the focused window, or type anything to
@@ -63,12 +64,12 @@ Item {
 
   // Share the [menu] surface tokens, so a theme that styles the menu styles
   // this too without knowing Noren exists.
-  property color background: Color.menu.background
-  property color foreground: Color.menu.text
-  property color borderColor: Color.menu.border
-  property color scrim: Color.menu.scrim
-  property color selectedBackground: Color.menu.selectedBackground
-  property color selectedText: Color.menu.selectedText
+  property color background: Commons.Color.menu.background
+  property color foreground: Commons.Color.menu.text
+  property color borderColor: Commons.Color.menu.border
+  property color scrim: Commons.Color.menu.scrim
+  property color selectedBackground: Commons.Color.menu.selectedBackground
+  property color selectedText: Commons.Color.menu.selectedText
   property string fontFamily: Style.font.menuFamily
 
   readonly property var matches: buildMatches()

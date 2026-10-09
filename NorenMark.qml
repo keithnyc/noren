@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 
 // Noren itself, drawn: a rod with panels hanging from it. The plugin is named
 // after the split curtain over a shop door, so this is the face it wears when
@@ -12,8 +13,8 @@ Item {
   id: root
 
   property string mood: "idle"
-  property color accent: Color.menu.selectedText
-  property color rod: Color.menu.border
+  property color accent: Commons.Color.menu.selectedText
+  property color rod: Commons.Color.menu.border
 
   readonly property int panels: 4
   implicitWidth: Style.space(58)

@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 // The other way to part the curtain: a ring of actions around whatever page is
@@ -31,11 +32,11 @@ Item {
   property string contextLabel: ""
   property int hovered: -1
 
-  property color background: Color.menu.background
-  property color foreground: Color.menu.text
-  property color borderColor: Color.menu.border
-  property color accent: Color.menu.selectedText
-  property color selectedBackground: Color.menu.selectedBackground
+  property color background: Commons.Color.menu.background
+  property color foreground: Commons.Color.menu.text
+  property color borderColor: Commons.Color.menu.border
+  property color accent: Commons.Color.menu.selectedText
+  property color selectedBackground: Commons.Color.menu.selectedBackground
   property string fontFamily: Style.font.menuFamily
 
   signal chose(int index)

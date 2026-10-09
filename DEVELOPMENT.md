@@ -849,6 +849,15 @@ nothing unseen changes. `noren start` brings a fresh one back.
 
 ## Environment facts that cost real time
 
+**Qt 6.12's QtQuick has its own `Color` singleton, and it shadows Omarchy's.**
+After an Omarchy update brought Qt 6.12, a bare `Color.menu.background` in a
+plugin read QtQuick's `QQuickColor` (`rgba`, `blend`, `tint`...), which has no
+`menu`. Every theme colour came back undefined, the binding failed once at load
+and never re-evaluated, and the url bar's full-screen scrim drew as an opaque
+black box over the screen. Import order did not help. Always write
+`import qs.Commons as Commons` and `Commons.Color.<surface>`, as Omarchy's own
+plugins now do; a bare `Color.` anywhere in the QML is this bug waiting.
+
 **Developer Mode is required.** Since Chromium M137 an unpacked extension loaded
 via `--load-extension` is *disabled on load* unless `chrome://extensions` →
 Developer mode is on. Nothing reports it — not the UI, not stderr. The only
