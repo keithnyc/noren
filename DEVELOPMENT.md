@@ -101,6 +101,16 @@ typing `search.example` then `other.example` silently replaced the search page i
 second window. A launcher that sometimes mutates the window behind it is a
 launcher you cannot trust.
 
+**`noren enter replace` swaps the keys rather than making Enter guess.** What
+was rejected was an Enter whose meaning depended on what happened to be behind
+the overlay. A setting is chosen once, and the footer's labels come from the
+same two properties (`openKey`, `replaceKey`) the key handler reads, so it
+always says what the key will do; `tests/test_enter.py` fails if a key is ever
+hardcoded there again. A click on a row is Enter and a Ctrl+click is
+Ctrl+Enter, setting included. The click now counts as choosing the row: before,
+clicking a suggestion while the typed text looked like a url opened the typed
+text instead.
+
 Ctrl+Enter still has to be *reachable*, not buried, because a chrome-less window
 has no address bar — this overlay is the only way to point one somewhere else.
 The footer names the window it would replace, and greys out when there is none.

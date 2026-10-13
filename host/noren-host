@@ -53,6 +53,7 @@ STASH_FILE = os.path.join(
 # one place where a setting is validated and one format to keep.
 PREF_COMMANDS = {
     "tabbed": lambda v: ["tabbed", "on" if v else "off"],
+    "enterReplaces": lambda v: ["enter", "replace" if v else "new"],
     "shatter": lambda v: ["shatter", str(v)],
     "search": lambda v: ["search", str(v)],
     "party": lambda v: ["party", "on" if v else "off"],
@@ -2140,6 +2141,7 @@ def main():
                 "party": bool(config.get("party")),
                 "partyBackground": bool(config.get("party_background")),
                 "partyShake": config.get("party_shake") is not False,
+                "enterReplaces": bool(config.get("enter_replaces")),
             }})
 
         elif kind == "glow":

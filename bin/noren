@@ -50,6 +50,9 @@ usage: noren <command> [args]
                     --name <n>, --print (change nothing), --undo
   tabbed on|off     new pages join the group in front, like tabs (persists)
   tabbed toggle     flip it; `tabbed` alone reports
+  enter replace|new what Enter does in the url bar: replace the page in front
+                    (Ctrl+Enter then opens a new window) or open a new window,
+                    the default (persists; `enter` alone reports)
   party on|off      party mode: a playing video lights its window and the top
                     bar in the picture's colours (persists; `toggle` flips it)
   theatre           the video in front of you fills its window and everything
@@ -422,6 +425,8 @@ def doctor():
     # tiled?" is otherwise invisible.
     _row(OK, "tabbed mode", "on - new pages join the group in front"
          if tabbed_mode() else "off - new pages open as their own window")
+    _row(OK, "url bar enter", "replaces the page in front (Ctrl+Enter opens new)"
+         if load_config().get("enter_replaces") else "opens a new window (Ctrl+Enter replaces)")
     style = shatter_style()
     _row(OK, "shatter", f"{style} - how a closing page leaves" if style else "off")
     _row(OK, "party mode", ("on - a playing video lights its window and the bar"
@@ -3923,6 +3928,18 @@ def main(argv):
         if not anchor:
             sys.exit("noren join: needs --anchor <address>")
         return join_new(anchor, exclude)
+
+    if cmd == "enter":
+        # Swaps the url bar's two keys; it never makes Enter guess. See
+        # DEVELOPMENT.md on why a context-aware Enter was rejected.
+        config = load_config()
+        if rest and rest[0] in ("replace", "new"):
+            config["enter_replaces"] = rest[0] == "replace"
+            save_config(config)
+        elif rest and rest[0] not in ("status",):
+            sys.exit(f"noren enter: unknown argument '{rest[0]}' (replace | new)")
+        print("enter", "replace" if config.get("enter_replaces") else "new")
+        return 0
 
     if cmd == "tabbed":
         config = load_config()

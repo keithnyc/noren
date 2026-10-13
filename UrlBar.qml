@@ -768,6 +768,11 @@ Item {
   property bool shatterEnabled: false
   property string shatterStyle: "curtain"
   property bool partyOn: false
+  // `noren enter replace`: the two keys swap. Every label in the footer comes
+  // from these, so what it promises is always what the key does.
+  property bool enterReplaces: false
+  readonly property string openKey: enterReplaces ? "Ctrl+\u21B5" : "\u21B5"
+  readonly property string replaceKey: enterReplaces ? "\u21B5" : "Ctrl+\u21B5"
 
   FileView {
     id: settingsFile
@@ -777,9 +782,12 @@ Item {
     printErrors: false
     onLoaded: {
       try {
-        root.partyOn = JSON.parse(settingsFile.text() || "{}").party === true
+        var settings = JSON.parse(settingsFile.text() || "{}")
+        root.partyOn = settings.party === true
+        root.enterReplaces = settings.enter_replaces === true
       } catch (e) {
         root.partyOn = false
+        root.enterReplaces = false
       }
       try {
         var how = JSON.parse(settingsFile.text() || "{}").shatter
@@ -1238,7 +1246,9 @@ Item {
               // Shift+Delete still edits text everywhere else.
               event.accepted = root.deleteHighlighted()
             } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-              if (event.modifiers & Qt.ControlModifier) root.replaceCurrent()
+              // Ctrl flips whichever one Enter means.
+              var ctrl = (event.modifiers & Qt.ControlModifier) !== 0
+              if (ctrl !== root.enterReplaces) root.replaceCurrent()
               else root.activate()
               event.accepted = true
             }
@@ -1320,9 +1330,14 @@ Item {
               anchors.fill: parent
               // A hint is text, not a button.
               enabled: modelData.kind !== "hint"
-              onClicked: {
+              onClicked: (mouse) => {
                 root.selectedIndex = index
-                root.activate()
+                // A click is Enter, a Ctrl+click is Ctrl+Enter, setting and all.
+                // selectionMoved marks the row as chosen, as arrowing onto it would.
+                root.selectionMoved = true
+                var ctrl = (mouse.modifiers & Qt.ControlModifier) !== 0
+                if (ctrl !== root.enterReplaces) root.replaceCurrent()
+                else root.activate()
               }
             }
           }
@@ -1340,15 +1355,15 @@ Item {
               var row = root.currentRow()
               if (row && row.kind === "hint") return root.scope === "stash"
                 ? "stashed pages come back from here" : "type a name to save a set"
-              if (row && row.kind === "set") return "\u21B5 open set  \u00B7  Shift+Del delete"
-              if (row && row.kind === "stash") return "\u21B5 restore  \u00B7  Shift+Del drop"
+              if (row && row.kind === "set") return root.openKey + " open set  \u00B7  Shift+Del delete"
+              if (row && row.kind === "stash") return root.openKey + " restore  \u00B7  Shift+Del drop"
               if (row && row.kind === "home") return root.canReplace
-                ? "\u21B5 start page  \u00B7  Ctrl+\u21B5 this page goes home"
-                : "\u21B5 start page"
+                ? root.openKey + " start page  \u00B7  " + root.replaceKey + " this page goes home"
+                : root.openKey + " start page"
               if (row && row.kind === "save") return "\u21B5 save set"
-              if (root.multiUrl) return "\u21B5 open " + root.destinations.length + " windows"
+              if (root.multiUrl) return root.openKey + " open " + root.destinations.length + " windows"
               return (root.matches.length > 0 && !root.looksLikeUrl)
-                ? "\u21B5 go to tab" : "\u21B5 new window"
+                ? "\u21B5 go to tab" : root.openKey + " new window"
             }
             color: root.foreground
             opacity: 0.75
@@ -1367,10 +1382,10 @@ Item {
           Text {
             width: Math.max(0, parent.width - Style.space(220))
             text: root.multiUrl
-              ? "^\u21B5 open " + root.destinations.length + " as one group"
+              ? root.replaceKey + " open " + root.destinations.length + " as one group"
               : (root.canReplace
-                 ? "^\u21B5 replace \u201C" + root.target.title + "\u201D"
-                 : "^\u21B5 replace \u2014 no page on this workspace")
+                 ? root.replaceKey + " replace \u201C" + root.target.title + "\u201D"
+                 : root.replaceKey + " replace \u2014 no page on this workspace")
             color: root.foreground
             opacity: (root.multiUrl || root.canReplace) ? 0.75 : 0.35
             font.family: root.fontFamily

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Enter can replace the page.** `noren enter replace`, or "Enter replaces the
+  page" on the start page, swaps the url bar's keys: Enter loads into the page
+  in front, Ctrl+Enter opens a new window, and the footer says so. Off by
+  default. A Ctrl+click on a row is now Ctrl+Enter too, and clicking a
+  suggestion opens that suggestion even when what you typed looks like a url.
 - **Fixed: the url bar and the radial were a black box after updating Omarchy.**
   The update brought Qt 6.12, whose own `Color` hid the theme's colours from
   Noren. Noren now asks Omarchy for them by name.

@@ -47,7 +47,10 @@ rather than debugging by hand.
 - **Do not fork Chromium.** See DEVELOPMENT.md for what a fork would actually buy
   and why it is not worth it.
 - **Enter opens a new window; Ctrl+Enter replaces the current page.** Enter must
-  never mutate the window behind the overlay — that was tried and rejected.
+  never *sometimes* mutate the window behind the overlay — a context-aware Enter
+  was tried and rejected. The user may swap the two keys outright
+  (`noren enter replace`); the key handler and every footer label read the same
+  setting, so a key always means one thing.
 - **Only peel tabs in `type === "normal"` windows,** or auto-peel destroys every
   window Noren creates.
 - **Never map a palette hue straight onto a semantic role.** Solve lightness

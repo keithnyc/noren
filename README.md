@@ -74,6 +74,13 @@ evidence so far. Expect to find things. `noren version` says which one you have.
   browser: a chrome-less window has no address bar, so the overlay is the *only*
   way to point one somewhere else. When there's no page on this workspace the
   hint greys out rather than silently doing nothing.
+
+  **If replacing is what you mostly do, swap them:** `noren enter replace`, or
+  "Enter replaces the page" on the start page. Then Enter loads into the page in
+  front and Ctrl+Enter opens a new window, the same for a click and a
+  Ctrl+click, and the footer's labels swap with them. It is still always the
+  same key for the same thing: with no page to replace, Enter opens one.
+  `noren enter new` puts it back.
 - **Bar widget** — shows the focused page's title, load state, and whether the
   browser is running at all. Left click opens the URL bar, right click reloads.
 - **CLI** — `noren goto`, `go`, `open`, `back`, `forward`, `reload`, `tabs`,

@@ -900,6 +900,7 @@ async function allPrefs() {
     revealBar: stored.revealBar !== false,
     themeMode: stored.themeMode || 'tint',
     tabbed: Boolean(host.tabbed),
+    enterReplaces: Boolean(host.enterReplaces),
     shatter: host.shatter || 'off',
     search: host.search || DEFAULT_SEARCH,
     party: Boolean(host.party),
