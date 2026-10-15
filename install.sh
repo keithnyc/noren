@@ -55,7 +55,15 @@ preflight() {
 
 detect_browser() {
   local desktop
-  desktop="$(env -u BROWSER xdg-settings get default-web-browser 2>/dev/null || true)"
+  # Omarchy's own answer first: it now registers omarchy-browser.desktop as the
+  # system default, a router that hands links on to the real browser, and that
+  # is what xdg-settings reports. The router is never the answer.
+  desktop="$(omarchy-cmd-default-browser 2>/dev/null || true)"
+  [[ -n $desktop && $desktop != omarchy-browser.desktop ]] ||
+    desktop="$(env -u BROWSER xdg-settings get default-web-browser 2>/dev/null || true)"
+  [[ $desktop != omarchy-browser.desktop ]] ||
+    desktop="$(xdg-mime query default x-scheme-handler/https 2>/dev/null || true)"
+  [[ $desktop != omarchy-browser.desktop ]] || desktop=""
   [[ -n $desktop ]] || die "cannot determine the default browser; pass --browser"
   printf '%s' "${desktop%.desktop}"
 }

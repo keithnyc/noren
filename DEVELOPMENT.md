@@ -921,6 +921,17 @@ feature silently not working. Both the host and the CLI normalise.
 refuse to answer. Omarchy's own scripts use `env -u BROWSER xdg-settings …`; so
 do the installer and the host.
 
+**And then Omarchy made its link router the default browser.** Since an update
+in October 2026 `xdg-settings get default-web-browser` answers
+`omarchy-browser.desktop`, a router whose Exec is `omarchy-launch-browser`. Noren
+took that for the browser's name, so the url bar with the browser closed read
+`~/.config/omarchy-browser/Default`, found nothing, and showed no history or
+bookmarks -- with no error anywhere, because a missing profile is an empty one.
+`default_browser_desktop()` (CLI and host) and the installer ask
+`omarchy-cmd-default-browser` first, which skips the router itself, fall back
+to `xdg-settings` and then `xdg-mime`, and never accept the router.
+`tests/test_browser.py`.
+
 **Hyprland is configured in Lua here**, not `.conf` — `~/.config/hypr/bindings.lua`
 using `o.bind("SUPER + B", "desc", [[command]])`.
 

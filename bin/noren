@@ -130,17 +130,33 @@ extension loaded. It starts and stops with that browser.
 """
 
 
+def default_browser_desktop():
+    """The default browser's desktop entry id, e.g. "chromium.desktop", or "".
+
+    Omarchy now registers `omarchy-browser.desktop` as the system's default:
+    a router that hands each link to the real browser. Asking xdg-settings
+    alone answers with the router, and everything keyed on the browser's name
+    -- its profile directory, its binary -- quietly points at nothing. Omarchy
+    answers the real question with `omarchy-cmd-default-browser`; xdg-settings
+    is the fallback for an Omarchy without it (with BROWSER unset, which
+    otherwise makes it refuse to answer), and the router is never the answer.
+    """
+    router = "omarchy-browser.desktop"
+    for command in (["omarchy-cmd-default-browser"],
+                    ["env", "-u", "BROWSER", "xdg-settings", "get", "default-web-browser"],
+                    ["xdg-mime", "query", "default", "x-scheme-handler/https"]):
+        try:
+            out = subprocess.run(command, capture_output=True, text=True, timeout=4).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if out and out != router:
+            return out
+    return ""
+
+
 def default_browser():
-    """Short name of the default browser. Omarchy exports BROWSER, which makes
-    xdg-settings refuse to answer, so unset it the way omarchy's own scripts do."""
-    try:
-        out = subprocess.run(
-            ["env", "-u", "BROWSER", "xdg-settings", "get", "default-web-browser"],
-            capture_output=True, text=True, timeout=4,
-        ).stdout.strip()
-        return out.removesuffix(".desktop") or "your browser"
-    except Exception:
-        return "your browser"
+    """Short name of the default browser, e.g. "chromium"."""
+    return default_browser_desktop().removesuffix(".desktop") or "your browser"
 
 
 def browser_running(name):

@@ -42,7 +42,7 @@ say briefly what each one does before running it, and follow these rules:
 ```bash
 omarchy version 2>/dev/null || cat /usr/share/omarchy/version
 ls ~/.config/hypr/bindings.lua
-xdg-settings get default-web-browser
+omarchy-cmd-default-browser 2>/dev/null || xdg-settings get default-web-browser
 command -v python3 openssl git
 ```
 

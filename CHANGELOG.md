@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fixed: no history or bookmarks in the url bar with the browser closed.**
+  Omarchy now registers a link router as the system's default browser, and
+  Noren took the router for the browser, so it looked for your history in a
+  profile that does not exist. Noren asks Omarchy which browser is really the
+  default.
 - **Enter can replace the page.** `noren enter replace`, or "Enter replaces the
   page" on the start page, swaps the url bar's keys: Enter loads into the page
   in front, Ctrl+Enter opens a new window, and the footer says so. Off by

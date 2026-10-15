@@ -207,6 +207,30 @@ def notify_shell(state):
 _browser = None
 
 
+def default_browser_desktop():
+    """The default browser's desktop entry id, e.g. "chromium.desktop", or "".
+
+    Omarchy now registers `omarchy-browser.desktop` as the system's default:
+    a router that hands each link to the real browser. Asking xdg-settings
+    alone answers with the router, and everything keyed on the browser's name
+    -- its profile directory, its binary -- quietly points at nothing. Omarchy
+    answers the real question with `omarchy-cmd-default-browser`; xdg-settings
+    is the fallback for an Omarchy without it (with BROWSER unset, which
+    otherwise makes it refuse to answer), and the router is never the answer.
+    """
+    router = "omarchy-browser.desktop"
+    for command in (["omarchy-cmd-default-browser"],
+                    ["env", "-u", "BROWSER", "xdg-settings", "get", "default-web-browser"],
+                    ["xdg-mime", "query", "default", "x-scheme-handler/https"]):
+        try:
+            out = subprocess.run(command, capture_output=True, text=True, timeout=4).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if out and out != router:
+            return out
+    return ""
+
+
 def resolve_browser():
     """(binary, user_data_dir) for the default browser, resolved once."""
     global _browser
@@ -215,12 +239,7 @@ def resolve_browser():
 
     binary, data_dir = None, None
     try:
-        desktop = subprocess.run(
-            # Omarchy exports BROWSER=omarchy-launch-browser, which makes
-            # xdg-settings refuse to answer. Its own scripts unset it first.
-            ["env", "-u", "BROWSER", "xdg-settings", "get", "default-web-browser"],
-            capture_output=True, text=True, timeout=4,
-        ).stdout.strip()
+        desktop = default_browser_desktop()
 
         path = None
         for base in (

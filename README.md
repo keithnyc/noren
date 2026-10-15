@@ -748,8 +748,9 @@ in, which is why they run without it and Noren does not.
 
 `./bin/noren doctor` decodes this and every other failure in the chain.
 
-The installer targets **one** browser — whichever `xdg-settings get
-default-web-browser` reports, the same source `omarchy-launch-webapp` uses. That
+The installer targets **one** browser — whichever Omarchy reports as the
+default (`omarchy-cmd-default-browser`, or `xdg-settings get default-web-browser`
+on an older Omarchy), the same source its own launchers use. That
 matters: `noren open` spawns windows in the *default* browser, so if the
 extension lives somewhere else those windows are invisible to Noren. Installing
 also clears Noren out of any other browser, because the native host owns a
